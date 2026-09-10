@@ -50,6 +50,7 @@ type Registro = {
   fin: Date | null;
   cantidad: number | null;
   recomendado: number | null;
+  enIngreso: number | null;
 };
 
 const SELECT_REGISTRO = {
@@ -63,6 +64,7 @@ const SELECT_REGISTRO = {
   fin: true,
   cantidad: true,
   recomendado: true,
+  enIngreso: true,
 } as const;
 
 /** Medianoche de hoy en hora local del server (el corte que ve el operario). */
@@ -235,6 +237,22 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "La cantidad tiene que ser un número mayor o igual a 0" }, { status: 400 });
   if (cantidad > MAX_CANTIDAD)
     return NextResponse.json({ error: "La cantidad es demasiado alta" }, { status: 400 });
+
+  // Tope: no se puede embolsar más de lo que había a granel en el pulmón de
+  // ingreso cuando se tomó el ítem (foto guardada en la fila). Es material
+  // físico: cualquier número mayor es un dedazo. Si la fila es vieja y no tiene
+  // la foto (`enIngreso` null), no hay contra qué comparar y se deja pasar.
+  const previo = await prisma.deposito_embolsado.findUnique({
+    where: { id },
+    select: { enIngreso: true },
+  });
+  if (previo?.enIngreso != null && cantidad > previo.enIngreso)
+    return NextResponse.json(
+      {
+        error: `No se puede embolsar más de ${previo.enIngreso} u: es todo lo que hay en el pulmón de ingreso`,
+      },
+      { status: 400 },
+    );
 
   // updateMany con `fin: null` en el WHERE: si otro ya lo cerró, devuelve 0 y
   // no se pisa el cierre anterior.

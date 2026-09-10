@@ -60,6 +60,7 @@ type Registro = {
   fin: string | null;
   cantidad: number | null;
   recomendado: number | null;
+  enIngreso: number | null;
 };
 
 type Candidato = { numero: number; nombre: string };
@@ -246,6 +247,14 @@ export default function DepositoEmbolsadoPage() {
       setError("Cargá la cantidad embolsada");
       return;
     }
+    // No se puede embolsar más de lo que había a granel en el pulmón cuando se
+    // tomó el ítem. El servidor vuelve a chequearlo; esto es sólo el aviso.
+    if (reg.enIngreso != null && cantidad > reg.enIngreso) {
+      setError(
+        `${reg.codArticulo}: no se puede embolsar más de ${fmtNum(reg.enIngreso)} u (es todo lo que hay en el pulmón de ingreso)`,
+      );
+      return;
+    }
     setGuardando(reg.id);
     setError(null);
     try {
@@ -348,10 +357,7 @@ export default function DepositoEmbolsadoPage() {
               <thead className="text-xs text-zinc-500 border-b border-zinc-800">
                 <tr>
                   <th className="text-left font-medium px-3 py-2">Artículo</th>
-                  <th className="text-right font-medium px-3 py-2">Cobertura</th>
-                  <th className="text-right font-medium px-3 py-2">Venta máx./mes</th>
-                  <th className="text-right font-medium px-3 py-2">Embolsado</th>
-                  <th className="text-right font-medium px-3 py-2">En ingreso</th>
+                  <th className="text-right font-medium px-3 py-2">Meses Cubiertos</th>
                   <th className="text-right font-medium px-3 py-2">A embolsar</th>
                   <th className="px-3 py-2" />
                 </tr>
@@ -385,15 +391,6 @@ export default function DepositoEmbolsadoPage() {
                       <td className={`px-3 py-3 text-right tabular-nums ${colorCobertura(r.coberturaMeses)}`}>
                         {fmtNum(r.coberturaMeses, 1)} m
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-zinc-400">
-                        {fmtNum(r.ventaMaxMes)}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-zinc-400">
-                        {fmtNum(r.stockSinIngreso)}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-zinc-400">
-                        {fmtNum(r.enIngreso)}
-                      </td>
                       <td className="px-3 py-3 text-right tabular-nums">
                         <div className="text-zinc-100 font-medium">{fmtNum(r.aEmbolsar)}</div>
                         <div className="text-[11px] text-zinc-500">
@@ -408,22 +405,33 @@ export default function DepositoEmbolsadoPage() {
                       <td className="px-3 py-3 text-right whitespace-nowrap">
                         {abierto ? (
                           <div className="flex items-center justify-end gap-2">
-                            <input
-                              autoFocus
-                              inputMode="numeric"
-                              value={cantidades[abierto.id] ?? ""}
-                              onChange={(e) =>
-                                setCantidades((p) => ({
-                                  ...p,
-                                  [abierto.id]: e.target.value.replace(/[^\d]/g, ""),
-                                }))
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") cerrar(abierto);
-                              }}
-                              placeholder="Cantidad"
-                              className="bg-[#111111] border border-yellow-400/60 rounded-lg px-3 py-2 text-base text-zinc-100 outline-none w-28 text-right"
-                            />
+                            <div className="flex flex-col items-end">
+                              <input
+                                autoFocus
+                                inputMode="numeric"
+                                value={cantidades[abierto.id] ?? ""}
+                                onChange={(e) => {
+                                  const limpio = e.target.value.replace(/[^\d]/g, "");
+                                  // Tope duro: lo que había en el pulmón al tomarlo.
+                                  const tope = abierto.enIngreso;
+                                  const valor =
+                                    tope != null && limpio !== "" && Number(limpio) > tope
+                                      ? String(tope)
+                                      : limpio;
+                                  setCantidades((p) => ({ ...p, [abierto.id]: valor }));
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") cerrar(abierto);
+                                }}
+                                placeholder="Cantidad"
+                                className="bg-[#111111] border border-yellow-400/60 rounded-lg px-3 py-2 text-base text-zinc-100 outline-none w-28 text-right"
+                              />
+                              {abierto.enIngreso != null && (
+                                <span className="text-[11px] text-zinc-500 mt-1">
+                                  máx. {fmtNum(abierto.enIngreso)} u
+                                </span>
+                              )}
+                            </div>
                             <button
                               onClick={() => cerrar(abierto)}
                               disabled={guardando === abierto.id}
@@ -453,7 +461,7 @@ export default function DepositoEmbolsadoPage() {
                 })}
                 {!visibles.length && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-10 text-center text-zinc-500">
+                    <td colSpan={4} className="px-3 py-10 text-center text-zinc-500">
                       {loading ? "Consultando la base…" : "Nada para mostrar acá"}
                     </td>
                   </tr>
