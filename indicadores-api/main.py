@@ -78,6 +78,9 @@ from errores_mesa import (
 )
 from control_asignacion import asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados
 from rrhh import fetch_cvs_por_mes
+# /rrhh/premios — productividad + errores por preparador y por controlador de
+# mesa, de un mes. Ver premios.py.
+from premios import fetch_premios
 from datetime import date, datetime, timedelta
 import threading
 import time
@@ -1667,6 +1670,22 @@ def rrhh_cvs_por_mes(meses: int = Query(default=12, ge=1, le=36)):
     tipo='CV'). Ver rrhh.py."""
     try:
         return fetch_cvs_por_mes(meses)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+# ── RRHH: Premios (preparadores y mesa de control) ─────────────────────────
+@app.get("/rrhh/premios")
+def rrhh_premios(mes: str = Query(..., description="Mes 'YYYY-MM'")):
+    """Ítems recolectados por preparador (WMS) y renglones controlados por
+    controlador (EVERWEAR), con los errores del mes que se le imputan a cada
+    uno (Postgres deposito.errores_mesa). Todo agregado en la base: devuelve
+    una fila por persona. Ver premios.py."""
+    mes = (mes or "").strip()
+    if len(mes) != 7 or mes[4] != "-" or not (mes[:4] + mes[5:]).isdigit():
+        raise HTTPException(status_code=400, detail="'mes' debe ser 'YYYY-MM'")
+    try:
+        return fetch_premios(mes)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
