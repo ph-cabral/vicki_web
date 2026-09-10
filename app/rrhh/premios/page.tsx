@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { RefreshCw, AlertCircle, Loader2 } from "lucide-react";
+import { RefreshCw, AlertCircle, Loader2, Percent } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -16,6 +16,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
+import {
+  escalaVigente,
+  premioDe,
+  usePremioEscala,
+  type Tramo,
+  type VersionEscala,
+} from "@/lib/rrhh/premioEscala";
+import { MargenesModal } from "./MargenesModal";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Premios — productividad y errores del mes, por persona. Dos tablas:
@@ -33,13 +41,19 @@ import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 // esFilaProductiva() de lib/deposito/parseDeposito.ts, la misma regla que
 // /deposito y /deposito/pedidos, para que la lista de preparadores sea la
 // misma en las tres vistas.
+//
+// Columna "Premio": sale de la escala de márgenes (tramos de errores -> % que
+// se resta), que se carga desde el botón "Márgenes" y está versionada por mes
+// — ver lib/rrhh/premioEscala.ts. Cada tabla usa la escala de SU ámbito
+// vigente para el mes elegido; si para ese mes no hay ninguna versión cargada,
+// la columna queda en "—" (no se asume 100 %).
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface PreparadorRow { operario: string; items: number; errores: number }
 interface MesaRow { controlador: string; codigo: number | null; renglones: number; errores: number }
 interface Premios { mes: string; preparadores: PreparadorRow[]; mesa: MesaRow[] }
 
-type Orden = "cantidad" | "errores" | "pct" | "nombre";
+type Orden = "cantidad" | "errores" | "pct" | "premio" | "nombre";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -65,14 +79,22 @@ const fmtPct = (errores: number, base: number) =>
 
 interface Fila { nombre: string; cantidad: number; errores: number }
 
-function ordenar(filas: Fila[], orden: Orden): Fila[] {
+function ordenar(filas: Fila[], orden: Orden, tramos?: Tramo[]): Fila[] {
   const pct = (f: Fila) => (f.cantidad > 0 ? f.errores / f.cantidad : f.errores > 0 ? Infinity : -1);
   const copia = [...filas];
   if (orden === "nombre") return copia.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   if (orden === "errores") return copia.sort((a, b) => b.errores - a.errores || b.cantidad - a.cantidad);
   if (orden === "pct") return copia.sort((a, b) => pct(b) - pct(a) || b.errores - a.errores);
+  if (orden === "premio")
+    return copia.sort(
+      (a, b) => (premioDe(tramos, a.errores) ?? -1) - (premioDe(tramos, b.errores) ?? -1) || b.errores - a.errores,
+    );
   return copia.sort((a, b) => b.cantidad - a.cantidad);
 }
+
+/** Verde el premio entero, rojo el perdido, ámbar cualquier punto intermedio. */
+const colorPremio = (p: number) =>
+  p >= 100 ? "text-[#3fb950]" : p <= 0 ? "text-[#f85149]" : "text-amber-400";
 
 function TablaPremios({
   titulo,
@@ -81,6 +103,7 @@ function TablaPremios({
   etiquetaCantidad,
   filas,
   cargando,
+  escala,
 }: {
   titulo: string;
   subtitulo: string;
@@ -88,11 +111,18 @@ function TablaPremios({
   etiquetaCantidad: string;
   filas: Fila[];
   cargando: boolean;
+  /** Versión de la escala que rige para el mes que se está mirando. */
+  escala: VersionEscala | null;
 }) {
   const [orden, setOrden] = useState<Orden>("cantidad");
-  const ordenadas = useMemo(() => ordenar(filas, orden), [filas, orden]);
+  const tramos = escala?.tramos;
+  const ordenadas = useMemo(() => ordenar(filas, orden, tramos), [filas, orden, tramos]);
   const totCant = filas.reduce((a, f) => a + f.cantidad, 0);
   const totErr = filas.reduce((a, f) => a + f.errores, 0);
+  // Promedio simple del premio de la gente de la tabla (no ponderado por
+  // volumen): es el número que se mira para ver cómo viene el mes.
+  const premios = tramos ? filas.map((f) => premioDe(tramos, f.errores)).filter((p): p is number => p !== null) : [];
+  const premioProm = premios.length ? premios.reduce((a, p) => a + p, 0) / premios.length : null;
 
   const Th = ({ campo, children, className = "" }: { campo: Orden; children: ReactNode; className?: string }) => (
     <TableHead
@@ -109,6 +139,11 @@ function TablaPremios({
       <header className="px-4 py-3 border-b border-zinc-800">
         <h2 className="text-yellow-400 font-bold text-sm uppercase tracking-wide">{titulo}</h2>
         <p className="text-xs text-zinc-500 mt-1">{subtitulo}</p>
+        <p className="text-[11px] text-zinc-600 mt-1">
+          {escala
+            ? `Escala vigente desde ${escala.vigencia}`
+            : "Sin escala de premios para este mes"}
+        </p>
       </header>
       <Table>
         <TableHeader>
@@ -117,12 +152,13 @@ function TablaPremios({
             <Th campo="cantidad" className="text-right">{etiquetaCantidad}</Th>
             <Th campo="errores" className="text-right">Errores</Th>
             <Th campo="pct" className="text-right">% Error</Th>
+            <Th campo="premio" className="text-right">Premio</Th>
           </TableRow>
         </TableHeader>
         <TableBody>
           {cargando && (
             <TableRow>
-              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
+              <TableCell colSpan={5} className="py-10 text-center text-zinc-600">
                 <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
                 Consultando…
               </TableCell>
@@ -130,24 +166,33 @@ function TablaPremios({
           )}
           {!cargando && !ordenadas.length && (
             <TableRow>
-              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
+              <TableCell colSpan={5} className="py-10 text-center text-zinc-600">
                 Sin datos en el mes
               </TableCell>
             </TableRow>
           )}
           {!cargando &&
-            ordenadas.map((f) => (
-              <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
-                <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
-                <TableCell className="px-2.5 text-right tabular-nums text-zinc-200">{fmtNum(f.cantidad)}</TableCell>
-                <TableCell className={`px-2.5 text-right tabular-nums ${f.errores > 0 ? "text-[#f85149]" : "text-zinc-600"}`}>
-                  {fmtNum(f.errores)}
-                </TableCell>
-                <TableCell className="px-2.5 text-right tabular-nums text-zinc-400">
-                  {fmtPct(f.errores, f.cantidad)}
-                </TableCell>
-              </TableRow>
-            ))}
+            ordenadas.map((f) => {
+              const premio = premioDe(tramos, f.errores);
+              return (
+                <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
+                  <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
+                  <TableCell className="px-2.5 text-right tabular-nums text-zinc-200">{fmtNum(f.cantidad)}</TableCell>
+                  <TableCell className={`px-2.5 text-right tabular-nums ${f.errores > 0 ? "text-[#f85149]" : "text-zinc-600"}`}>
+                    {fmtNum(f.errores)}
+                  </TableCell>
+                  <TableCell className="px-2.5 text-right tabular-nums text-zinc-400">
+                    {fmtPct(f.errores, f.cantidad)}
+                  </TableCell>
+                  <TableCell
+                    className={`px-2.5 text-right tabular-nums font-medium ${premio === null ? "text-zinc-600" : colorPremio(premio)}`}
+                    title={premio === null ? "Sin escala cargada para este mes" : `Resta ${100 - premio}% por ${f.errores} error(es)`}
+                  >
+                    {premio === null ? "—" : `${premio}%`}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
         </TableBody>
         {!cargando && ordenadas.length > 0 && (
           <TableFooter className="bg-[#1f1f1f]">
@@ -156,6 +201,12 @@ function TablaPremios({
               <TableCell className="px-2.5 text-right tabular-nums font-semibold text-yellow-400 border-t border-zinc-700">{fmtNum(totCant)}</TableCell>
               <TableCell className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700">{fmtNum(totErr)}</TableCell>
               <TableCell className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700">{fmtPct(totErr, totCant)}</TableCell>
+              <TableCell
+                className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700"
+                title="Promedio simple del premio de la tabla"
+              >
+                {premioProm === null ? "—" : `${Math.round(premioProm)}%`}
+              </TableCell>
             </TableRow>
           </TableFooter>
         )}
@@ -169,6 +220,8 @@ export default function PremiosPage() {
   const [data, setData] = useState<Premios | null>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [margenes, setMargenes] = useState(false);
+  const { escalas, puedeEditar, guardar, borrar } = usePremioEscala();
 
   const cargar = useCallback(async (m: string) => {
     setCargando(true);
@@ -203,6 +256,11 @@ export default function PremiosPage() {
     [data],
   );
 
+  // La escala que regía en el mes que se está mirando (no la de hoy): un mes ya
+  // liquidado se sigue viendo con los márgenes que tenía.
+  const escalaPrep = useMemo(() => escalaVigente(escalas.preparado, mes), [escalas, mes]);
+  const escalaMesa = useMemo(() => escalaVigente(escalas.mesa, mes), [escalas, mes]);
+
   return (
     // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
     // componentes de shadcn (Table, Button, Input) resuelven sus variables
@@ -226,6 +284,15 @@ export default function PremiosPage() {
             onClick={abrirPicker}
             className="cursor-pointer bg-zinc-900 border border-zinc-700 text-zinc-200 rounded-md px-3 py-1.5 text-sm outline-none focus:border-yellow-400 transition-colors [color-scheme:dark]"
           />
+          <button
+            type="button"
+            onClick={() => setMargenes(true)}
+            title={puedeEditar ? "Cargar o corregir los tramos de errores y el % de premio" : "Ver los márgenes de premio"}
+            className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+          >
+            <Percent size={14} />
+            Márgenes
+          </button>
           <Button variant="outline" size="icon" onClick={() => cargar(mes)} disabled={cargando} title="Recargar">
             <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
           </Button>
@@ -248,6 +315,7 @@ export default function PremiosPage() {
           etiquetaCantidad="Preparado (ítems)"
           filas={preparadores}
           cargando={cargando}
+          escala={escalaPrep}
         />
         <TablaPremios
           titulo="Mesa de Control"
@@ -256,8 +324,20 @@ export default function PremiosPage() {
           etiquetaCantidad="Controlado (renglones)"
           filas={mesa}
           cargando={cargando}
+          escala={escalaMesa}
         />
       </div>
+
+      {margenes && (
+        <MargenesModal
+          escalas={escalas}
+          puedeEditar={puedeEditar}
+          mesVista={mes}
+          onGuardar={guardar}
+          onBorrar={borrar}
+          onCerrar={() => setMargenes(false)}
+        />
+      )}
     </div>
     </div>
   );

@@ -968,3 +968,26 @@ model ventas_objetivo {
   @@index([linea, mes])
   @@schema("everwear")
 }
+
+// Escala de premios por errores — modal "Márgenes" de /rrhh/premios. Cada fila
+// es una VERSIÓN de la escala de un ámbito ('preparado' | 'mesa') que rige
+// DESDE `vigencia` (YYYY-MM) en adelante, hasta que exista otra posterior: la
+// escala de un mes M es la fila con el `vigencia` más alto <= M, así cambiar
+// los tramos no toca lo ya liquidado. `tramos` = [{desde, hasta|null,
+// descuento}] (% del premio que se resta). DDL a mano en
+// sql/rrhh_premio_escala.sql; acá sólo el modelo para Prisma
+// (`npx prisma generate` después de correr el SQL).
+model premio_escala {
+  id        Int      @id @default(autoincrement())
+  ambito    String   @db.VarChar(12)
+  vigencia  String   @db.Char(7)
+  tramos    Json
+  creadoPor Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Única lectura que existe: todas las versiones de un ámbito ordenadas por
+  // vigencia — la cubre el btree que ya crea la UNIQUE.
+  @@unique([ambito, vigencia])
+  @@schema("everwear")
+}
