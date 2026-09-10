@@ -9,15 +9,23 @@
 //                        contra Magnus + WMS; ver indicadores-api/embolsado.py)
 //          `enCurso`   = ítems tomados y todavía sin cerrar (Postgres)
 //          `hechosHoy` = lo terminado desde las 00:00 de hoy (Postgres)
-//   POST   { codArticulo, embolsador, ... }  -> toma el ítem (inicio)
-//   PATCH  { id, cantidad }                  -> lo cierra (fin + cantidad)
+//   POST   { codArticulo, usuario, ... }  -> valida el usuario y toma el ítem
+//   PATCH  { id, cantidad }               -> lo cierra (fin + cantidad)
 //
-// El nombre del embolsador es TEXTO LIBRE (no sale de WMS ni de legajos). Los
-// dos candados —un artículo tomado por una sola persona, y una persona con un
-// solo ítem abierto— son índices únicos PARCIALES en Postgres (WHERE fin IS
-// NULL, ver sql/deposito_embolsado.sql). Acá se chequea antes para dar un
-// mensaje entendible, y el índice queda como red contra la carrera de dos
-// tablets tocando el mismo ítem en el mismo segundo (→ 409).
+// QUIÉN embolsa. La pantalla la comparten varias personas desde una sola PC:
+// la sesión de la app no dice quién está parado ahí, así que cada vez que
+// alguien toma un ítem manda su usuario de MAGNUS (número o nombre) y el POST
+// lo resuelve contra `Gen_Usuarios` (FastAPI /deposito/embolsado/usuario)
+// ANTES de escribir. La validación vive acá y no en el front a propósito: es
+// la única forma de que no se pueda abrir una fila con un nombre inventado.
+// Si el nombre es ambiguo se devuelve 400 con `candidatos` y la pantalla los
+// ofrece para elegir.
+//
+// Los dos candados —un artículo tomado por una sola persona, y una persona
+// con un solo ítem abierto— son índices únicos PARCIALES en Postgres (WHERE
+// fin IS NULL, ver sql/deposito_embolsado.sql). Acá se chequea antes para dar
+// un mensaje entendible, y el índice queda como red contra la carrera de dos
+// pantallas tocando el mismo ítem en el mismo segundo (→ 409).
 //
 // Volumen: `enCurso` son un puñado de filas (índice parcial) y `hechosHoy` un
 // range scan sobre (inicio DESC). Ninguna de las dos crece con el histórico.
@@ -36,6 +44,7 @@ type Registro = {
   codArticulo: string;
   nombre: string;
   empaque: string;
+  usuarioMagnus: number;
   embolsador: string;
   inicio: Date;
   fin: Date | null;
@@ -48,6 +57,7 @@ const SELECT_REGISTRO = {
   codArticulo: true,
   nombre: true,
   empaque: true,
+  usuarioMagnus: true,
   embolsador: true,
   inicio: true,
   fin: true,
@@ -118,24 +128,57 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ ...reco, enCurso, hechosHoy });
 }
 
+/** Resuelve el usuario tipeado contra Gen_Usuarios (Magnus). */
+async function resolverUsuario(q: string): Promise<
+  | { ok: true; numero: number; nombre: string }
+  | { ok: false; status: number; error: string; candidatos: { numero: number; nombre: string }[] }
+> {
+  try {
+    const res = await fetch(
+      `${API_URL}/deposito/embolsado/usuario?q=${encodeURIComponent(q)}`,
+      { cache: "no-store", signal: AbortSignal.timeout(15000) },
+    );
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok)
+      return { ok: false, status: 503, error: "No se pudo validar el usuario contra Magnus", candidatos: [] };
+    if (j?.ok === true && j?.usuario?.numero != null)
+      return { ok: true, numero: Number(j.usuario.numero), nombre: String(j.usuario.nombre) };
+    return {
+      ok: false,
+      status: 400,
+      error: j?.error || "Usuario no encontrado en Magnus",
+      candidatos: Array.isArray(j?.candidatos) ? j.candidatos : [],
+    };
+  } catch (e) {
+    console.error("resolverUsuario", e);
+    return { ok: false, status: 503, error: "No se pudo validar el usuario contra Magnus", candidatos: [] };
+  }
+}
+
 export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
 
   const body = await req.json().catch(() => ({}));
   const codArticulo = String(body?.codArticulo ?? "").trim();
-  const embolsador = String(body?.embolsador ?? "").trim().replace(/\s+/g, " ");
+  const tipeado = String(body?.usuario ?? "").trim().replace(/\s+/g, " ");
 
   if (!codArticulo) return NextResponse.json({ error: "Falta el artículo" }, { status: 400 });
-  if (embolsador.length < 2)
-    return NextResponse.json({ error: "Escribí el nombre de quien lo va a embolsar" }, { status: 400 });
-  if (embolsador.length > 60)
-    return NextResponse.json({ error: "El nombre es demasiado largo" }, { status: 400 });
+  // Un caracter solo vale si es un dígito: hay usuarios de Magnus de un dígito.
+  if (!tipeado || (tipeado.length < 2 && !/^\d$/.test(tipeado)))
+    return NextResponse.json({ error: "Escribí tu nombre o número de usuario" }, { status: 400 });
+
+  const usuario = await resolverUsuario(tipeado);
+  if (!usuario.ok)
+    return NextResponse.json(
+      { error: usuario.error, candidatos: usuario.candidatos },
+      { status: usuario.status },
+    );
 
   // Chequeo previo sólo para el mensaje: el candado real es el índice parcial.
   const abiertos = await prisma.deposito_embolsado.findMany({
     where: { fin: null },
-    select: { codArticulo: true, embolsador: true },
+    select: { codArticulo: true, embolsador: true, usuarioMagnus: true },
   });
   const tomado = abiertos.find((r) => r.codArticulo.trim() === codArticulo);
   if (tomado)
@@ -143,12 +186,10 @@ export async function POST(req: NextRequest) {
       { error: `${codArticulo} ya lo está embolsando ${tomado.embolsador}` },
       { status: 409 },
     );
-  const ocupado = abiertos.find(
-    (r) => r.embolsador.trim().toLowerCase() === embolsador.toLowerCase(),
-  );
+  const ocupado = abiertos.find((r) => r.usuarioMagnus === usuario.numero);
   if (ocupado)
     return NextResponse.json(
-      { error: `${ocupado.embolsador} tiene abierto ${ocupado.codArticulo}: hay que cerrarlo primero` },
+      { error: `${usuario.nombre} tiene abierto ${ocupado.codArticulo}: hay que cerrarlo primero` },
       { status: 409 },
     );
 
@@ -156,7 +197,8 @@ export async function POST(req: NextRequest) {
     const fila = await prisma.deposito_embolsado.create({
       data: {
         codArticulo,
-        embolsador,
+        usuarioMagnus: usuario.numero,
+        embolsador: usuario.nombre.slice(0, 60),
         nombre: String(body?.nombre ?? "").trim().slice(0, 160),
         empaque: String(body?.empaque ?? "").trim().slice(0, 40),
         recomendado: entero(body?.recomendado),
@@ -169,7 +211,7 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(fila);
   } catch (e) {
-    // P2002 = pisó uno de los índices parciales (dos tablets a la vez).
+    // P2002 = pisó uno de los índices parciales (dos pantallas a la vez).
     if ((e as { code?: string })?.code === "P2002")
       return NextResponse.json(
         { error: "Alguien lo tomó justo antes. Refrescá la lista." },

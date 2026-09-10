@@ -69,6 +69,7 @@ Performance
 """
 import re
 import time
+import unicodedata
 from datetime import date
 from decimal import Decimal
 
@@ -85,6 +86,9 @@ UBIC_INGRESO = "PULMON_INGRESO"
 DEPOSITO_CENTRAL = "1"          # WMS.UbicacionDepositoId (char)
 EMPAQUE_LIKE = "Bolsa%"         # DetalleEmpaque del universo
 PATRONES_EXCLUIDOS = ("%TERMINAL%",)
+
+TTL_USUARIOS = 600    # cache del maestro de usuarios de Magnus (256 filas)
+MAX_CANDIDATOS = 8    # cuántas opciones se devuelven cuando el nombre es ambiguo
 
 # Comprobantes de venta CON renglón de artículo: la lista blanca de contaduría
 # menos los de concepto puro (notas de crédito por bonificación). Se importa de
@@ -121,6 +125,126 @@ def _primer_dia(hoy: date, meses_atras: int) -> str:
     """Primer día del mes que está `meses_atras` meses antes del actual."""
     total = hoy.year * 12 + (hoy.month - 1) - meses_atras
     return f"{total // 12:04d}-{total % 12 + 1:02d}-01"
+
+
+# ── Quién embolsa: usuario de Magnus ──────────────────────────────────────
+# La vista de embolsado la usan varias personas desde la MISMA PC, así que no
+# hay sesión que valga: cada vez que alguien toma un ítem se identifica con su
+# usuario de Magnus (`Gen_Usuarios`: `Numero` smallint + `Nombre` char(25)) y
+# se valida contra el maestro antes de arrancar. Se guarda el número, que es
+# la identidad estable; el nombre queda para mostrar.
+#
+# Convención del maestro: los usuarios dados de baja tienen el nombre
+# prefijado con asteriscos ("**Mario Jobet", "****Bottero Lucas",
+# "*******VERONICA VAUDAGNA"). No hay columna de estado que sirva
+# —`ArmadorEstado` y `PerfilArmador` son del circuito de armado, no del alta
+# del usuario— así que la baja se detecta por el prefijo. Hoy: 144 activos de
+# 256. Un usuario de baja se rechaza con un mensaje que lo dice, en vez de
+# "no existe", que manda a buscar un error donde no está.
+#
+# La tabla es chica (256 filas) y no cambia en el día: se trae entera, se
+# cachea `TTL_USUARIOS` y el match se hace en Python. Eso permite buscar por
+# PALABRAS en cualquier orden y sin acentos ("juan perez" encuentra "Pérez
+# Juan"), que en SQL sería un LIKE encadenado y frágil.
+SQL_USUARIOS = """
+SELECT Numero, LTRIM(RTRIM(Nombre)) AS Nombre
+FROM dbo.Gen_Usuarios
+WHERE Nombre IS NOT NULL
+"""
+
+_cache_usuarios: tuple[float, list[dict]] | None = None
+
+
+def _sin_acentos(s: str) -> str:
+    """Minúsculas sin tildes ni diacríticos, para comparar nombres tipeados."""
+    base = unicodedata.normalize("NFKD", s or "")
+    return "".join(c for c in base if not unicodedata.combining(c)).lower()
+
+
+def _usuarios_magnus() -> list[dict]:
+    global _cache_usuarios
+    if _cache_usuarios and (time.time() - _cache_usuarios[0]) < TTL_USUARIOS:
+        return _cache_usuarios[1]
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(SQL_USUARIOS)
+        filas = []
+        for numero, nombre in cur.fetchall():
+            crudo = _txt(nombre)
+            if not crudo:
+                continue
+            limpio = crudo.lstrip("*").strip()   # el prefijo marca la baja
+            if not limpio:
+                continue
+            filas.append({
+                "numero": int(numero),
+                "nombre": limpio,
+                "baja": crudo.startswith("*"),
+                "_busca": _sin_acentos(limpio),
+            })
+    finally:
+        conn.close()
+
+    _cache_usuarios = (time.time(), filas)
+    return filas
+
+
+def buscar_usuario(q: str):
+    """Resuelve un usuario de Magnus a partir de lo que se tipeó.
+
+    · Sólo dígitos  -> se busca por `Numero` (match exacto).
+    · Texto         -> todas las palabras tienen que aparecer en el nombre, en
+                       cualquier orden y sin importar tildes. Si sólo queda uno
+                       es ese; si quedan varios se devuelven como candidatos
+                       para que la pantalla los muestre y se elija.
+
+    Devuelve `{"ok": True, "usuario": {...}}` o
+    `{"ok": False, "error": "...", "candidatos": [...]}`. Nunca lanza: el que
+    llama traduce el `ok` a un HTTP.
+    """
+    texto = (q or "").strip()
+    # Un solo caracter vale SI es un dígito: en Magnus los usuarios arrancan en
+    # el 3 y hay varios de un dígito. Una letra sola sí es un tipeo a medias.
+    if not texto or (len(texto) < 2 and not texto.isdigit()):
+        return {"ok": False, "error": "Escribí tu nombre o número de usuario", "candidatos": []}
+
+    usuarios = _usuarios_magnus()
+
+    if texto.isdigit():
+        numero = int(texto)
+        exacto = next((u for u in usuarios if u["numero"] == numero), None)
+        if not exacto:
+            return {"ok": False, "error": f"No existe el usuario {numero} en Magnus", "candidatos": []}
+        if exacto["baja"]:
+            return {"ok": False, "error": f"El usuario {numero} ({exacto['nombre']}) está dado de baja", "candidatos": []}
+        return {"ok": True, "usuario": {"numero": exacto["numero"], "nombre": exacto["nombre"]}}
+
+    palabras = [p for p in _sin_acentos(texto).split() if p]
+    activos = [u for u in usuarios if not u["baja"]]
+    match = [u for u in activos if all(p in u["_busca"] for p in palabras)]
+
+    if not match:
+        # Puede ser alguien de baja tipeando su nombre: decirlo, no negarlo.
+        de_baja = [u for u in usuarios if u["baja"] and all(p in u["_busca"] for p in palabras)]
+        if de_baja:
+            return {"ok": False, "error": f"{de_baja[0]['nombre']} está dado de baja en Magnus", "candidatos": []}
+        return {"ok": False, "error": f"No encontré '{texto}' entre los usuarios de Magnus", "candidatos": []}
+
+    if len(match) == 1:
+        u = match[0]
+        return {"ok": True, "usuario": {"numero": u["numero"], "nombre": u["nombre"]}}
+
+    return {
+        "ok": False,
+        "error": f"Hay {len(match)} usuarios que coinciden: elegí cuál sos",
+        "candidatos": [
+            {"numero": u["numero"], "nombre": u["nombre"]}
+            for u in sorted(match, key=lambda x: x["nombre"])[:MAX_CANDIDATOS]
+        ],
+    }
 
 
 # ── 1+2. Universo con su stock partido en ingreso / embolsado ─────────────

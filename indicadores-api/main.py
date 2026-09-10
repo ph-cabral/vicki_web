@@ -25,7 +25,7 @@ from compras import (
 )
 from oc_areas import fetch_oc_por_area, fetch_oc_detalle_area
 from ingresos import fetch_remitos_ingreso
-from embolsado import fetch_embolsado
+from embolsado import fetch_embolsado, buscar_usuario as buscar_usuario_embolsado
 from ventas import (
     fetch_pedidos_mes, fetch_ventas_por_linea, fetch_vendedores,
     fetch_top_clientes, fetch_top_lineas, fetch_clientes_por_linea,
@@ -410,6 +410,19 @@ def deposito_embolsado(
     Ver el docstring de embolsado.py (universo, fuentes y gotchas)."""
     try:
         return fetch_embolsado(meses_venta, meses_cobertura, incluir_cubiertos)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/embolsado/usuario")
+def deposito_embolsado_usuario(q: str = Query(...)):
+    """Resuelve quién es el que va a embolsar contra el maestro de usuarios de
+    Magnus (`Gen_Usuarios`): número exacto, o nombre por palabras sin acentos.
+
+    Siempre 200: el cuerpo trae `ok` y, si el nombre es ambiguo, la lista de
+    `candidatos` para que la pantalla los ofrezca. Un 4xx acá obligaría al
+    proxy a distinguir "no encontrado" de "se cayó Magnus"."""
+    try:
+        return buscar_usuario_embolsado(q)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

@@ -898,6 +898,11 @@ model finanza_presupuesto_area {
 // cuándo terminó y cuántas unidades salieron, más una foto de la
 // recomendación del momento en que tomó el ítem.
 //
+// Quién embolsa se identifica con el USUARIO DE MAGNUS (Gen_Usuarios) cada vez
+// que toma un ítem: la pantalla la comparten varias personas en una sola PC y
+// la sesión de la app no dice quién está parado ahí. `usuarioMagnus` es el
+// Numero (identidad estable) y `embolsador` el nombre canónico del maestro.
+//
 // Los dos candados de "un ítem por persona / una persona por ítem" son
 // índices ÚNICOS PARCIALES (WHERE fin IS NULL) y viven en el SQL: Prisma no
 // sabe declararlos y `db push` no los toca. No agregarlos acá como @@unique,
@@ -907,6 +912,7 @@ model deposito_embolsado {
   codArticulo     String    @db.VarChar(20)
   nombre          String    @default("") @db.VarChar(160)
   empaque         String    @default("") @db.VarChar(40)
+  usuarioMagnus   Int
   embolsador      String    @db.VarChar(60)
   inicio          DateTime  @default(now())
   fin             DateTime?
@@ -918,6 +924,7 @@ model deposito_embolsado {
   creadoPor       Int?
 
   @@index([inicio(sort: Desc)])
+  @@index([usuarioMagnus, inicio(sort: Desc)])
   @@schema("everwear")
 }
 
