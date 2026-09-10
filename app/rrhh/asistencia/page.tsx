@@ -123,25 +123,27 @@ const dowShort = (fecha: string) =>
 const isSaturday = (fecha: string) =>
   new Date(`${fecha}T00:00:00`).getDay() === 6;
 
+// Tintes sobre fondo oscuro (color/15 + texto 300 + borde /30), el mismo
+// criterio de chips que usan las vistas de /deposito y /compras.
 const AREA_TONES = [
-  "bg-sky-100 text-sky-800 border-sky-200",
-  "bg-emerald-100 text-emerald-800 border-emerald-200",
-  "bg-amber-100 text-amber-800 border-amber-200",
-  "bg-violet-100 text-violet-800 border-violet-200",
-  "bg-rose-100 text-rose-800 border-rose-200",
-  "bg-cyan-100 text-cyan-800 border-cyan-200",
-  "bg-orange-100 text-orange-800 border-orange-200",
-  "bg-lime-100 text-lime-800 border-lime-200",
+  "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  "bg-violet-500/15 text-violet-300 border-violet-500/30",
+  "bg-rose-500/15 text-rose-300 border-rose-500/30",
+  "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+  "bg-orange-500/15 text-orange-300 border-orange-500/30",
+  "bg-lime-500/15 text-lime-300 border-lime-500/30",
 ];
 
 const estadoTone = (s: string) => {
   if (s === "Normal")
-    return "bg-emerald-100 text-emerald-800 border-emerald-200";
+    return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
   if (s === "Ausente") return "bg-zinc-100 text-zinc-700 border-zinc-200";
-  if (s === "Revisar") return "bg-amber-100 text-amber-800 border-amber-200";
-  if (s === "Presente") return "bg-blue-100 text-blue-800 border-blue-200";
-  if (s === "Feriado") return "bg-indigo-100 text-indigo-800 border-indigo-200";
-  return "bg-sky-100 text-sky-800 border-sky-200"; // justificaciones
+  if (s === "Revisar") return "bg-amber-500/15 text-amber-300 border-amber-500/30";
+  if (s === "Presente") return "bg-blue-500/15 text-blue-300 border-blue-500/30";
+  if (s === "Feriado") return "bg-indigo-500/15 text-indigo-300 border-indigo-500/30";
+  return "bg-sky-500/15 text-sky-300 border-sky-500/30"; // justificaciones
 };
 
 // Editor manual de Ingreso/Egreso — para el caso de un fichaje incompleto
@@ -208,7 +210,7 @@ function HorarioEditor({
       {open &&
         createPortal(
           <div
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+            className="dark fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 text-white"
             onClick={() => setOpen(false)}
           >
             <div
@@ -252,7 +254,7 @@ function HorarioEditor({
                   type="button"
                   onClick={save}
                   disabled={saving}
-                  className="rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                 >
                   {saving ? "Guardando…" : "Guardar"}
                 </button>
@@ -365,14 +367,14 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
       <button
         type="button"
         onClick={openModal}
-        className="mt-2 ml-3 text-xs text-primary hover:underline"
+        className="mt-2 ml-3 text-xs text-yellow-400 hover:underline"
       >
         Feriados
       </button>
       {open &&
         createPortal(
           <div
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+            className="dark fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 text-white"
             onClick={() => setOpen(false)}
           >
             <div
@@ -458,7 +460,7 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
                         className={cn(
                           "h-7 w-7 mx-auto rounded text-xs transition-colors disabled:opacity-50",
                           marcado
-                            ? "bg-indigo-600 text-white hover:opacity-90"
+                            ? "bg-yellow-400 text-black font-semibold hover:opacity-90"
                             : finde
                               ? "text-muted-foreground hover:bg-accent"
                               : "hover:bg-accent",
@@ -561,14 +563,14 @@ function EmailsButton() {
       <button
         type="button"
         onClick={openModal}
-        className="mt-2 ml-3 text-xs text-primary hover:underline"
+        className="mt-2 ml-3 text-xs text-yellow-400 hover:underline"
       >
         Emails
       </button>
       {open &&
         createPortal(
           <div
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+            className="dark fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 text-white"
             onClick={() => setOpen(false)}
           >
             <div
@@ -589,7 +591,7 @@ function EmailsButton() {
                 Se usan para sugerir invitados al registrar un Estado/Novedad con calendario.
               </p>
               {error && (
-                <p className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                <p className="mb-2 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                   {error}
                 </p>
               )}
@@ -701,7 +703,7 @@ const AsistenciaRow = memo(function AsistenciaRow({
       <TableCell>
         <Link
           href={`/rrhh/asistencia/${row.employee_no}?desde=${desde}&hasta=${hasta}`}
-          className="text-primary hover:underline"
+          className="text-zinc-100 hover:text-yellow-400 hover:underline"
         >
           {row.employee_name ?? `#${row.employee_no}`}
         </Link>
@@ -773,7 +775,7 @@ const AsistenciaRow = memo(function AsistenciaRow({
             numValue={row.horas}
             numLabel="horas"
             placeholder="Novedad"
-            toneOf={() => "bg-violet-100 text-violet-800 border-violet-200"}
+            toneOf={() => "bg-violet-500/15 text-violet-300 border-violet-500/30"}
             employee_no={row.employee_no}
             employee_name={row.employee_name}
             fecha={row.fecha}
@@ -934,18 +936,25 @@ export default function AsistenciaPage() {
   }, [rows, empleadoDef, estado, area, sector]);
 
   return (
+    // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
+    // componentes de shadcn (Table, Input, Select) resuelven sus variables
+    // contra el bloque .dark de globals.css, así que alcanza con envolver.
+    // OJO: los modales van por createPortal a document.body, o sea FUERA de
+    // este div — cada overlay lleva su propia clase `dark` (ídem SelectContent,
+    // que también se portalea).
+    <div className="dark min-h-screen bg-[#111111] text-white">
     <div className="container mx-auto px-6 py-8">
-      <InicioButton label="Inicio" iconSize={16} className="text-sm text-muted-foreground hover:text-foreground transition-colors mb-4" />
+      <InicioButton label="Inicio" iconSize={16} className="text-sm text-zinc-500 hover:text-yellow-400 transition-colors mb-4" />
       <header className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-medium">Asistencia</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide">Asistencia</h1>
+          <p className="text-sm text-zinc-500 mt-1">
             Empleados activos · estado calculado y editable · novedades por día.
           </p>
           <button
             type="button"
             onClick={() => setHorariosOpen((o) => !o)}
-            className="mt-2 text-xs text-primary hover:underline"
+            className="mt-2 text-xs text-yellow-400 hover:underline"
           >
             {horariosOpen ? "Ocultar horarios" : "Configurar horarios por área"}
           </button>
@@ -953,7 +962,7 @@ export default function AsistenciaPage() {
           <EmailsButton />
         </div>
         {empleadosPorArea.length > 0 && (
-          <div className="flex flex-col items-center gap-2 rounded-[2rem] border px-6 py-3">
+          <div className="flex flex-col items-center gap-2 rounded-[2rem] border border-zinc-800 bg-[#171717] px-6 py-3">
             <span className="text-sm font-medium">
               Total <span className="font-semibold">{marcados}</span>
             </span>
@@ -985,7 +994,7 @@ export default function AsistenciaPage() {
         />
       )}
 
-      <div className="sticky top-0 z-40 -mx-6 px-6 py-3 mb-4 bg-background/95 backdrop-blur border-b grid grid-cols-1 md:grid-cols-6 gap-3">
+      <div className="sticky top-0 z-40 -mx-6 px-6 py-3 mb-4 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 grid grid-cols-1 md:grid-cols-6 gap-3">
         <Input
           placeholder="Empleado…"
           value={empleado}
@@ -995,7 +1004,7 @@ export default function AsistenciaPage() {
           <SelectTrigger>
             <SelectValue placeholder="Estado" />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="dark">
             <SelectItem value="all">Todos los estados</SelectItem>
             {estadosOp.map((s) => (
               <SelectItem key={s.id} value={s.nombre}>
@@ -1009,7 +1018,7 @@ export default function AsistenciaPage() {
           <SelectTrigger>
             <SelectValue placeholder="Sector" />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="dark">
             <SelectItem value="all">Todos los sectores</SelectItem>
             {sectores.map((s) => (
               <SelectItem key={s} value={s}>
@@ -1023,7 +1032,7 @@ export default function AsistenciaPage() {
           <SelectTrigger>
             <SelectValue placeholder="Área" />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="dark">
             <SelectItem value="all">Todas las áreas</SelectItem>
             {areas.map((a) => (
               <SelectItem key={a} value={a}>
@@ -1046,10 +1055,10 @@ export default function AsistenciaPage() {
         </div>
       </div>
 
-      <div className="rounded-md border">
+      <div className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow>
+            <TableRow className="bg-[#1f1f1f] hover:bg-[#1f1f1f] [&>th]:text-[10px] [&>th]:font-semibold [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-zinc-500 [&>th]:border-b [&>th]:border-zinc-800">
               <TableHead>Empleado</TableHead>
               <TableHead>Fecha</TableHead>
               <TableHead>Ingreso/Egreso</TableHead>
@@ -1098,6 +1107,7 @@ export default function AsistenciaPage() {
           </TableBody>
         </Table>
       </div>
+    </div>
     </div>
   );
 }
@@ -1222,7 +1232,7 @@ function HorariosPanel({
     asignaciones.find((x) => x.departamento === a)?.horario_tipo_id ?? "";
 
   return (
-    <div className="mb-6 rounded-md border p-4 space-y-6">
+    <div className="mb-6 rounded-lg bg-[#171717] border border-zinc-800 p-4 space-y-6">
       <div>
         <h2 className="text-sm font-medium mb-2">
           Tipos de horario (minutos esperados por día)
@@ -1252,7 +1262,7 @@ function HorariosPanel({
                 type="button"
                 onClick={() => guardarTipo(t)}
                 disabled={saving === `tipo-${t.id}`}
-                className="ml-auto rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                className="ml-auto rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
               >
                 {saving === `tipo-${t.id}` ? "Guardando…" : "Guardar"}
               </button>

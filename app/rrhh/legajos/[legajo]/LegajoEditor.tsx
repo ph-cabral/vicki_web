@@ -18,20 +18,20 @@ import { LugarSelect } from "./LugarSelect";
 import { ConvenioSelect } from "./ConvenioSelect";
 
 const ESTADO_CLASS: Record<string, string> = {
-  ACTIVO: "bg-green-100 text-green-700",
-  INACTIVO: "bg-gray-100 text-gray-600",
-  SUSPENDIDO: "bg-amber-100 text-amber-700",
-  BAJA: "bg-red-100 text-red-700",
+  ACTIVO: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
+  INACTIVO: "bg-zinc-700/40 text-zinc-300 border border-zinc-600/50",
+  SUSPENDIDO: "bg-amber-500/15 text-amber-300 border border-amber-500/30",
+  BAJA: "bg-red-500/15 text-red-300 border border-red-500/30",
 };
 
 // ---------- control de campo (reusado por escalares y celdas de relación) ----------
 function FieldControl({ def, name }: { def: FieldDef; name: string }) {
   const { register } = useFormContext();
-  const cls = "h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-500";
+  const cls = "h-9 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 [color-scheme:dark]";
 
   if (def.type === "bool") return <input type="checkbox" {...register(name)} className="h-4 w-4" />;
   if (def.type === "textarea")
-    return <textarea {...register(name)} rows={3} className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm outline-none focus:border-slate-500" />;
+    return <textarea {...register(name)} rows={3} className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-yellow-400" />;
   if (def.type === "select")
     return (
       <select {...register(name)} className={cls}>
@@ -65,18 +65,18 @@ function ScalarField({ def }: { def: FieldDef }) {
     return (
       <label className={`flex items-center gap-2 py-1.5 ${span}`}>
         <FieldControl def={def} name={def.name} />
-        <span className="text-sm text-slate-700">{def.label}</span>
+        <span className="text-sm text-zinc-300">{def.label}</span>
       </label>
     );
 
   return (
     <label className={`block ${span}`}>
-      <span className="mb-1 block text-xs font-medium text-slate-600">
+      <span className="mb-1 block text-xs font-medium text-zinc-400">
         {def.label}
-        {def.required && <b className="text-red-500"> *</b>}
+        {def.required && <b className="text-red-400"> *</b>}
       </span>
       <FieldControl def={def} name={def.name} />
-      {err && <span className="mt-0.5 block text-xs text-red-500">{err}</span>}
+      {err && <span className="mt-0.5 block text-xs text-red-400">{err}</span>}
     </label>
   );
 }
@@ -91,14 +91,14 @@ function RelationTab({ relation }: { relation: RelationDef }) {
 
   return (
     <div>
-      <div className="overflow-x-auto rounded-lg border border-slate-200">
+      <div className="overflow-x-auto rounded-lg bg-[#171717] border border-zinc-800">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-slate-500">
+          <thead className="bg-[#1f1f1f] text-left text-zinc-500">
             <tr>
               {relation.columns.map((c) => (
                 <th key={c.name} className="whitespace-nowrap px-2 py-2 font-medium">
                   {c.label}
-                  {c.required && <b className="text-red-500"> *</b>}
+                  {c.required && <b className="text-red-400"> *</b>}
                 </th>
               ))}
               <th className="px-2 py-2" />
@@ -106,7 +106,7 @@ function RelationTab({ relation }: { relation: RelationDef }) {
           </thead>
           <tbody>
             {fields.map((f, i) => (
-              <tr key={f.id} className="border-t border-slate-100 align-top">
+              <tr key={f.id} className="border-t border-zinc-800/60 align-top">
                 {relation.columns.map((c) => (
                   <td key={c.name} className="px-2 py-1.5">
                     <FieldControl def={c} name={`${relation.key}.${i}.${c.name}`} />
@@ -116,7 +116,7 @@ function RelationTab({ relation }: { relation: RelationDef }) {
                   <button
                     type="button"
                     onClick={() => remove(i)}
-                    className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                    className="rounded px-2 py-1 text-xs text-red-400 hover:bg-red-500/10"
                   >
                     Quitar
                   </button>
@@ -125,7 +125,7 @@ function RelationTab({ relation }: { relation: RelationDef }) {
             ))}
             {fields.length === 0 && (
               <tr>
-                <td colSpan={relation.columns.length + 1} className="px-2 py-6 text-center text-slate-400">
+                <td colSpan={relation.columns.length + 1} className="px-2 py-6 text-center text-zinc-600">
                   Sin registros
                 </td>
               </tr>
@@ -136,7 +136,7 @@ function RelationTab({ relation }: { relation: RelationDef }) {
       <button
         type="button"
         onClick={() => append(empty)}
-        className="mt-2 rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50"
+        className="mt-2 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400 transition-colors"
       >
         + Agregar {relation.label.toLowerCase()}
       </button>
@@ -211,12 +211,16 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
 
   return (
     <FormProvider {...methods}>
+      {/* `dark` + fondo #111111: misma estética que /deposito, /compras y
+          /ventas; los selects propios (Sector/Lugar/Convenio) usan las
+          variables de shadcn, que acá resuelven al bloque .dark. */}
+      <div className="dark min-h-screen bg-[#111111] text-white">
       <form
         onSubmit={methods.handleSubmit(onValid, onInvalid)}
         className="mx-auto max-w-5xl p-4"
       >
         {/* cabecera */}
-        <div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-4 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur">
+        <div className="sticky top-0 z-10 -mx-4 mb-4 flex items-center gap-4 border-b border-zinc-800 bg-[#111111]/95 px-4 py-3 backdrop-blur">
           {dni ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -226,7 +230,7 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
               onError={(e) => (e.currentTarget.style.display = "none")}
             />
           ) : (
-            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-200 text-slate-500">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-zinc-800 text-zinc-500">
               —
             </span>
           )}
@@ -237,16 +241,16 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
               </h1>
               {estado && (
                 <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${ESTADO_CLASS[estado] ?? "bg-slate-100 text-slate-600"}`}
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${ESTADO_CLASS[estado] ?? "bg-zinc-700/40 text-zinc-300 border border-zinc-600/50"}`}
                 >
                   {estado}
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-zinc-500">
               DNI {dni || "—"} · Legajo #{id}
               {dirty && (
-                <span className="ml-2 text-amber-600">
+                <span className="ml-2 text-amber-400">
                   · cambios sin guardar
                 </span>
               )}
@@ -254,14 +258,14 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
           </div>
           <Link
             href="/rrhh/legajos"
-            className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"
+            className="rounded-md px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-yellow-400 transition-colors"
             >
             Volver
           </Link>
           <button
             type="submit"
             disabled={saving}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-md bg-yellow-400 px-4 py-2 text-sm font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
           >
             {saving ? "Guardando…" : "Guardar"}
           </button>
@@ -286,7 +290,7 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
         </div>
 
         {/* tabs */}
-        <div className="mb-4 flex flex-wrap gap-1 border-b border-slate-200">
+        <div className="mb-4 flex flex-wrap gap-1 border-b border-zinc-800">
           {tabs.map((t) => {
             const count =
               t.kind === "relation"
@@ -299,13 +303,13 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
                 onClick={() => setActive(t.id)}
                 className={`-mb-px border-b-2 px-3 py-2 text-sm ${
                   active === t.id
-                    ? "border-blue-600 font-medium text-blue-700"
-                    : "border-transparent text-slate-500 hover:text-slate-700"
+                    ? "border-yellow-400 font-medium text-yellow-400"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300"
                 }`}
               >
                 {t.label}
                 {count !== null && count > 0 && (
-                  <span className="ml-1 text-xs text-slate-400">({count})</span>
+                  <span className="ml-1 text-xs text-zinc-600">({count})</span>
                 )}
               </button>
             );
@@ -335,6 +339,7 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
         )}
         {relation && <RelationTab relation={relation} />}
       </form>
+      </div>
     </FormProvider>
   );
 }

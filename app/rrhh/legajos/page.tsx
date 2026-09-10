@@ -38,7 +38,7 @@ export default function LegajosListPage() {
   return (
     <Suspense
       fallback={
-        <div className="container mx-auto px-6 py-8 text-sm text-muted-foreground">
+        <div className="dark min-h-screen bg-[#111111] px-6 py-8 text-sm text-zinc-500">
           Cargando…
         </div>
       }
@@ -105,19 +105,26 @@ function LegajosContent() {
   const to = data ? Math.min(data.page * data.pageSize, data.total) : 0;
 
   return (
+    // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
+    // componentes de shadcn (Table, Input, Button) resuelven sus variables
+    // contra el bloque .dark de globals.css, así que alcanza con envolver.
+    <div className="dark min-h-screen bg-[#111111] text-white">
     <div className="container mx-auto px-6 py-8">
       <div className="flex items-center justify-between gap-3 mb-4">
-        <InicioButton label="Inicio" iconSize={16} className="text-sm text-muted-foreground hover:text-foreground transition-colors" />
-        <UsuarioActual className="text-muted-foreground" />
+        <InicioButton label="Inicio" iconSize={16} className="text-sm text-zinc-500 hover:text-yellow-400 transition-colors" />
+        <UsuarioActual className="text-zinc-500" />
       </div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-medium">Legajos</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide">Legajos</h1>
+          <p className="text-sm text-zinc-500 mt-1">
             {total.toLocaleString("es-AR")} legajos en el sistema.
           </p>
         </div>
-        <Link href="/rrhh/legajos/nuevo">
+        <Link
+          href="/rrhh/legajos/nuevo"
+          className="inline-flex items-center text-sm text-zinc-300 border border-zinc-700 rounded-md px-3 py-1.5 hover:bg-zinc-800 hover:text-yellow-400 transition-colors"
+        >
           <ChevronLeft className="h-4 w-5 mr-2" />
           Nuevo legajo
         </Link>
@@ -135,13 +142,13 @@ function LegajosContent() {
       </div>
 
       {/* Tabla */}
-      <div className="rounded-md border">
+      <div className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead className="w-[110px]">Legajo</TableHead>
-              <TableHead>Nombre</TableHead>
-              <TableHead>Sector</TableHead>
+            <TableRow className="bg-[#1f1f1f] hover:bg-[#1f1f1f]">
+              <TableHead className="w-[110px] text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800">Legajo</TableHead>
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800">Nombre</TableHead>
+              <TableHead className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800">Sector</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -149,7 +156,7 @@ function LegajosContent() {
               <TableRow>
                 <TableCell
                   colSpan={4}
-                  className="text-center text-sm text-muted-foreground py-8"
+                  className="text-center text-sm text-zinc-600 py-8"
                 >
                   Cargando…
                 </TableCell>
@@ -159,7 +166,7 @@ function LegajosContent() {
               <TableRow>
                 <TableCell
                   colSpan={4}
-                  className="text-center text-sm text-muted-foreground py-8"
+                  className="text-center text-sm text-zinc-600 py-8"
                 >
                   Sin resultados.
                 </TableCell>
@@ -167,18 +174,18 @@ function LegajosContent() {
             )}
             {!loading &&
               data?.items.map((l) => (
-                <TableRow key={l.id} className="cursor-pointer">
-                  <TableCell className="font-mono text-xs">
+                <TableRow key={l.id} className="cursor-pointer border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
+                  <TableCell className="font-mono text-xs text-zinc-400">
                     <Link href={`/rrhh/legajos/${l.id}`} className="block">
                       {l.codigo}
                     </Link>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="text-zinc-100">
                     <Link href={`/rrhh/legajos/${l.id}`} className="block">
                       {l.nombre}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="text-zinc-500">
                     {l.sector ?? "—"}
                   </TableCell>
                 </TableRow>
@@ -189,7 +196,7 @@ function LegajosContent() {
 
       {/* Paginación */}
       <div className="flex items-center justify-between mt-4">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-zinc-500">
           {total > 0
             ? `Mostrando ${from}–${to} de ${total.toLocaleString("es-AR")}`
             : ""}
@@ -203,7 +210,7 @@ function LegajosContent() {
           >
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <span className="text-sm">
+          <span className="text-sm text-zinc-400">
             Página {page} de {totalPages}
           </span>
           <Button
@@ -216,6 +223,7 @@ function LegajosContent() {
           </Button>
         </div>
       </div>
+    </div>
     </div>
   );
 }

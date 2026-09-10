@@ -42,11 +42,11 @@ export function LugarSelect({
   };
 
   return (
-    <label className="text-sm">
+    <label className="text-sm text-zinc-300">
       Lugar
       <div className="mt-1 flex gap-1">
         <select
-          className="w-full border rounded px-2 py-1"
+          className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-yellow-400"
           value={value ?? ""}
           onChange={(e) =>
             onChange(e.target.value ? Number(e.target.value) : null)
@@ -63,7 +63,7 @@ export function LugarSelect({
           type="button"
           onClick={agregarLugar}
           title="Agregar lugar nuevo"
-          className="shrink-0 rounded border px-2 text-sm text-slate-600 hover:bg-slate-100"
+          className="shrink-0 rounded-md border border-zinc-700 px-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400 transition-colors"
         >
           +
         </button>

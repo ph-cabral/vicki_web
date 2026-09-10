@@ -96,7 +96,7 @@ function TablaPremios({
 
   const Th = ({ campo, children, className = "" }: { campo: Orden; children: ReactNode; className?: string }) => (
     <TableHead
-      className={`cursor-pointer select-none hover:text-foreground ${orden === campo ? "text-foreground" : "text-muted-foreground"} ${className}`}
+      className={`cursor-pointer select-none px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap border-b border-zinc-800 hover:text-zinc-200 ${orden === campo ? "text-yellow-400" : "text-zinc-500"} ${className}`}
       onClick={() => setOrden(campo)}
       title="Ordenar por esta columna"
     >
@@ -105,14 +105,14 @@ function TablaPremios({
   );
 
   return (
-    <section className="rounded-md border">
-      <header className="px-4 py-3 border-b">
-        <h2 className="text-base font-medium">{titulo}</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">{subtitulo}</p>
+    <section className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
+      <header className="px-4 py-3 border-b border-zinc-800">
+        <h2 className="text-yellow-400 font-bold text-sm uppercase tracking-wide">{titulo}</h2>
+        <p className="text-xs text-zinc-500 mt-1">{subtitulo}</p>
       </header>
       <Table>
         <TableHeader>
-          <TableRow>
+          <TableRow className="bg-[#1f1f1f] hover:bg-[#1f1f1f]">
             <Th campo="nombre">{etiquetaNombre}</Th>
             <Th campo="cantidad" className="text-right">{etiquetaCantidad}</Th>
             <Th campo="errores" className="text-right">Errores</Th>
@@ -122,7 +122,7 @@ function TablaPremios({
         <TableBody>
           {cargando && (
             <TableRow>
-              <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
+              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
                 <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
                 Consultando…
               </TableCell>
@@ -130,32 +130,32 @@ function TablaPremios({
           )}
           {!cargando && !ordenadas.length && (
             <TableRow>
-              <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
+              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
                 Sin datos en el mes
               </TableCell>
             </TableRow>
           )}
           {!cargando &&
             ordenadas.map((f) => (
-              <TableRow key={f.nombre}>
-                <TableCell className="font-medium">{f.nombre}</TableCell>
-                <TableCell className="text-right tabular-nums">{fmtNum(f.cantidad)}</TableCell>
-                <TableCell className={`text-right tabular-nums ${f.errores > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+              <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
+                <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
+                <TableCell className="px-2.5 text-right tabular-nums text-zinc-200">{fmtNum(f.cantidad)}</TableCell>
+                <TableCell className={`px-2.5 text-right tabular-nums ${f.errores > 0 ? "text-[#f85149]" : "text-zinc-600"}`}>
                   {fmtNum(f.errores)}
                 </TableCell>
-                <TableCell className="text-right tabular-nums text-muted-foreground">
+                <TableCell className="px-2.5 text-right tabular-nums text-zinc-400">
                   {fmtPct(f.errores, f.cantidad)}
                 </TableCell>
               </TableRow>
             ))}
         </TableBody>
         {!cargando && ordenadas.length > 0 && (
-          <TableFooter>
-            <TableRow>
-              <TableCell>TOTAL</TableCell>
-              <TableCell className="text-right tabular-nums">{fmtNum(totCant)}</TableCell>
-              <TableCell className="text-right tabular-nums">{fmtNum(totErr)}</TableCell>
-              <TableCell className="text-right tabular-nums">{fmtPct(totErr, totCant)}</TableCell>
+          <TableFooter className="bg-[#1f1f1f]">
+            <TableRow className="hover:bg-[#1f1f1f]">
+              <TableCell className="px-2.5 font-semibold text-zinc-200 border-t border-zinc-700">TOTAL</TableCell>
+              <TableCell className="px-2.5 text-right tabular-nums font-semibold text-yellow-400 border-t border-zinc-700">{fmtNum(totCant)}</TableCell>
+              <TableCell className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700">{fmtNum(totErr)}</TableCell>
+              <TableCell className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700">{fmtPct(totErr, totCant)}</TableCell>
             </TableRow>
           </TableFooter>
         )}
@@ -204,12 +204,16 @@ export default function PremiosPage() {
   );
 
   return (
+    // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
+    // componentes de shadcn (Table, Button, Input) resuelven sus variables
+    // contra el bloque .dark de globals.css, así que alcanza con envolver.
+    <div className="dark min-h-screen bg-[#111111] text-white">
     <div className="container mx-auto px-6 py-8 max-w-6xl">
-      <InicioButton label="Inicio" iconSize={16} className="text-sm text-muted-foreground hover:text-foreground transition-colors mb-4" />
+      <InicioButton label="Inicio" iconSize={16} className="text-sm text-zinc-500 hover:text-yellow-400 transition-colors mb-4" />
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-medium">Premios</h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide">Premios</h1>
+          <p className="text-sm text-zinc-500 mt-1">
             Preparado y controlado de {nombreMes(mes)}, con los errores de cada uno.
           </p>
         </div>
@@ -220,7 +224,7 @@ export default function PremiosPage() {
             max={`${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}`}
             onChange={(e) => setMes(e.target.value)}
             onClick={abrirPicker}
-            className="cursor-pointer bg-background border rounded-md px-3 py-1.5 text-sm outline-none focus:border-foreground/40 transition-colors"
+            className="cursor-pointer bg-zinc-900 border border-zinc-700 text-zinc-200 rounded-md px-3 py-1.5 text-sm outline-none focus:border-yellow-400 transition-colors [color-scheme:dark]"
           />
           <Button variant="outline" size="icon" onClick={() => cargar(mes)} disabled={cargando} title="Recargar">
             <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
@@ -230,7 +234,7 @@ export default function PremiosPage() {
       </header>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 rounded px-3 py-2">
+        <div className="mb-4 flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {error}
         </div>
@@ -254,6 +258,7 @@ export default function PremiosPage() {
           cargando={cargando}
         />
       </div>
+    </div>
     </div>
   );
 }

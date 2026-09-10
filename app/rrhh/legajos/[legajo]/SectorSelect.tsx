@@ -29,10 +29,10 @@ export function SectorSelect({
 
   return (
     <div className="grid grid-cols-2 gap-3">
-      <label className="text-sm">
+      <label className="text-sm text-zinc-300">
         Sector
         <select
-          className="mt-1 w-full border rounded px-2 py-1"
+          className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 outline-none focus:border-yellow-400"
           value={value ?? ""}
           onChange={(e) =>
             onChange(e.target.value ? Number(e.target.value) : null)
@@ -51,10 +51,10 @@ export function SectorSelect({
         </select>
       </label>
 
-      <label className="text-sm">
+      <label className="text-sm text-zinc-300">
         Área
         <input
-          className="mt-1 w-full border rounded px-2 py-1 bg-slate-100 text-slate-500"
+          className="mt-1 w-full rounded-md border border-zinc-800 bg-zinc-800/60 px-2 py-1 text-zinc-500"
           value={areaNombre}
           disabled
           readOnly

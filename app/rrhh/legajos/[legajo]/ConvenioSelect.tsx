@@ -78,14 +78,14 @@ export function ConvenioSelect({
   };
 
   const selectCls =
-    "h-9 w-full rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-slate-500";
+    "h-9 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 outline-none focus:border-yellow-400";
   const btnCls =
-    "h-9 shrink-0 rounded-md border border-slate-300 px-2 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-40";
+    "h-9 shrink-0 rounded-md border border-zinc-700 px-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400 disabled:opacity-40 transition-colors";
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <label className="block">
-        <span className="mb-1 block text-xs font-medium text-slate-600">Convenio</span>
+        <span className="mb-1 block text-xs font-medium text-zinc-400">Convenio</span>
         <div className="flex gap-1">
           <select
             className={selectCls}
@@ -112,7 +112,7 @@ export function ConvenioSelect({
       </label>
 
       <label className="block">
-        <span className="mb-1 block text-xs font-medium text-slate-600">Categoría</span>
+        <span className="mb-1 block text-xs font-medium text-zinc-400">Categoría</span>
         <div className="flex gap-1">
           <select
             className={selectCls}

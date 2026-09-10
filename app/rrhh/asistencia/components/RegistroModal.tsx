@@ -401,7 +401,7 @@ export function RegistroButton({
       {open &&
         createPortal(
           <div
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4"
+            className="dark fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 text-white"
             onClick={close}
           >
             <div
@@ -426,7 +426,7 @@ export function RegistroButton({
               </div>
 
               {error && (
-                <p className="mb-3 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                <p className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                   {error}
                 </p>
               )}
@@ -438,7 +438,7 @@ export function RegistroButton({
                       type="button"
                       onClick={() => guardarSimple(true)}
                       disabled={saving}
-                      className="mb-2 text-xs text-muted-foreground hover:text-red-600 hover:underline disabled:opacity-50"
+                      className="mb-2 text-xs text-muted-foreground hover:text-red-400 hover:underline disabled:opacity-50"
                     >
                       Quitar {tipo === "estado" ? "estado" : "novedad"} actual
                     </button>
@@ -469,7 +469,7 @@ export function RegistroButton({
                             className={cn(
                               "absolute -right-1 -top-1 rounded-full border bg-background p-0.5",
                               op.genera_calendario
-                                ? "text-indigo-600 border-indigo-300"
+                                ? "text-indigo-300 border-indigo-500/40"
                                 : "text-muted-foreground/50 border-transparent",
                             )}
                           >
@@ -528,7 +528,7 @@ export function RegistroButton({
                       type="button"
                       onClick={() => guardarSimple(false)}
                       disabled={saving}
-                      className="rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                     >
                       {saving ? "Guardando…" : "Guardar"}
                     </button>
@@ -586,9 +586,9 @@ export function RegistroButton({
                               className={cn(
                                 "h-7 w-7 mx-auto rounded text-xs transition-colors",
                                 isEdge
-                                  ? "bg-indigo-600 text-white hover:opacity-90"
+                                  ? "bg-yellow-400 text-black font-semibold hover:opacity-90"
                                   : inRange
-                                    ? "bg-indigo-100 text-indigo-800"
+                                    ? "bg-yellow-400/15 text-yellow-300"
                                     : "hover:bg-accent",
                               )}
                             >
@@ -634,7 +634,7 @@ export function RegistroButton({
                       type="button"
                       disabled={!rangeStart || !rangeEnd || !horasDiaValida}
                       onClick={() => setStep("calendario")}
-                      className="rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                     >
                       Aceptar
                     </button>
@@ -657,7 +657,7 @@ export function RegistroButton({
                     gente que tiene que verlo).
                   </p>
                   {calendariosError && (
-                    <p className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                    <p className="mb-2 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                       {calendariosError}
                     </p>
                   )}
@@ -754,7 +754,7 @@ export function RegistroButton({
                       type="button"
                       onClick={confirmarRango}
                       disabled={saving || !calendarioId}
-                      className="rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                      className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                     >
                       {saving ? "Registrando…" : "Registrar"}
                     </button>
@@ -769,7 +769,7 @@ export function RegistroButton({
       {nuevoEmailOpen &&
         createPortal(
           <div
-            className="fixed inset-0 z-[300] flex items-center justify-center bg-black/40 p-4"
+            className="dark fixed inset-0 z-[300] flex items-center justify-center bg-black/60 p-4 text-white"
             onClick={() => !nuevoEmailSaving && setNuevoEmailOpen(false)}
           >
             <div
@@ -791,7 +791,7 @@ export function RegistroButton({
                 futuros registros.
               </p>
               {nuevoEmailError && (
-                <p className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                <p className="mb-2 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                   {nuevoEmailError}
                 </p>
               )}
@@ -823,7 +823,7 @@ export function RegistroButton({
                   type="button"
                   onClick={guardarNuevoEmail}
                   disabled={nuevoEmailSaving || !EMAIL_RE.test(nuevoEmailValor.trim())}
-                  className="rounded-md border bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                 >
                   {nuevoEmailSaving ? "Guardando…" : "Guardar"}
                 </button>
