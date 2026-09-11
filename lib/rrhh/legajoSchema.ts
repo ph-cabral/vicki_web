@@ -51,7 +51,9 @@ export const legajoUpdateSchema = z.object({
   patologiaEndocrinas: bool, patologiaGinecologicas: bool, patologiaEmbarazo: bool,
   patologiaOtras: bool, patologiaChagas: bool, observacionesSalud: str,
   numeroSolicitud: str, numeroPoliza: str, capitalAsegurado: num,
-  fechaIngresoEmpleo: date, artCompania: str, artNumeroContrato: str,
+  // fechaIngresoEmpleo se sacó (2026-09-11): la fecha de ingreso es
+  // sólo fechaInicio.
+  artCompania: str, artNumeroContrato: str,
   artCredencialEntregada: bool,
   // step6
   aceptaClausulas: bool, jurisdiccion: z.string().max(100).optional(),

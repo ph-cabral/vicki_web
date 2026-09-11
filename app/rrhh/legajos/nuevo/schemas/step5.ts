@@ -59,7 +59,9 @@ export const step5Schema = z.object({
   capitalAsegurado: z
     .number({ invalid_type_error: "Numérico" })
     .min(0).optional(),
-  fechaIngresoEmpleo: z.string().optional(),
+  // fechaIngresoEmpleo se sacó (2026-09-11): la única fecha de ingreso que
+  // usa el sistema es legajo.fechaInicio, que ahora se fija sola a la fecha
+  // de creación del legajo (ver POST /api/rrhh/legajos).
 
   // ART
   artCompania: z.string().optional(),

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import {
-  LayoutDashboard, Users, RefreshCw, CalendarX, DollarSign, SearchCheck,
+  Users, RefreshCw, CalendarX, DollarSign, SearchCheck,
   BookOpen, Target, Clock, Trash2, UploadCloud, Loader2, AlertTriangle, Plus, X,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
@@ -11,7 +11,6 @@ import HeadcountTab from "@/app/rrhh/components/tabs/HeadcountTab";
 import NominaTab from "@/app/rrhh/components/tabs/NominaTab";
 import AusentismoTab from "@/app/rrhh/components/tabs/AusentismoTab";
 import HsExtrasTab from "@/app/rrhh/components/tabs/HsExtrasTab";
-import ResumenTab from "@/app/rrhh/components/tabs/ResumenTab";
 import ReclutamientoTab from "@/app/rrhh/components/tabs/ReclutamientoTab";
 import GuardarNominaModal from "@/app/rrhh/components/tabs/GuardarNominaModal";
 import { useRrhhData } from "@/lib/rrhh/store";
@@ -19,8 +18,9 @@ import { parseXlsxFile, FILE_TYPE_LABELS, type ParsedFile, type DetectedFileType
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
 
 // ── Tabs (sin "Carga de Datos": la carga es global por drag&drop) ─────────────
+// Sin "Resumen": la pestaña se sacó (2026-09-11) — "Empleados" (headcount) ya
+// no depende de subir un Excel, así que pasó a ser la pestaña de apertura.
 const TABS = [
-  { id: "resumen", label: "Resumen", icon: LayoutDashboard },
   { id: "headcount", label: "Empleados", icon: Users },
   { id: "nomina", label: "Nómina", icon: DollarSign },
   { id: "ausentismo", label: "Ausentismo", icon: CalendarX },
@@ -33,7 +33,7 @@ const TABS = [
 type TabId = (typeof TABS)[number]["id"];
 
 const TAB_TO_TYPE: Partial<Record<TabId, DetectedFileType>> = {
-  headcount: "empleados", ausentismo: "ausentismos", nomina: "sueldos", hs_extras: "hs_extras",
+  ausentismo: "ausentismos", nomina: "sueldos", hs_extras: "hs_extras",
 };
 const TAB_TITLES: Record<DetectedFileType, string> = {
   empleados: "Empleados", ausentismos: "Ausentismo", sueldos: "Nómina / Sueldos", hs_extras: "Horas Extra", desconocido: "",
@@ -110,7 +110,7 @@ function EmptyState({ onUpload }: { onUpload: () => void }) {
 
 export default function RrhhDashboardPage() {
   const { data, setFiles, removeFile, clearAll, hydrated } = useRrhhData();
-  const [activeTab, setActiveTab] = useState<TabId>("resumen");
+  const [activeTab, setActiveTab] = useState<TabId>("headcount");
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -158,7 +158,9 @@ export default function RrhhDashboardPage() {
 
   // Contenido memoizado: no se recomputa al arrastrar/subir/abrir popover.
   const renderTab = useCallback((tab: TabId) => {
-    if (tab === "resumen") return <ResumenTab data={data} onUpload={openUpload} />;
+    // Empleados / Ausentismo / Hs. Extra ya no dependen del Excel subido:
+    // leen en vivo de Postgres y se renderizan siempre.
+    if (tab === "headcount") return <HeadcountTab />;
     if (tab === "ausentismo") return <AusentismoTab />;
     if (tab === "hs_extras") return <HsExtrasTab />;
     if (tab === "reclutamiento") return <ReclutamientoTab />;
@@ -172,14 +174,11 @@ export default function RrhhDashboardPage() {
             <p className="text-zinc-500 text-sm mt-1">{f.rows.length} registros · {f.fileName}</p>
           </div>
           <div className="space-y-6">
-            {type === "empleados" && <HeadcountTab file={f} />}
             {/* fileEmpleados es opcional: sin él no se puede armar "Neto promedio
                 por área" (necesita el cruce por nombre con ese archivo), pero el
                 guardado en base y el histórico "Costo de Nómina mes a mes" no
                 dependen de subirlo — usan el área real del legajo en la BBDD. */}
             {type === "sueldos" && <NominaTab file={f} fileEmpleados={data.empleados} />}
-            {type === "ausentismos" && <AusentismoTab file={f} />}
-            {type === "hs_extras" && <HsExtrasTab file={f} />}
             <CollapsibleTable file={f} renderTable={(file) => <DataTable file={file} />} />
           </div>
         </div>

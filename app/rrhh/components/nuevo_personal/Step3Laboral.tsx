@@ -84,21 +84,16 @@ export function Step3Laboral({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
-      {/* Fechas */}
+      {/* Fechas — "Fecha de inicio" ya no se carga acá: queda fijada
+          automáticamente a la fecha de creación del legajo (ver POST
+          /api/rrhh/legajos), que es el único dato de "fecha de ingreso" que
+          usa el sistema (se sacó "Fecha ingreso empleo" del paso de seguro,
+          2026-09-11). */}
       <section>
         <h3 className="mb-4 text-lg font-semibold border-b pb-2">
           Fechas y modalidad
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Field label="Fecha de inicio" error={errors.fechaInicio?.message}>
-            <Controller
-              control={control}
-              name="fechaInicio"
-              render={({ field }) => (
-                <DateField value={field.value ?? ""} onChange={field.onChange} />
-              )}
-            />
-          </Field>
           <Field label="Fecha de cese" error={errors.fechaCese?.message}>
             <Controller
               control={control}

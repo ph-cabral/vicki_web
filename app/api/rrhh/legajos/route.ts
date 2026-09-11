@@ -127,7 +127,12 @@ export async function POST(req: NextRequest) {
         comprobanteUrl: step2?.comprobanteUrl ?? null,
         ddjjConformidad: step2?.ddjjConformidad ?? false,
         // step3
-        fechaInicio: step3?.fechaInicio ? new Date(step3.fechaInicio) : null,
+        // Fecha de ingreso = momento en que se crea el legajo, no un dato que
+        // se tipee a mano (se sacó "Fecha ingreso empleo" del wizard/editor y
+        // se dejó de pedir "Fecha de inicio" acá; ver rrhh_fecha_ingreso_unica
+        // en la memoria del proyecto). Es el mismo campo que usan los
+        // gráficos de /rrhh (lib/rrhh/headcountDb.ts).
+        fechaInicio: new Date(),
         fechaCese: step3?.fechaCese ? new Date(step3.fechaCese) : null,
         modalidadContrato: step3?.modalidadContrato ?? null,
         situacionRevista: step3?.situacionRevista ?? null,
@@ -179,9 +184,6 @@ export async function POST(req: NextRequest) {
         numeroSolicitud: step5?.numeroSolicitud ?? null,
         numeroPoliza: step5?.numeroPoliza ?? null,
         capitalAsegurado: step5?.capitalAsegurado ?? null,
-        fechaIngresoEmpleo: step5?.fechaIngresoEmpleo
-          ? new Date(step5.fechaIngresoEmpleo)
-          : null,
         artCompania: step5?.artCompania ?? null,
         artNumeroContrato: step5?.artNumeroContrato ?? null,
         artCredencialEntregada: step5?.artCredencialEntregada ?? false,

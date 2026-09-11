@@ -101,8 +101,11 @@ export const SECTIONS: SectionDef[] = [
     id: "laboral",
     label: "Laboral / Contrato",
     fields: [
+      // "Fecha ingreso empleo" (fechaIngresoEmpleo) se sacó (2026-09-11): la
+      // única fecha de ingreso que usa el sistema es fechaInicio, que se fija
+      // sola a la fecha de creación del legajo — queda editable acá sólo para
+      // corregirla a mano si hace falta.
       { name: "fechaInicio", label: "Fecha de inicio", type: "date" },
-      { name: "fechaIngresoEmpleo", label: "Fecha ingreso empleo", type: "date" },
       { name: "fechaCese", label: "Fecha de cese", type: "date" },
       { name: "modalidadContrato", label: "Modalidad de contrato", type: "text", max: 100 },
       { name: "situacionRevista", label: "Situación de revista", type: "text", max: 20 },

@@ -130,7 +130,9 @@ export function Step5SeguroArt({
         )}
       </section>
 
-      {/* Póliza vida */}
+      {/* Póliza vida — "Fecha de ingreso al empleo" se sacó (2026-09-11): el
+          único dato de fecha de ingreso que usa el sistema es fechaInicio,
+          que ahora se fija sola a la fecha de creación del legajo. */}
       <section>
         <h3 className="mb-4 text-lg font-semibold border-b pb-2">
           Datos de póliza — Seguro de vida
@@ -147,15 +149,6 @@ export function Step5SeguroArt({
               type="number"
               step="0.01"
               {...register("capitalAsegurado", { valueAsNumber: true })}
-            />
-          </Field>
-          <Field label="Fecha de ingreso al empleo" error={errors.fechaIngresoEmpleo?.message}>
-            <Controller
-              control={control}
-              name="fechaIngresoEmpleo"
-              render={({ field }) => (
-                <DateField value={field.value ?? ""} onChange={field.onChange} />
-              )}
             />
           </Field>
         </div>
