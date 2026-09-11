@@ -13,6 +13,7 @@ import AusentismoTab from "@/app/rrhh/components/tabs/AusentismoTab";
 import HsExtrasTab from "@/app/rrhh/components/tabs/HsExtrasTab";
 import ResumenTab from "@/app/rrhh/components/tabs/ResumenTab";
 import ReclutamientoTab from "@/app/rrhh/components/tabs/ReclutamientoTab";
+import GuardarNominaModal from "@/app/rrhh/components/tabs/GuardarNominaModal";
 import { useRrhhData } from "@/lib/rrhh/store";
 import { parseXlsxFile, FILE_TYPE_LABELS, type ParsedFile, type DetectedFileType } from "@/lib/rrhh/parseXlsx";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -114,6 +115,10 @@ export default function RrhhDashboardPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSources, setShowSources] = useState(false);
+  // Excel de sueldos recién soltado/seleccionado: dispara el modal "a qué mes
+  // corresponde" apenas se detecta, sin esperar a que se entre a la pestaña
+  // Nómina ni a que también esté cargado el archivo de empleados (2026-09-11).
+  const [nominaModalFile, setNominaModalFile] = useState<ParsedFile | null>(null);
   const dragCount = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -133,6 +138,10 @@ export default function RrhhDashboardPage() {
         else ignored++;
       });
       if (ok.length) setFiles(ok);
+      // Sueldos recién cargado -> preguntar a qué mes corresponde ya mismo,
+      // sin esperar un click extra en la pestaña Nómina.
+      const sueldos = ok.find((f) => f.type === "sueldos");
+      if (sueldos) setNominaModalFile(sueldos);
       if (!ok.length) setError("No se reconoció ningún archivo (tipo desconocido o ilegible).");
       else if (ignored) setError(`${ok.length} cargado(s), ${ignored} ignorado(s).`);
     } catch {
@@ -164,9 +173,11 @@ export default function RrhhDashboardPage() {
           </div>
           <div className="space-y-6">
             {type === "empleados" && <HeadcountTab file={f} />}
-            {type === "sueldos" && (data.empleados
-              ? <NominaTab file={f} fileEmpleados={data.empleados} />
-              : <p className="text-zinc-500 text-sm">Cargá también el archivo de empleados para ver el costo por área.</p>)}
+            {/* fileEmpleados es opcional: sin él no se puede armar "Neto promedio
+                por área" (necesita el cruce por nombre con ese archivo), pero el
+                guardado en base y el histórico "Costo de Nómina mes a mes" no
+                dependen de subirlo — usan el área real del legajo en la BBDD. */}
+            {type === "sueldos" && <NominaTab file={f} fileEmpleados={data.empleados} />}
             {type === "ausentismos" && <AusentismoTab file={f} />}
             {type === "hs_extras" && <HsExtrasTab file={f} />}
             <CollapsibleTable file={f} renderTable={(file) => <DataTable file={file} />} />
@@ -219,6 +230,14 @@ export default function RrhhDashboardPage() {
             </div>
           )}
         </div>
+      )}
+
+      {nominaModalFile && (
+        <GuardarNominaModal
+          file={nominaModalFile}
+          onCerrar={() => setNominaModalFile(null)}
+          onGuardado={() => setNominaModalFile(null)}
+        />
       )}
 
       <header className="sticky top-0 z-50 bg-[#1A1A1A] border-b-[3px] border-yellow-400 flex items-center justify-between px-8 h-16">

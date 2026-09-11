@@ -47,8 +47,13 @@ export const SECTIONS: SectionDef[] = [
     id: "estado",
     label: "Estado / Identificación",
     fields: [
+      // N° de legajo (ver everwear.legajo.codigo): es el número que trae la
+      // columna "Nro. de Legajo" del Excel de pago de sueldos (2026-09-11,
+      // ver lib/rrhh/nomina.ts) — con esto cargado se puede cruzar cada fila
+      // del Excel contra su área/sector real. No es lo mismo que
+      // `employeeNo` (número de reloj/Hikvision, para fichaje).
+      { name: "codigo", label: "N° de legajo", type: "text", max: 20 },
       { name: "estado", label: "Estado", type: "select", options: OPC.estado, required: true, max: 20 },
-      // { name: "codigo", label: "Código", type: "text" },
       { name: "employeeNo", label: "N° empleado (reloj)", type: "text", max: 50 },
       { name: "anvizId", label: "ID Anviz", type: "text", max: 20 },
     ],

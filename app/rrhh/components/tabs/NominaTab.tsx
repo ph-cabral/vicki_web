@@ -12,11 +12,16 @@ import { nominaKpis, costoPorArea, netoPromedioPorArea } from "@/lib/rrhh/aggreg
 const fmtARS = (n: number) =>
   new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n);
 
-export default function NominaTab({ file, fileEmpleados }: { file: ParsedFile; fileEmpleados: ParsedFile }) {
+export default function NominaTab({ file, fileEmpleados }: { file: ParsedFile; fileEmpleados?: ParsedFile }) {
   const kpis = useMemo(() => nominaKpis(file), [file]);
-  // costos se calcula pero no se grafica acá (se mantiene por paridad con el original)
-  useMemo(() => costoPorArea(file, fileEmpleados), [file, fileEmpleados]);
-  const promedios = useMemo(() => netoPromedioPorArea(fileEmpleados, file), [fileEmpleados, file]);
+  // "Neto promedio por área" y el costo por área (client-side, sin cambios)
+  // sólo se pueden armar si también está cargado el Excel de empleados —
+  // el guardado en base y el histórico de abajo NO lo necesitan.
+  useMemo(() => (fileEmpleados ? costoPorArea(file, fileEmpleados) : []), [file, fileEmpleados]);
+  const promedios = useMemo(
+    () => (fileEmpleados ? netoPromedioPorArea(fileEmpleados, file) : []),
+    [fileEmpleados, file],
+  );
 
   const [modalAbierto, setModalAbierto] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -44,6 +49,9 @@ export default function NominaTab({ file, fileEmpleados }: { file: ParsedFile; f
       </div>
 
       <div className="gap-4">
+        {!fileEmpleados && (
+          <p className="text-zinc-600 text-sm">Cargá también el archivo de empleados para ver el neto promedio por área.</p>
+        )}
         {promedios.length > 0 && (
           <BarChartCard
             height={500}
