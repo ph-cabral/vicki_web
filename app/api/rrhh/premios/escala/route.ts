@@ -45,11 +45,15 @@ function esAmbito(v: unknown): v is Ambito {
 }
 
 /**
- * Los tramos tienen que cubrir la recta de errores SIN huecos ni
- * superposiciones: arrancan en 0, cada `desde` es el `hasta` anterior + 1, y
- * sólo el último puede quedar abierto (`hasta: null`). Si no, un error podría
- * caer en dos tramos (o en ninguno) y el premio saldría distinto según el orden
- * en que se recorra la lista.
+ * Los tramos van en orden y NO se pueden superponer: cada `desde` tiene que ser
+ * mayor que el `hasta` del anterior, y sólo el último puede quedar abierto
+ * (`hasta: null`). Si se superpusieran, un mismo error caería en dos tramos y el
+ * premio saldría distinto según el orden en que se recorra la lista.
+ *
+ * Los HUECOS sí se permiten (el primero puede arrancar arriba de 0, o puede
+ * faltar un pedazo en el medio): la escala no siempre cubre desde cero. Una
+ * cantidad de errores que cae en un hueco queda sin premio definido — la
+ * pantalla lo muestra como "—" y el modal lo avisa antes de guardar.
  */
 function validarTramos(raw: unknown): { ok: true; tramos: Tramo[] } | { ok: false; error: string } {
   if (!Array.isArray(raw) || raw.length === 0)
@@ -77,11 +81,11 @@ function validarTramos(raw: unknown): { ok: true; tramos: Tramo[] } | { ok: fals
       return { ok: false, error: `Tramo ${n}: sólo el último puede quedar sin tope` };
 
     const previo = tramos[i - 1];
-    if (i === 0) {
-      if (desde !== 0) return { ok: false, error: "El primer tramo tiene que arrancar en 0 errores" };
-    } else if (previo.hasta === null || desde !== previo.hasta + 1) {
-      return { ok: false, error: `Tramo ${n}: tiene que arrancar en ${(previo.hasta ?? 0) + 1} (sin huecos ni superposición)` };
-    }
+    if (previo && (previo.hasta === null || desde <= previo.hasta))
+      return {
+        ok: false,
+        error: `Tramo ${n}: tiene que arrancar después de ${previo.hasta ?? "el tramo anterior"} (los tramos no se pueden superponer)`,
+      };
 
     tramos.push({ desde, hasta, descuento: Math.round(descuento * 100) / 100 });
   }

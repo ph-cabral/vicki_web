@@ -18,11 +18,16 @@ import {
 // Márgenes de premio — tramos "de X a Y errores → resta Z %", una escala por
 // ámbito (Preparadores / Mesa de Control).
 //
-// El formulario NO pide el "desde" de cada tramo: lo calcula (el primero
-// arranca en 0 y cada uno sigue al anterior), así la escala no puede quedar con
-// huecos ni superpuesta y se carga leyendo lo mismo que se dice en voz alta:
-// "hasta 5 no resta nada, hasta 10 resta 25". El último tramo es siempre
-// abierto ("en adelante").
+// Los DOS extremos de cada tramo se cargan a mano (el "desde" también: no
+// siempre arranca en 0 ni los cortes son los mismos). Para que la carga normal
+// no sea tediosa, al escribir un "hasta" el tramo siguiente se corre solo a
+// hasta + 1 — se puede volver a pisar a mano si se quiere otra cosa. El último
+// tramo es siempre abierto ("en adelante").
+//
+// La única regla dura es que los tramos vayan en orden y no se superpongan (un
+// error no puede caer en dos tramos). Los huecos SÍ se permiten, porque a veces
+// la escala arranca más arriba: la cantidad de errores que cae en un hueco
+// queda sin premio definido ("—" en la tabla) y el modal lo avisa abajo.
 //
 // Cada guardado escribe la versión del mes elegido en "Vigente desde": rige de
 // ese mes en adelante y no toca los meses anteriores, que siguen con la versión
@@ -31,7 +36,7 @@ import {
 // esconder el botón): el resto ve la escala en modo lectura.
 // ──────────────────────────────────────────────────────────────────────────────
 
-type Fila = { hasta: string; descuento: string };
+type Fila = { desde: string; hasta: string; descuento: string };
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const mesActual = () => {
@@ -41,42 +46,60 @@ const mesActual = () => {
 
 const aFilas = (tramos: Tramo[]): Fila[] =>
   tramos.map((t) => ({
+    desde: String(t.desde),
     hasta: t.hasta === null ? "" : String(t.hasta),
     descuento: String(t.descuento),
   }));
 
-/** Filas del formulario -> tramos con `desde` calculado y último abierto. */
+/** Filas del formulario -> tramos (el último siempre abierto). */
 function aTramos(filas: Fila[]): { ok: true; tramos: Tramo[] } | { ok: false; error: string } {
   const tramos: Tramo[] = [];
-  let desde = 0;
   for (let i = 0; i < filas.length; i++) {
     const ultima = i === filas.length - 1;
     const f = filas[i];
+    const n = i + 1;
+
+    const desde = Number(f.desde);
+    if (!Number.isInteger(desde) || desde < 0)
+      return { ok: false, error: `Tramo ${n}: "desde" tiene que ser un entero de 0 o más` };
+
     const descuento = Number(String(f.descuento).replace(",", "."));
     if (!Number.isFinite(descuento) || descuento < 0 || descuento > 100)
-      return { ok: false, error: `Tramo ${i + 1}: el descuento va de 0 a 100 %` };
+      return { ok: false, error: `Tramo ${n}: el descuento va de 0 a 100 %` };
 
     let hasta: number | null = null;
     if (!ultima) {
       hasta = Number(f.hasta);
       if (!Number.isInteger(hasta) || hasta < desde)
-        return { ok: false, error: `Tramo ${i + 1}: "hasta" tiene que ser un entero de ${desde} o más` };
+        return { ok: false, error: `Tramo ${n}: "hasta" tiene que ser un entero de ${desde} o más` };
     }
+
+    const previo = tramos[i - 1];
+    if (previo && (previo.hasta === null || desde <= previo.hasta))
+      return { ok: false, error: `Tramo ${n}: tiene que arrancar después de ${previo.hasta ?? "el tramo anterior"} (no se pueden superponer)` };
+
     tramos.push({ desde, hasta, descuento: Math.round(descuento * 100) / 100 });
-    if (hasta !== null) desde = hasta + 1;
   }
   return { ok: true, tramos };
 }
 
-/** El "desde" que le toca a la fila i según los "hasta" anteriores. */
-function desdeDe(filas: Fila[], i: number): number {
-  let desde = 0;
-  for (let k = 0; k < i; k++) {
-    const h = Number(filas[k].hasta);
-    if (!Number.isInteger(h)) return desde;
-    desde = h + 1;
+/**
+ * Cantidades de errores que no entran en ningún tramo: el arranque (si el
+ * primero no empieza en 0) y los huecos entre tramos. No bloquea el guardado —
+ * puede ser a propósito —, pero se avisa porque esa gente queda con premio "—".
+ */
+function huecosDe(tramos: Tramo[]): string[] {
+  const huecos: string[] = [];
+  if (tramos.length && tramos[0].desde > 0)
+    huecos.push(tramos[0].desde === 1 ? "0" : `0 a ${tramos[0].desde - 1}`);
+  for (let i = 1; i < tramos.length; i++) {
+    const previo = tramos[i - 1].hasta;
+    if (previo === null) continue;
+    const desde = tramos[i].desde;
+    if (desde > previo + 1)
+      huecos.push(desde - 1 === previo + 1 ? `${previo + 1}` : `${previo + 1} a ${desde - 1}`);
   }
-  return desde;
+  return huecos;
 }
 
 export function MargenesModal({
@@ -132,19 +155,49 @@ export function MargenesModal({
   }, [ambito, vigencia]);
 
   const setFila = (i: number, campo: keyof Fila, valor: string) =>
-    setFilas((prev) => prev.map((f, k) => (k === i ? { ...f, [campo]: valor } : f)));
+    setFilas((prev) => {
+      const next = prev.map((f, k) => (k === i ? { ...f, [campo]: valor } : f));
+      // Comodidad de carga: al escribir un "hasta", el tramo siguiente arranca
+      // en hasta + 1. Sólo se corrige si quedaría superpuesto o pegado, así un
+      // hueco puesto a mano no se pisa.
+      if (campo === "hasta" && next[i + 1]) {
+        const hasta = Number(valor);
+        const sig = Number(next[i + 1].desde);
+        if (Number.isInteger(hasta) && (!Number.isInteger(sig) || sig <= hasta))
+          next[i + 1] = { ...next[i + 1], desde: String(hasta + 1) };
+      }
+      return next;
+    });
 
   const agregar = () =>
     setFilas((prev) => {
-      if (!prev.length) return [{ hasta: "", descuento: "0" }];
-      // El nuevo tramo se inserta ANTES del abierto: el "en adelante" siempre
-      // queda al final.
+      if (!prev.length) return [{ desde: "0", hasta: "", descuento: "0" }];
+      // El nuevo tramo se inserta ANTES del abierto (el "en adelante" siempre
+      // queda al final) y arranca donde termina el anterior.
       const ultimo = prev[prev.length - 1];
-      return [...prev.slice(0, -1), { hasta: "", descuento: "0" }, ultimo];
+      const anterior = prev[prev.length - 2];
+      const finAnterior = anterior ? Number(anterior.hasta) : NaN;
+      const nuevo: Fila = {
+        desde: Number.isInteger(finAnterior) ? String(finAnterior + 1) : ultimo.desde,
+        hasta: "",
+        descuento: "0",
+      };
+      return [...prev.slice(0, -1), nuevo, { ...ultimo, desde: "" }];
     });
 
   const quitar = (i: number) =>
-    setFilas((prev) => (prev.length <= 1 ? prev : prev.filter((_, k) => k !== i)));
+    setFilas((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((_, k) => k !== i);
+      // Si se borró un tramo del medio queda un hueco: se cierra corriendo el
+      // que ocupó su lugar al final del anterior (lo mismo que hace "hasta").
+      const anterior = next[i - 1];
+      if (anterior && next[i]) {
+        const fin = Number(anterior.hasta);
+        if (Number.isInteger(fin)) next[i] = { ...next[i], desde: String(fin + 1) };
+      }
+      return next;
+    });
 
   const guardar = async () => {
     const v = aTramos(filas);
@@ -237,19 +290,26 @@ export function MargenesModal({
 
           {/* Tramos */}
           <div className="rounded-lg border border-zinc-800 overflow-hidden">
-            <div className="grid grid-cols-[1fr_auto] items-center gap-2 bg-[#1f1f1f] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-              <span>Errores del mes</span>
+            <div className="flex items-center justify-between gap-2 bg-[#1f1f1f] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <span>Desde / hasta errores del mes</span>
               <span>Resta del premio</span>
             </div>
             <div className="divide-y divide-zinc-800/60">
               {filas.map((f, i) => {
                 const ultima = i === filas.length - 1;
-                const desde = desdeDe(filas, i);
                 return (
                   <div key={i} className="flex items-center gap-2 px-3 py-2 text-sm">
-                    <span className="w-10 shrink-0 text-right tabular-nums text-zinc-500">
-                      {desde}
-                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={f.desde}
+                      placeholder="0"
+                      onChange={(e) => setFila(i, "desde", e.target.value)}
+                      disabled={!puedeEditar}
+                      title="Desde cuántos errores empieza el tramo"
+                      className="w-16 shrink-0 rounded-md border border-zinc-700 bg-[#1f1f1f] px-2 py-1 text-right tabular-nums text-zinc-100 outline-none focus:border-yellow-400 disabled:opacity-60"
+                    />
                     {ultima ? (
                       <span className="flex-1 text-xs text-zinc-500">o más (en adelante)</span>
                     ) : (
@@ -257,12 +317,13 @@ export function MargenesModal({
                         <span className="text-xs text-zinc-600">a</span>
                         <input
                           type="number"
-                          min={desde}
+                          min={Number(f.desde) || 0}
                           step={1}
                           value={f.hasta}
                           onChange={(e) => setFila(i, "hasta", e.target.value)}
                           disabled={!puedeEditar}
-                          className="w-20 rounded-md border border-zinc-700 bg-[#1f1f1f] px-2 py-1 text-right tabular-nums text-zinc-100 outline-none focus:border-yellow-400 disabled:opacity-60"
+                          title="Hasta cuántos errores llega el tramo"
+                          className="w-16 rounded-md border border-zinc-700 bg-[#1f1f1f] px-2 py-1 text-right tabular-nums text-zinc-100 outline-none focus:border-yellow-400 disabled:opacity-60"
                         />
                         <span className="flex-1 text-xs text-zinc-600">errores</span>
                       </>
@@ -275,7 +336,8 @@ export function MargenesModal({
                       value={f.descuento}
                       onChange={(e) => setFila(i, "descuento", e.target.value)}
                       disabled={!puedeEditar}
-                      className="w-20 rounded-md border border-zinc-700 bg-[#1f1f1f] px-2 py-1 text-right tabular-nums text-zinc-100 outline-none focus:border-yellow-400 disabled:opacity-60"
+                      title="Porcentaje del premio que se resta en este tramo"
+                      className="w-16 shrink-0 rounded-md border border-zinc-700 bg-[#1f1f1f] px-2 py-1 text-right tabular-nums text-zinc-100 outline-none focus:border-yellow-400 disabled:opacity-60"
                     />
                     <span className="text-xs text-zinc-500">%</span>
                     {puedeEditar && (
@@ -305,20 +367,29 @@ export function MargenesModal({
             )}
           </div>
 
-          {/* Cómo queda leído en criollo */}
+          {/* Cómo queda leído en criollo + aviso de errores sin tramo */}
           {(() => {
             const v = aTramos(filas);
             if (!v.ok) return null;
+            const huecos = huecosDe(v.tramos);
             return (
-              <p className="text-[11px] leading-relaxed text-zinc-500">
-                {v.tramos.map((t, i) => (
-                  <span key={i}>
-                    {i > 0 && " · "}
-                    {rotuloTramo(t)} err. → cobra{" "}
-                    <strong className="text-zinc-300">{Math.max(0, 100 - t.descuento)}%</strong>
-                  </span>
-                ))}
-              </p>
+              <div className="space-y-2">
+                <p className="text-[11px] leading-relaxed text-zinc-500">
+                  {v.tramos.map((t, i) => (
+                    <span key={i}>
+                      {i > 0 && " · "}
+                      {rotuloTramo(t)} err. → cobra{" "}
+                      <strong className="text-zinc-300">{Math.max(0, 100 - t.descuento)}%</strong>
+                    </span>
+                  ))}
+                </p>
+                {huecos.length > 0 && (
+                  <p className="rounded-lg border border-amber-400/40 bg-amber-400/5 px-3 py-2 text-[11px] text-amber-300">
+                    Sin tramo: {huecos.join(" · ")} error(es). Quien caiga ahí queda con premio
+                    &quot;—&quot;. Si no es a propósito, cerrá el hueco.
+                  </p>
+                )}
+              </div>
             );
           })()}
 

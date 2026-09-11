@@ -52,14 +52,19 @@ export function escalaVigente(
   return elegida;
 }
 
-/** % que se resta del premio con esa cantidad de errores (null = sin escala). */
+/**
+ * % que se resta del premio con esa cantidad de errores. Devuelve null cuando
+ * no hay escala cargada Y TAMBIÉN cuando ese número de errores no entra en
+ * ningún tramo (la escala puede arrancar arriba de 0 o tener un hueco): mejor
+ * mostrar "—" que inventar un premio.
+ */
 export function descuentoDe(tramos: Tramo[] | undefined, errores: number): number | null {
   if (!tramos?.length) return null;
   for (const t of tramos) {
     if (errores >= t.desde && (t.hasta === null || errores <= t.hasta)) return t.descuento;
   }
-  // Con tramos contiguos (los valida la API) esto no debería pasar; si pasara,
-  // es mejor no inventar un premio que devolver uno equivocado.
+  // Cayó en un hueco de la escala (o por debajo del primer tramo): sin premio
+  // definido. El modal de Márgenes avisa de los huecos al cargarla.
   return null;
 }
 
