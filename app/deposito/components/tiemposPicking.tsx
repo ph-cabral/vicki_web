@@ -218,7 +218,7 @@ export function TiemposPickingTab({
     if (eje === "operario") {
       // por volumen: el que más pickea, arriba
       const tot = (k: string) =>
-        [...(filas.get(k)?.values() ?? [])].reduce((s, c) => s + c.items, 0);
+        [...(filas.get(k)?.values() ?? [])].reduce((s, c) => s + c.recol, 0);
       claves.sort((a, b) => tot(b) - tot(a));
     } else {
       claves.sort((a, b) => (ordenFila.get(a) ?? 0) - (ordenFila.get(b) ?? 0));
@@ -233,11 +233,11 @@ export function TiemposPickingTab({
     for (const [k, fila] of filas) {
       const tf = { items: 0, hs: 0 };
       for (const [h, c] of fila) {
-        const v = porHora(c.items, c.hs.size);
+        const v = porHora(c.recol, c.hs.size);
         if (v > max) max = v;
-        tf.items += c.items; tf.hs += c.hs.size;
+        tf.items += c.recol; tf.hs += c.hs.size;
         const tc = totalCol.get(h) ?? { items: 0, hs: 0 };
-        tc.items += c.items; tc.hs += c.hs.size;
+        tc.items += c.recol; tc.hs += c.hs.size;
         totalCol.set(h, tc);
       }
       totalFila.set(k, tf);
@@ -396,7 +396,7 @@ export function TiemposPickingTab({
             <span key={t} className="w-4 h-4 rounded-[3px]" style={{ background: t }} />
           ))}
           <span>Más</span>
-          {mapa.max > 0 && <span className="text-zinc-600">· máx {fmtN(Math.round(mapa.max))} ítems/h</span>}
+          {mapa.max > 0 && <span className="text-zinc-600">· máx {fmtN(Math.round(mapa.max))} recolectados/h</span>}
         </div>
       </div>
 
@@ -424,7 +424,7 @@ export function TiemposPickingTab({
                   Prom./h
                 </th>
                 <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800 text-right">
-                  Ítems
+                  Recolect.
                 </th>
               </tr>
             </thead>
@@ -439,7 +439,7 @@ export function TiemposPickingTab({
                     </td>
                     {mapa.cols.map((h) => {
                       const c = fila.get(h);
-                      const v = c ? porHora(c.items, c.hs.size) : 0;
+                      const v = c ? porHora(c.recol, c.hs.size) : 0;
                       const n = nivel(v, mapa.max);
                       const prom = c && c.cron > 0 ? c.seg / c.cron : null;
                       const hsTxt = c
@@ -452,7 +452,7 @@ export function TiemposPickingTab({
                           <div
                             title={
                               c
-                                ? `${k} · ${String(h).padStart(2, "0")}:00\n${fmtRate(v)} ítems por hora\n${fmtN(c.items)} ítems en total (${fmtN(c.recol)} cumplidos) · ${hsTxt}\n${prom ? `${fmtSeg(prom)} promedio por ítem` : "sin tiempos cronometrados"}`
+                                ? `${k} · ${String(h).padStart(2, "0")}:00\n${fmtRate(v)} recolectados por hora\n${fmtN(c.recol)} recolectados de ${fmtN(c.items)} pickeados · ${hsTxt}\n${prom ? `${fmtSeg(prom)} promedio por ítem` : "sin tiempos cronometrados"}`
                                 : `${k} · ${String(h).padStart(2, "0")}:00 — sin pickeos`
                             }
                             className={`h-7 rounded-[3px] flex items-center justify-center tabular-nums text-[11px] ${
@@ -487,7 +487,7 @@ export function TiemposPickingTab({
                   return (
                     <td
                       key={h}
-                      title={tc ? `${fmtN(tc.items)} ítems en total · ${fmtN(tc.hs)} horas-operario` : undefined}
+                      title={tc ? `${fmtN(tc.items)} recolectados en total · ${fmtN(tc.hs)} horas-operario` : undefined}
                       className="bg-[#1f1f1f] px-1 py-1.5 text-center tabular-nums text-[11px] text-zinc-400"
                     >
                       {tc ? fmtRate(porHora(tc.items, tc.hs)) : ""}
@@ -507,8 +507,9 @@ export function TiemposPickingTab({
       </div>
 
       <p className="text-[11px] text-zinc-600 mt-2">
-        Cada celda es ítems por hora de un operario: ítems de la franja ÷ horas-operario con
-        pickeos (en &quot;Por operario&quot;, los días que trabajó esa hora).
+        Cada celda es ítems recolectados (cantidad cumplida &gt; 0) por hora de un operario:
+        recolectados de la franja ÷ horas-operario con pickeos (en &quot;Por operario&quot;, los
+        días que trabajó esa hora) — mismo criterio que la matriz de Pedidos Preparados.
       </p>
       {kpis.sinCron > 0 && (
         <p className="text-[11px] text-zinc-600 mt-1">
