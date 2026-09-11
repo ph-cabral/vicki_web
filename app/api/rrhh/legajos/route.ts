@@ -19,6 +19,7 @@ export async function GET(req: NextRequest) {
         OR: [
           { nombre: { contains: search, mode: "insensitive" as const } },
           { sector: { contains: search, mode: "insensitive" as const } },
+          { sectorRel: { nombre: { contains: search, mode: "insensitive" as const } } },
           { codigo: { contains: search, mode: "insensitive" as const } },
           { dni: { contains: search } },
         ],
@@ -35,6 +36,7 @@ export async function GET(req: NextRequest) {
           codigo: true,
           nombre: true,
           sector: true,
+          sectorRel: { select: { nombre: true } },
           estado: true,
         },
         orderBy: [{ nombre: "asc" }],
@@ -43,8 +45,18 @@ export async function GET(req: NextRequest) {
       }),
     ]);
 
+    // El sector "efectivo" es el del catálogo (sectorRel, vía el selector del
+    // legajo individual) si está asignado; si no, se cae al campo de texto
+    // legado. Mismo criterio que usa updateLegajo() al resincronizar
+    // usuario.sector — así la vista general no muestra "—" para legajos que
+    // sí tienen sector puesto en su ficha.
+    const itemsConSector = items.map(({ sectorRel, ...l }) => ({
+      ...l,
+      sector: sectorRel?.nombre ?? l.sector ?? null,
+    }));
+
     return NextResponse.json({
-      items,
+      items: itemsConSector,
       page,
       pageSize,
       total,
