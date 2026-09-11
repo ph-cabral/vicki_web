@@ -2674,6 +2674,10 @@ def fetch_contenedor(tag: str):
 # El promedio se calcula en el front como SEG_TOTAL / CRONOMETRADOS.
 PICK_SEG_MAX = 600
 
+# PersonalNombre es char(25) con padding: se devuelve con LTRIM(RTRIM) para que
+# coincida con el nombre del selector de operario del header (que viene trimeado
+# de parseDeposito). Sin el trim, elegir un operario dejaba el tab vacio.
+#
 # El operario NO se filtra en SQL: se devuelve el nombre y el front recorta con
 # esFilaProductiva() de lib/deposito/parseDeposito.ts, que es donde vive la regla
 # de gerentes/no-operativos. Una sola fuente de verdad para todas las pantallas.
@@ -2685,7 +2689,7 @@ PICK_SEG_MAX = 600
 SQL_PICK_HEATMAP = f"""
 SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103)  AS [FECHA],
-    P.PersonalNombre                                    AS [OPERARIO],
+    LTRIM(RTRIM(P.PersonalNombre))                      AS [OPERARIO],
     DATEPART(HOUR, c.momento)                           AS [HORA],
     COUNT(*)                                            AS [ITEMS],
     SUM(CASE WHEN it.OTItemCantCumplida > 0 THEN 1 ELSE 0 END)          AS [RECOLECTADOS],
@@ -2721,7 +2725,7 @@ SQL_PICK_OTS = f"""
 SELECT
     OT.OTId                                              AS [OT],
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103)   AS [FECHA],
-    P.PersonalNombre                                     AS [OPERARIO],
+    LTRIM(RTRIM(P.PersonalNombre))                       AS [OPERARIO],
     CONVERT(varchar(8), COALESCE(i.ini, NULLIF(OT.OTFechaHoraPickIni, '1753-01-01')), 108) AS [INICIO],
     CONVERT(varchar(8), COALESCE(i.fin, NULLIF(OT.OTFechaHoraPickFin, '1753-01-01')), 108) AS [FIN],
     DATEDIFF(SECOND,

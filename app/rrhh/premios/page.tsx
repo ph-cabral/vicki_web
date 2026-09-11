@@ -18,7 +18,7 @@ import {
 import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 import {
   escalaVigente,
-  premioDe,
+  premiadoDe,
   usePremioEscala,
   type Tramo,
   type VersionEscala,
@@ -42,11 +42,13 @@ import { MargenesModal } from "./MargenesModal";
 // /deposito y /deposito/pedidos, para que la lista de preparadores sea la
 // misma en las tres vistas.
 //
-// Columna "Premio": sale de la escala de márgenes (tramos de errores -> % que
-// se resta), que se carga desde el botón "Márgenes" y está versionada por mes
-// — ver lib/rrhh/premioEscala.ts. Cada tabla usa la escala de SU ámbito
-// vigente para el mes elegido; si para ese mes no hay ninguna versión cargada,
-// la columna queda en "—" (no se asume 100 %).
+// Última columna ("Premiado"): la escala de márgenes toma el % de error de la
+// fila (la columna anterior), lo ubica en su tramo y ESE porcentaje se le resta
+// a la cantidad — o sea ítems − margen. La escala se carga desde el botón
+// "Márgenes", es por ámbito y está versionada por mes (ver
+// lib/rrhh/premioEscala.ts): cada tabla usa la que regía en el mes elegido. Si
+// para ese mes no hay ninguna versión cargada, la columna queda en "—" (no se
+// asume premio completo).
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface PreparadorRow { operario: string; items: number; errores: number }
@@ -86,21 +88,24 @@ function ordenar(filas: Fila[], orden: Orden, tramos?: Tramo[]): Fila[] {
   if (orden === "errores") return copia.sort((a, b) => b.errores - a.errores || b.cantidad - a.cantidad);
   if (orden === "pct") return copia.sort((a, b) => pct(b) - pct(a) || b.errores - a.errores);
   if (orden === "premio")
-    return copia.sort(
-      (a, b) => (premioDe(tramos, a.errores) ?? -1) - (premioDe(tramos, b.errores) ?? -1) || b.errores - a.errores,
-    );
+    return copia.sort((a, b) => {
+      const pa = premiadoDe(tramos, a.cantidad, a.errores)?.premiado ?? -1;
+      const pb = premiadoDe(tramos, b.cantidad, b.errores)?.premiado ?? -1;
+      return pb - pa || b.cantidad - a.cantidad;
+    });
   return copia.sort((a, b) => b.cantidad - a.cantidad);
 }
 
-/** Verde el premio entero, rojo el perdido, ámbar cualquier punto intermedio. */
-const colorPremio = (p: number) =>
-  p >= 100 ? "text-[#3fb950]" : p <= 0 ? "text-[#f85149]" : "text-amber-400";
+/** Verde si no se le restó nada, rojo si perdió todo, ámbar en el medio. */
+const colorPremio = (descuento: number) =>
+  descuento <= 0 ? "text-[#3fb950]" : descuento >= 100 ? "text-[#f85149]" : "text-amber-400";
 
 function TablaPremios({
   titulo,
   subtitulo,
   etiquetaNombre,
   etiquetaCantidad,
+  etiquetaPremiado,
   filas,
   cargando,
   escala,
@@ -109,6 +114,8 @@ function TablaPremios({
   subtitulo: string;
   etiquetaNombre: string;
   etiquetaCantidad: string;
+  /** Rótulo de la última columna: lo que queda después del margen. */
+  etiquetaPremiado: string;
   filas: Fila[];
   cargando: boolean;
   /** Versión de la escala que rige para el mes que se está mirando. */
@@ -119,10 +126,11 @@ function TablaPremios({
   const ordenadas = useMemo(() => ordenar(filas, orden, tramos), [filas, orden, tramos]);
   const totCant = filas.reduce((a, f) => a + f.cantidad, 0);
   const totErr = filas.reduce((a, f) => a + f.errores, 0);
-  // Promedio simple del premio de la gente de la tabla (no ponderado por
-  // volumen): es el número que se mira para ver cómo viene el mes.
-  const premios = tramos ? filas.map((f) => premioDe(tramos, f.errores)).filter((p): p is number => p !== null) : [];
-  const premioProm = premios.length ? premios.reduce((a, p) => a + p, 0) / premios.length : null;
+  // Pie: lo premiado de toda la tabla (suma de cantidad − margen de cada uno),
+  // null si el mes no tiene escala cargada.
+  const totPremiado = tramos
+    ? filas.reduce((a, f) => a + (premiadoDe(tramos, f.cantidad, f.errores)?.premiado ?? 0), 0)
+    : null;
 
   const Th = ({ campo, children, className = "" }: { campo: Orden; children: ReactNode; className?: string }) => (
     <TableHead
@@ -152,7 +160,7 @@ function TablaPremios({
             <Th campo="cantidad" className="text-right">{etiquetaCantidad}</Th>
             <Th campo="errores" className="text-right">Errores</Th>
             <Th campo="pct" className="text-right">% Error</Th>
-            <Th campo="premio" className="text-right">Premio</Th>
+            <Th campo="premio" className="text-right">{etiquetaPremiado}</Th>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -173,7 +181,7 @@ function TablaPremios({
           )}
           {!cargando &&
             ordenadas.map((f) => {
-              const premio = premioDe(tramos, f.errores);
+              const p = premiadoDe(tramos, f.cantidad, f.errores);
               return (
                 <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
                   <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
@@ -185,10 +193,19 @@ function TablaPremios({
                     {fmtPct(f.errores, f.cantidad)}
                   </TableCell>
                   <TableCell
-                    className={`px-2.5 text-right tabular-nums font-medium ${premio === null ? "text-zinc-600" : colorPremio(premio)}`}
-                    title={premio === null ? "Sin escala cargada para este mes" : `Resta ${100 - premio}% por ${f.errores} error(es)`}
+                    className={`px-2.5 text-right tabular-nums font-medium ${p === null ? "text-zinc-600" : colorPremio(p.descuento)}`}
+                    title={
+                      p === null
+                        ? "Sin escala de márgenes para este mes"
+                        : `${fmtNum(f.cantidad)} − ${p.descuento}% (${fmtNum(p.margen)})`
+                    }
                   >
-                    {premio === null ? "—" : `${premio}%`}
+                    {p === null ? "—" : fmtNum(p.premiado)}
+                    {p !== null && p.descuento > 0 && (
+                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
+                        −{p.descuento}%
+                      </span>
+                    )}
                   </TableCell>
                 </TableRow>
               );
@@ -202,10 +219,10 @@ function TablaPremios({
               <TableCell className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700">{fmtNum(totErr)}</TableCell>
               <TableCell className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700">{fmtPct(totErr, totCant)}</TableCell>
               <TableCell
-                className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700"
-                title="Promedio simple del premio de la tabla"
+                className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700"
+                title="Suma de lo premiado, ya descontado el margen de cada uno"
               >
-                {premioProm === null ? "—" : `${Math.round(premioProm)}%`}
+                {totPremiado === null ? "—" : fmtNum(totPremiado)}
               </TableCell>
             </TableRow>
           </TableFooter>
@@ -310,18 +327,20 @@ export default function PremiosPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <TablaPremios
           titulo="Preparadores"
-          subtitulo="Ítems recolectados en OT de Picking y errores detectados sobre lo que preparó."
+          subtitulo="Ítems recolectados en OT de Picking, errores detectados sobre lo que preparó y lo premiado después del margen."
           etiquetaNombre="Preparador"
           etiquetaCantidad="Preparado (ítems)"
+          etiquetaPremiado="Premiado (ítems)"
           filas={preparadores}
           cargando={cargando}
           escala={escalaPrep}
         />
         <TablaPremios
           titulo="Mesa de Control"
-          subtitulo="Renglones controlados y errores que se le escaparon (detectados por Calidad)."
+          subtitulo="Renglones controlados, errores que se le escaparon (detectados por Calidad) y lo premiado después del margen."
           etiquetaNombre="Controlador"
           etiquetaCantidad="Controlado (renglones)"
+          etiquetaPremiado="Premiado (renglones)"
           filas={mesa}
           cargando={cargando}
           escala={escalaMesa}

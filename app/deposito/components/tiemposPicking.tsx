@@ -101,8 +101,17 @@ function nivel(v: number, max: number): number {
   return 4;
 }
 
-interface Celda { items: number; recol: number; seg: number; cron: number }
-const celdaVacia = (): Celda => ({ items: 0, recol: 0, seg: 0, cron: 0 });
+// Cada celda guarda el total de ítems y las "horas-operario" que lo produjeron
+// (pares fecha|operario con actividad en esa franja). Lo que se muestra es
+// items / horas-operario = ítems por hora de un operario, la misma unidad en los
+// tres ejes: en "por operario" es su promedio por hora trabajada en la franja; en
+// los ejes por día, el promedio por operario de los que pickearon en esa hora.
+interface Celda { items: number; recol: number; seg: number; cron: number; hs: Set<string> }
+const celdaVacia = (): Celda => ({ items: 0, recol: 0, seg: 0, cron: 0, hs: new Set() });
+const porHora = (items: number, hs: number) => (hs > 0 ? items / hs : 0);
+const fmtRate = (v: number) => (v > 0 ? fmtN(Math.round(v)) : "");
+// El nombre de Personal es char con padding: se compara siempre trimeado.
+const nom = (s: string | null | undefined) => (s ?? "").trim();
 
 export function TiemposPickingTab({
   desde, hasta, operario,
@@ -155,7 +164,7 @@ export function TiemposPickingTab({
       (heat ?? []).filter(
         (r) =>
           esFilaProductiva(r.OPERARIO, "Picking") &&
-          (operario === "__all__" || r.OPERARIO === operario),
+          (operario === "__all__" || nom(r.OPERARIO) === nom(operario)),
       ),
     [heat, operario],
   );
@@ -164,7 +173,7 @@ export function TiemposPickingTab({
       (ots ?? []).filter(
         (r) =>
           esFilaProductiva(r.OPERARIO, "Picking") &&
-          (operario === "__all__" || r.OPERARIO === operario),
+          (operario === "__all__" || nom(r.OPERARIO) === nom(operario)),
       ),
     [ots, operario],
   );
@@ -180,7 +189,7 @@ export function TiemposPickingTab({
       let clave: string;
       let peso: number;
       if (eje === "operario") {
-        clave = r.OPERARIO ?? "—";
+        clave = nom(r.OPERARIO) || "—";
         peso = 0;
       } else if (eje === "semana") {
         if (!f) continue;
@@ -200,6 +209,7 @@ export function TiemposPickingTab({
       c.recol += r.RECOLECTADOS;
       c.seg += r.SEG_TOTAL;
       c.cron += r.CRONOMETRADOS;
+      c.hs.add(`${r.FECHA}|${nom(r.OPERARIO)}`);
       fila.set(r.HORA, c);
     }
 
@@ -214,17 +224,27 @@ export function TiemposPickingTab({
       claves.sort((a, b) => (ordenFila.get(a) ?? 0) - (ordenFila.get(b) ?? 0));
     }
 
+    // Las horas-operario de filas distintas nunca se pisan (otro operario u otra
+    // fecha), así que los totales se arman sumando tamaños de los sets.
     let max = 0;
-    for (const fila of filas.values())
-      for (const c of fila.values()) if (c.items > max) max = c.items;
+    const totalFila = new Map<string, { items: number; hs: number }>();
+    const totalCol = new Map<number, { items: number; hs: number }>();
+    const total = { items: 0, hs: 0 };
+    for (const [k, fila] of filas) {
+      const tf = { items: 0, hs: 0 };
+      for (const [h, c] of fila) {
+        const v = porHora(c.items, c.hs.size);
+        if (v > max) max = v;
+        tf.items += c.items; tf.hs += c.hs.size;
+        const tc = totalCol.get(h) ?? { items: 0, hs: 0 };
+        tc.items += c.items; tc.hs += c.hs.size;
+        totalCol.set(h, tc);
+      }
+      totalFila.set(k, tf);
+      total.items += tf.items; total.hs += tf.hs;
+    }
 
-    const totalCol = new Map<number, number>();
-    for (const fila of filas.values())
-      for (const [h, c] of fila) totalCol.set(h, (totalCol.get(h) ?? 0) + c.items);
-
-    const total = [...totalCol.values()].reduce((s, v) => s + v, 0);
-
-    return { cols, claves, filas, max, totalCol, total };
+    return { cols, claves, filas, max, totalFila, totalCol, total };
   }, [heatFilt, eje]);
 
   // ─── KPIs del rango ────────────────────────────────────────────────────────
@@ -376,7 +396,7 @@ export function TiemposPickingTab({
             <span key={t} className="w-4 h-4 rounded-[3px]" style={{ background: t }} />
           ))}
           <span>Más</span>
-          {mapa.max > 0 && <span className="text-zinc-600">· máx {fmtN(mapa.max)} ítems</span>}
+          {mapa.max > 0 && <span className="text-zinc-600">· máx {fmtN(Math.round(mapa.max))} ítems/h</span>}
         </div>
       </div>
 
@@ -400,15 +420,18 @@ export function TiemposPickingTab({
                     {String(h).padStart(2, "0")}
                   </th>
                 ))}
+                <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800 text-right whitespace-nowrap">
+                  Prom./h
+                </th>
                 <th className="px-2 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800 text-right">
-                  Total
+                  Ítems
                 </th>
               </tr>
             </thead>
             <tbody>
               {mapa.claves.map((k) => {
                 const fila = mapa.filas.get(k)!;
-                const total = [...fila.values()].reduce((s, c) => s + c.items, 0);
+                const tf = mapa.totalFila.get(k)!;
                 return (
                   <tr key={k} className="group">
                     <td className="sticky left-0 z-10 bg-[#171717] group-hover:bg-[#1f1f1f] px-3 py-1 text-zinc-300 border-b border-zinc-800/60 whitespace-nowrap transition-colors">
@@ -416,14 +439,20 @@ export function TiemposPickingTab({
                     </td>
                     {mapa.cols.map((h) => {
                       const c = fila.get(h);
-                      const n = nivel(c?.items ?? 0, mapa.max);
+                      const v = c ? porHora(c.items, c.hs.size) : 0;
+                      const n = nivel(v, mapa.max);
                       const prom = c && c.cron > 0 ? c.seg / c.cron : null;
+                      const hsTxt = c
+                        ? eje === "operario"
+                          ? `${fmtN(c.hs.size)} ${c.hs.size === 1 ? "día" : "días"} con pickeos en la franja`
+                          : `${fmtN(c.hs.size)} horas-operario en la franja`
+                        : "";
                       return (
                         <td key={h} className="p-[2px] border-b border-zinc-800/60">
                           <div
                             title={
                               c
-                                ? `${k} · ${String(h).padStart(2, "0")}:00\n${fmtN(c.items)} ítems (${fmtN(c.recol)} cumplidos)\n${prom ? `${fmtSeg(prom)} promedio por ítem` : "sin tiempos cronometrados"}`
+                                ? `${k} · ${String(h).padStart(2, "0")}:00\n${fmtRate(v)} ítems por hora\n${fmtN(c.items)} ítems en total (${fmtN(c.recol)} cumplidos) · ${hsTxt}\n${prom ? `${fmtSeg(prom)} promedio por ítem` : "sin tiempos cronometrados"}`
                                 : `${k} · ${String(h).padStart(2, "0")}:00 — sin pickeos`
                             }
                             className={`h-7 rounded-[3px] flex items-center justify-center tabular-nums text-[11px] ${
@@ -435,13 +464,16 @@ export function TiemposPickingTab({
                             }`}
                             style={n >= 0 ? { background: TONOS[n] } : undefined}
                           >
-                            {c?.items ? fmtN(c.items) : ""}
+                            {fmtRate(v)}
                           </div>
                         </td>
                       );
                     })}
                     <td className="px-2 py-1 text-right tabular-nums text-zinc-200 font-medium border-b border-zinc-800/60">
-                      {fmtN(total)}
+                      {fmtRate(porHora(tf.items, tf.hs))}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums text-zinc-500 border-b border-zinc-800/60">
+                      {fmtN(tf.items)}
                     </td>
                   </tr>
                 );
@@ -450,13 +482,23 @@ export function TiemposPickingTab({
                 <td className="sticky left-0 z-10 bg-[#1f1f1f] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
                   Total
                 </td>
-                {mapa.cols.map((h) => (
-                  <td key={h} className="bg-[#1f1f1f] px-1 py-1.5 text-center tabular-nums text-[11px] text-zinc-400">
-                    {fmtN(mapa.totalCol.get(h) ?? 0)}
-                  </td>
-                ))}
+                {mapa.cols.map((h) => {
+                  const tc = mapa.totalCol.get(h);
+                  return (
+                    <td
+                      key={h}
+                      title={tc ? `${fmtN(tc.items)} ítems en total · ${fmtN(tc.hs)} horas-operario` : undefined}
+                      className="bg-[#1f1f1f] px-1 py-1.5 text-center tabular-nums text-[11px] text-zinc-400"
+                    >
+                      {tc ? fmtRate(porHora(tc.items, tc.hs)) : ""}
+                    </td>
+                  );
+                })}
                 <td className="bg-[#1f1f1f] px-2 py-1.5 text-right tabular-nums text-[11px] text-yellow-400 font-semibold">
-                  {fmtN(mapa.total)}
+                  {fmtRate(porHora(mapa.total.items, mapa.total.hs))}
+                </td>
+                <td className="bg-[#1f1f1f] px-2 py-1.5 text-right tabular-nums text-[11px] text-zinc-300 font-semibold">
+                  {fmtN(mapa.total.items)}
                 </td>
               </tr>
             </tbody>
@@ -464,8 +506,12 @@ export function TiemposPickingTab({
         )}
       </div>
 
+      <p className="text-[11px] text-zinc-600 mt-2">
+        Cada celda es ítems por hora de un operario: ítems de la franja ÷ horas-operario con
+        pickeos (en &quot;Por operario&quot;, los días que trabajó esa hora).
+      </p>
       {kpis.sinCron > 0 && (
-        <p className="text-[11px] text-zinc-600 mt-2">
+        <p className="text-[11px] text-zinc-600 mt-1">
           {fmtN(kpis.sinCron)} renglones sin tiempos del handheld (se ubican en la hora de
           ejecución de la OT){kpis.largos > 0 && ` · ${fmtN(kpis.largos)} de más de 10 min quedan fuera del promedio`}.
         </p>

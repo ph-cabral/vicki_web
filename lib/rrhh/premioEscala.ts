@@ -3,12 +3,24 @@
 import { useCallback, useEffect, useState } from "react";
 
 /**
- * Escala de premios por errores — modal "Márgenes" de /rrhh/premios.
+ * Escala de premios por % de error — modal "Márgenes" de /rrhh/premios.
  *
- * Los tramos convierten la cantidad de ERRORES del mes en el porcentaje de
- * premio que se le RESTA a la persona (de 0 a 5 errores resta 0 %, de 6 a 10
- * resta 25 %, …). Hay una escala por ámbito: 'preparado' (tabla Preparadores)
- * y 'mesa' (tabla Mesa de Control).
+ * La escala NO se carga por cantidad de errores sino por el **% de error** que
+ * ya muestra la tabla (errores / ítems preparados × 100). Cada tramo se define
+ * con UN solo número: el % de error hasta donde llega. El tramo arranca donde
+ * terminó el anterior (el primero, en 0) y el último queda abierto:
+ *
+ *   hasta 0,05 %  -> resta 10 %
+ *   hasta 2 %     -> resta 20 %   (o sea: de 0,05 % a 2 %)
+ *   de ahí en más -> resta 50 %
+ *
+ * El tope **entra** en su tramo (`<=`) y el siguiente arranca por encima: con
+ * la escala de arriba, 0,05 % exacto resta 10 %, no 20 %.
+ *
+ * Lo que se resta se aplica a la CANTIDAD (ítems preparados o renglones
+ * controlados): la última columna de la tabla es `cantidad − margen`, o sea
+ * cantidad × (1 − descuento/100). Hay una escala por ámbito: 'preparado'
+ * (tabla Preparadores) y 'mesa' (tabla Mesa de Control).
  *
  * VERSIONADO POR MES: cada versión rige DESDE su `vigencia` (YYYY-MM) EN
  * ADELANTE, hasta que haya otra posterior — `escalaVigente()` es la que resuelve
@@ -20,7 +32,12 @@ import { useCallback, useEffect, useState } from "react";
  * una fila por ámbito y por cambio), así cambiar de mes en la pantalla no
  * vuelve al servidor.
  */
-export type Tramo = { desde: number; hasta: number | null; descuento: number };
+export type Tramo = {
+  /** % de error hasta donde llega el tramo (incluido). null = el último, sin tope. */
+  hasta: number | null;
+  /** % que se le resta a la cantidad en ese tramo. */
+  descuento: number;
+};
 export type VersionEscala = { vigencia: string; tramos: Tramo[]; actualizado?: string };
 export type Ambito = "preparado" | "mesa";
 export type Escalas = Record<Ambito, VersionEscala[]>;
@@ -33,10 +50,9 @@ export const AMBITO_LABEL: Record<Ambito, string> = {
 
 /** Punto de partida del formulario cuando todavía no hay ninguna versión. */
 export const TRAMOS_SUGERIDOS: Tramo[] = [
-  { desde: 0, hasta: 5, descuento: 0 },
-  { desde: 6, hasta: 10, descuento: 25 },
-  { desde: 11, hasta: 15, descuento: 50 },
-  { desde: 16, hasta: null, descuento: 100 },
+  { hasta: 0.05, descuento: 10 },
+  { hasta: 2, descuento: 20 },
+  { hasta: null, descuento: 50 },
 ];
 
 /** La versión que rige para `mes`: la de `vigencia` más alta que sea <= mes. */
@@ -53,29 +69,53 @@ export function escalaVigente(
 }
 
 /**
- * % que se resta del premio con esa cantidad de errores. Devuelve null cuando
- * no hay escala cargada Y TAMBIÉN cuando ese número de errores no entra en
- * ningún tramo (la escala puede arrancar arriba de 0 o tener un hueco): mejor
- * mostrar "—" que inventar un premio.
+ * % de error de una fila: errores / cantidad × 100, **redondeado a 2 decimales**
+ * — exactamente el número que muestra la columna "% Error". Se redondea a
+ * propósito: el tramo tiene que salir del valor que la persona ve en pantalla,
+ * si no un 0,0501 % que se muestra como "0,05 %" caería en el tramo siguiente y
+ * el premio parecería mal calculado.
  */
-export function descuentoDe(tramos: Tramo[] | undefined, errores: number): number | null {
-  if (!tramos?.length) return null;
+export function pctError(errores: number, cantidad: number): number | null {
+  if (!(cantidad > 0)) return null;
+  return Math.round((errores / cantidad) * 100 * 100) / 100;
+}
+
+/**
+ * % que se le resta a la cantidad según el % de error. Los tramos están
+ * ordenados: gana el primero cuyo tope alcance ese % (el último, sin tope,
+ * junta todo lo que sobra). null = no hay escala cargada.
+ */
+export function descuentoDe(tramos: Tramo[] | undefined, pct: number | null): number | null {
+  if (!tramos?.length || pct === null) return null;
   for (const t of tramos) {
-    if (errores >= t.desde && (t.hasta === null || errores <= t.hasta)) return t.descuento;
+    if (t.hasta === null || pct <= t.hasta) return t.descuento;
   }
-  // Cayó en un hueco de la escala (o por debajo del primer tramo): sin premio
-  // definido. El modal de Márgenes avisa de los huecos al cargarla.
-  return null;
+  // Sin tramo abierto al final, cualquier % por encima del último tope queda
+  // afuera: se lleva el descuento del último cargado (el más alto).
+  return tramos[tramos.length - 1].descuento;
 }
 
-/** % de premio que le queda a la persona (100 − descuento). */
-export function premioDe(tramos: Tramo[] | undefined, errores: number): number | null {
-  const d = descuentoDe(tramos, errores);
-  return d === null ? null : Math.max(0, Math.round((100 - d) * 100) / 100);
+/** Cantidad que queda después del margen: cantidad × (1 − descuento/100). */
+export function premiadoDe(
+  tramos: Tramo[] | undefined,
+  cantidad: number,
+  errores: number,
+): { descuento: number; premiado: number; margen: number } | null {
+  const d = descuentoDe(tramos, pctError(errores, cantidad));
+  if (d === null) return null;
+  const margen = Math.round((cantidad * d) / 100);
+  return { descuento: d, premiado: Math.max(0, cantidad - margen), margen };
 }
 
-export const rotuloTramo = (t: Tramo) =>
-  t.hasta === null ? `${t.desde} o más` : t.desde === t.hasta ? `${t.desde}` : `${t.desde} a ${t.hasta}`;
+const fmtPct = (n: number) =>
+  n.toLocaleString("es-AR", { maximumFractionDigits: 2 });
+
+/** "0 a 0,05 %" / "0,05 a 2 %" / "2 % o más" — `previo` es el tope anterior. */
+export function rotuloTramo(t: Tramo, previo: number): string {
+  return t.hasta === null
+    ? `más de ${fmtPct(previo)} %`
+    : `${fmtPct(previo)} a ${fmtPct(t.hasta)} %`;
+}
 
 export function usePremioEscala() {
   const [escalas, setEscalas] = useState<Escalas>({ preparado: [], mesa: [] });

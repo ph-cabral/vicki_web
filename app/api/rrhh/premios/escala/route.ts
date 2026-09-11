@@ -1,8 +1,11 @@
-// Escala de premios por errores — modal "Márgenes" de /rrhh/premios.
+// Escala de premios por % de error — modal "Márgenes" de /rrhh/premios.
 //
-// Tramos de errores -> % del premio que se RESTA (de 0 a 5 errores resta 0 %,
-// de 6 a 10 resta 25 %, etc.). Dos escalas independientes: 'preparado'
-// (tabla Preparadores) y 'mesa' (tabla Mesa de Control).
+// Cada tramo es UN número: el **% de error** (errores / cantidad × 100) hasta
+// donde llega, más el % que se le RESTA a la cantidad. El tramo arranca donde
+// terminó el anterior (el primero en 0) y el último va sin tope:
+//   hasta 0,05 % -> resta 10 % · hasta 2 % -> resta 20 % · de ahí en más -> 50 %
+// El tope entra en su propio tramo (`<=`). Dos escalas independientes:
+// 'preparado' (tabla Preparadores) y 'mesa' (tabla Mesa de Control).
 //
 // VERSIONADO POR MES: cada fila rige DESDE `vigencia` (YYYY-MM) EN ADELANTE
 // hasta que haya una versión posterior. La escala de un mes M es la de
@@ -34,26 +37,29 @@ const AMBITOS = ["preparado", "mesa"] as const;
 type Ambito = (typeof AMBITOS)[number];
 
 const MAX_TRAMOS = 20;
-// Techo defensivo para el "hasta" de un tramo cerrado: nadie hace 10.000
-// errores en un mes, un número así es un dedazo cargando.
-const MAX_ERRORES = 10_000;
 
-export type Tramo = { desde: number; hasta: number | null; descuento: number };
+export type Tramo = {
+  /** % de error hasta donde llega el tramo (incluido). null = último, sin tope. */
+  hasta: number | null;
+  /** % que se le resta a la cantidad en ese tramo. */
+  descuento: number;
+};
+
+/** 2 decimales, que es lo que se carga en pantalla (0,05 %). */
+const red2 = (n: number) => Math.round(n * 100) / 100;
 
 function esAmbito(v: unknown): v is Ambito {
   return typeof v === "string" && (AMBITOS as readonly string[]).includes(v);
 }
 
 /**
- * Los tramos van en orden y NO se pueden superponer: cada `desde` tiene que ser
- * mayor que el `hasta` del anterior, y sólo el último puede quedar abierto
- * (`hasta: null`). Si se superpusieran, un mismo error caería en dos tramos y el
- * premio saldría distinto según el orden en que se recorra la lista.
+ * Un tramo por % de error tope, en orden ESTRICTAMENTE creciente: el `desde` de
+ * cada uno es el `hasta` del anterior, así la escala nunca queda con huecos ni
+ * superpuesta y cualquier % de error cae en un solo tramo. Sólo el último puede
+ * ir sin tope (`hasta: null`), y es el que junta todo lo que queda arriba.
  *
- * Los HUECOS sí se permiten (el primero puede arrancar arriba de 0, o puede
- * faltar un pedazo en el medio): la escala no siempre cubre desde cero. Una
- * cantidad de errores que cae en un hueco queda sin premio definido — la
- * pantalla lo muestra como "—" y el modal lo avisa antes de guardar.
+ * Tanto el tope como el descuento son porcentajes (0 a 100) y admiten decimales
+ * — 0,05 % de error es un valor normal acá.
  */
 function validarTramos(raw: unknown): { ok: true; tramos: Tramo[] } | { ok: false; error: string } {
   if (!Array.isArray(raw) || raw.length === 0)
@@ -65,29 +71,25 @@ function validarTramos(raw: unknown): { ok: true; tramos: Tramo[] } | { ok: fals
   for (let i = 0; i < raw.length; i++) {
     const t = raw[i] as Record<string, unknown>;
     const n = i + 1;
-    const desde = Number(t?.desde);
+    const ultimo = i === raw.length - 1;
     const hasta = t?.hasta === null || t?.hasta === undefined || t?.hasta === "" ? null : Number(t.hasta);
     const descuento = Number(t?.descuento);
 
-    if (!Number.isInteger(desde) || desde < 0)
-      return { ok: false, error: `Tramo ${n}: "desde" tiene que ser un entero de 0 o más` };
-    if (hasta !== null && (!Number.isInteger(hasta) || hasta > MAX_ERRORES))
-      return { ok: false, error: `Tramo ${n}: "hasta" tiene que ser un entero (máximo ${MAX_ERRORES})` };
-    if (hasta !== null && hasta < desde)
-      return { ok: false, error: `Tramo ${n}: "hasta" no puede ser menor que "desde"` };
+    if (hasta === null && !ultimo)
+      return { ok: false, error: `Tramo ${n}: sólo el último puede quedar sin tope` };
+    if (hasta !== null && (!Number.isFinite(hasta) || hasta <= 0 || hasta > 100))
+      return { ok: false, error: `Tramo ${n}: el % de error va de 0 a 100` };
     if (!Number.isFinite(descuento) || descuento < 0 || descuento > 100)
       return { ok: false, error: `Tramo ${n}: el descuento va de 0 a 100 %` };
-    if (hasta === null && i !== raw.length - 1)
-      return { ok: false, error: `Tramo ${n}: sólo el último puede quedar sin tope` };
 
     const previo = tramos[i - 1];
-    if (previo && (previo.hasta === null || desde <= previo.hasta))
+    if (previo && (previo.hasta === null || (hasta !== null && hasta <= previo.hasta)))
       return {
         ok: false,
-        error: `Tramo ${n}: tiene que arrancar después de ${previo.hasta ?? "el tramo anterior"} (los tramos no se pueden superponer)`,
+        error: `Tramo ${n}: el % de error tiene que ser mayor que el del tramo anterior (${previo.hasta ?? "sin tope"})`,
       };
 
-    tramos.push({ desde, hasta, descuento: Math.round(descuento * 100) / 100 });
+    tramos.push({ hasta: hasta === null ? null : red2(hasta), descuento: red2(descuento) });
   }
   return { ok: true, tramos };
 }
