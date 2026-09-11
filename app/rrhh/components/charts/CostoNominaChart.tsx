@@ -36,6 +36,32 @@ function labelMes(mes: string, conAnio: boolean): string {
   return conAnio ? `${nombre} ${anio}` : nombre;
 }
 
+type LabelProps = { x?: number; y?: number; width?: number; height?: number; value?: number; index?: number };
+
+/** % del segmento sobre el total del mes, centrado adentro de la barra (como la referencia). */
+function porcentajeSegmento(data: Record<string, string | number>[]) {
+  return function PorcentajeLabel({ x = 0, y = 0, width = 0, height = 0, value = 0, index = 0 }: LabelProps) {
+    if (width < 26 || height < 14) return null; // segmento angosto: el texto no entra
+    const total = Number(data[index]?.total) || 0;
+    if (!total || value <= 0) return null;
+    const pct = (value / total) * 100;
+    if (pct < 3) return null; // < 3% no entra legible
+    return (
+      <text
+        x={x + width / 2}
+        y={y + height / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize={11}
+        fontWeight={600}
+        fill="#171717"
+      >
+        {pct.toFixed(1).replace(".", ",")}%
+      </text>
+    );
+  };
+}
+
 export default function CostoNominaChart({ refreshKey }: { refreshKey?: number }) {
   const [meses, setMeses] = useState<MesApi[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +155,9 @@ export default function CostoNominaChart({ refreshKey }: { refreshKey?: number }
               stackId="costo"
               fill={area === SIN_AREA ? COLOR_SIN_AREA : t.palette[i % t.palette.length]}
               name={area}
-            />
+            >
+              <LabelList dataKey={area} content={porcentajeSegmento(data)} />
+            </Bar>
           ))}
           <Line
             type="monotone"
