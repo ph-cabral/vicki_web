@@ -76,10 +76,26 @@ export async function updateLegajo(id: number, data: LegajoUpdate) {
     payload = { ...data, ...(await resolverConvenio(data.convenioId, data.categoriaId)) };
   }
 
-  const result = await prisma.legajo.update({
-    where: { id },
-    data: payload,
-    include: { sectorRel: { select: { nombre: true } } },
+  const result = await prisma.$transaction(async (tx) => {
+    // Si el N° de legajo (`codigo`) cambia — típico al cambiar de puesto o
+    // convenio (ver sql/rrhh_legajo_convenio_carga.sql) — el código anterior
+    // se guarda en legajo_codigo_historial en vez de perderse: así, si ese
+    // número queda libre y se lo dan a otra persona más adelante, el cruce
+    // de nómina (app/api/rrhh/nomina/route.ts) sigue reconociendo a AMBOS
+    // dueños del código y desambigua por similitud de nombre contra el
+    // Excel (ver elegirCandidato() ahí).
+    if ("codigo" in data) {
+      const actual = await tx.legajo.findUnique({ where: { id }, select: { codigo: true } });
+      if (actual?.codigo && actual.codigo !== data.codigo) {
+        await tx.legajo_codigo_historial.create({ data: { legajoId: id, codigo: actual.codigo } });
+      }
+    }
+
+    return tx.legajo.update({
+      where: { id },
+      data: payload,
+      include: { sectorRel: { select: { nombre: true } } },
+    });
   });
 
   // usuario.sector se hornea en la cookie de sesión al loguear (ver lib/auth/permissions.ts)

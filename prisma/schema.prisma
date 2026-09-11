@@ -208,6 +208,10 @@ model legajo {
   convenioRel            convenio? @relation(fields: [convenioId], references: [id])
   categoriaId            Int?
   categoriaRel           convenio_categoria? @relation(fields: [categoriaId], references: [id])
+  // Números de legajo (`codigo`) anteriores — se graba antes de pisar el
+  // actual al cambiar de puesto/convenio. Ver legajoService.updateLegajo()
+  // y sql/rrhh_legajo_codigo_historial.sql.
+  codigoHistorial        legajo_codigo_historial[]
   @@index([estado])
   @@index([convenioId])
   @@schema("everwear")
@@ -433,6 +437,22 @@ model lugar {
   @@schema("everwear")
 }
 
+// N° de legajo anteriores de cada legajo (2026-09-11) — se graba antes de
+// pisar legajo.codigo al cambiar de puesto/convenio, para no perderlo y
+// para que el cruce de nómina reconozca códigos reciclados en otra persona.
+// Ver legajoService.updateLegajo() y sql/rrhh_legajo_codigo_historial.sql.
+model legajo_codigo_historial {
+  id        Int      @id @default(autoincrement())
+  legajoId  Int
+  codigo    String   @db.VarChar(20)
+  createdAt DateTime @default(now())
+  legajo    legajo   @relation(fields: [legajoId], references: [id], onDelete: Cascade)
+
+  @@index([legajoId])
+  @@index([codigo])
+  @@schema("everwear")
+}
+
 // Costo real de nómina por mes, cargado desde el Excel de "pago de sueldos"
 // que sube RRHH (2026-09-11, ver lib/rrhh/nomina.ts y NominaTab.tsx).
 //
@@ -446,9 +466,9 @@ model lugar {
 //
 // El desglose por área (Viajantes/Mostradores/Administración/Depósito/
 // Fábrica, ver /rrhh -> Nómina) NO se guarda acá: se resuelve al leer,
-// cruzando el `legajo` de cada fila contra legajo.codigo -> sectorRel ->
-// area, así siempre refleja el organigrama ACTUAL aunque cambie después de
-// cargado el mes.
+// cruzando el `legajo` de cada fila contra legajo.codigo (+ historial) ->
+// sectorRel -> area, así siempre refleja el organigrama ACTUAL aunque
+// cambie después de cargado el mes.
 //
 // Reemplazar un mes ya cargado: SOLO ADMIN (requireAdmin) y el front pide
 // confirmación antes de mandar `confirmar: true` (POST /api/rrhh/nomina).

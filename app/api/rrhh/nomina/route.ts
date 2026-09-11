@@ -17,6 +17,19 @@
 //                          actual aunque haya cambiado después de cargado el
 //                          mes. Legajos sin match (de baja, o que no calzan
 //                          con ningún `codigo`) van a "Sin área".
+//
+//                          El N° de legajo puede cambiar (ej. al cambiar de
+//                          puesto/convenio) y el código viejo puede
+//                          reciclarse en otra persona (2026-09-11): además
+//                          del `codigo` actual, se busca en
+//                          legajo_codigo_historial (ver legajoService.ts).
+//                          Si un código matchea a MÁS DE UN legajo (el
+//                          actual + históricos), se desempata por similitud
+//                          de nombre contra la columna "Apellido y Nombre"
+//                          del Excel (ver elegirCandidato()/similitudNombre()
+//                          más abajo) — así el pago de cada mes se le
+//                          atribuye a quien realmente tuvo ese código ESE
+//                          mes, no siempre al dueño actual del número.
 //   POST { mes, archivoNombre, filas, confirmar? } -> guarda/reemplaza ese
 //          mes. Si el mes YA tiene datos y no viene `confirmar: true`,
 //          devuelve 409 con el resumen de lo que se pisaría, para que el
@@ -45,23 +58,93 @@ function normLegajo(v: string): string {
   return Number.isFinite(n) && String(n) !== "" ? String(n) : s;
 }
 
-async function mapaLegajoArea(codigos: string[]): Promise<Map<string, string>> {
-  const claves = [...new Set(codigos.map(normLegajo))];
+function normNombre(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Similitud por tokens, orden-independiente: "Bottero, Lucas Ariel" vs
+ * "Bottero Lucas" da 2/3 ≈ 0.67. Con un puñado de candidatos por código
+ * reciclado alcanza y sobra — no hace falta nada más pesado (ni una lib de
+ * fuzzy-matching) para desempatar. */
+function similitudNombre(a: string, b: string): number {
+  const ta = new Set(normNombre(a).split(" ").filter(Boolean));
+  const tb = new Set(normNombre(b).split(" ").filter(Boolean));
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  return inter / Math.max(ta.size, tb.size);
+}
+
+interface Candidato {
+  legajoId: number;
+  nombre: string;
+  area: string;
+}
+
+/**
+ * Candidatos de área por código de legajo — incluye el código ACTUAL
+ * (legajo.codigo) y todo lo que aparece en legajo_codigo_historial (números
+ * que la persona tuvo antes de cambiar de puesto/convenio, ver
+ * legajoService.updateLegajo()). Dos queries indexadas por `codigo`, una
+ * sola vez para TODOS los meses — no una por fila ni por mes.
+ */
+async function mapaLegajoCandidatos(codigos: string[]): Promise<Map<string, Candidato[]>> {
+  const claves = [...new Set(codigos.flatMap((c) => [c.trim(), normLegajo(c)]))];
   if (claves.length === 0) return new Map();
 
-  const legajos = await prisma.legajo.findMany({
-    where: { codigo: { in: [...new Set(codigos)] } }, // trae por el valor crudo…
-    select: { codigo: true, sectorRel: { select: { area: { select: { nombre: true } } } } },
-  });
+  const [actuales, historicos] = await Promise.all([
+    prisma.legajo.findMany({
+      where: { codigo: { in: claves } },
+      select: { id: true, codigo: true, nombre: true, sectorRel: { select: { area: { select: { nombre: true } } } } },
+    }),
+    prisma.legajo_codigo_historial.findMany({
+      where: { codigo: { in: claves } },
+      select: {
+        codigo: true,
+        legajo: { select: { id: true, nombre: true, sectorRel: { select: { area: { select: { nombre: true } } } } } },
+      },
+    }),
+  ]);
 
-  const mapa = new Map<string, string>();
-  for (const l of legajos) {
-    if (!l.codigo) continue;
-    const area = l.sectorRel?.area?.nombre?.trim() || SIN_AREA;
-    mapa.set(l.codigo.trim(), area);
-    mapa.set(normLegajo(l.codigo), area); // …y también matcheable normalizado
-  }
+  const mapa = new Map<string, Candidato[]>();
+  const agregar = (codigo: string | null | undefined, legajoId: number, nombre: string, area: string) => {
+    if (!codigo) return;
+    for (const clave of new Set([codigo.trim(), normLegajo(codigo)])) {
+      const arr = mapa.get(clave) ?? [];
+      if (!arr.some((c) => c.legajoId === legajoId)) arr.push({ legajoId, nombre, area });
+      mapa.set(clave, arr);
+    }
+  };
+
+  for (const l of actuales) agregar(l.codigo, l.id, l.nombre, l.sectorRel?.area?.nombre?.trim() || SIN_AREA);
+  for (const h of historicos)
+    agregar(h.codigo, h.legajo.id, h.legajo.nombre, h.legajo.sectorRel?.area?.nombre?.trim() || SIN_AREA);
+
   return mapa;
+}
+
+/** Un solo candidato (caso normal): ese. Varios (código reciclado entre
+ * convenios/personas distintas): el de nombre más parecido a la columna
+ * "Apellido y Nombre" del Excel de ESA fila. */
+function elegirCandidato(candidatos: Candidato[], nombreExcel: string): Candidato | null {
+  if (candidatos.length === 0) return null;
+  if (candidatos.length === 1) return candidatos[0];
+  let mejor = candidatos[0];
+  let mejorScore = similitudNombre(nombreExcel, mejor.nombre);
+  for (const c of candidatos.slice(1)) {
+    const score = similitudNombre(nombreExcel, c.nombre);
+    if (score > mejorScore) {
+      mejor = c;
+      mejorScore = score;
+    }
+  }
+  return mejor;
 }
 
 export async function GET(req: NextRequest) {
@@ -89,15 +172,18 @@ export async function GET(req: NextRequest) {
 
     const todos = await prisma.nomina_mes.findMany({ orderBy: { mes: "asc" } });
 
-    // Un solo query a `legajo` para TODOS los meses, no uno por mes.
+    // Un solo query (bah, dos: actual + historial) para TODOS los meses, no uno por mes.
     const codigos = todos.flatMap((f) => (f.filas as unknown as NominaFila[]).map((r) => r.legajo));
-    const areaDeLegajo = await mapaLegajoArea(codigos);
+    const candidatosPorCodigo = await mapaLegajoCandidatos(codigos);
 
     const meses = todos.map((f) => {
       const filas = f.filas as unknown as NominaFila[];
       const porArea: Record<string, number> = {};
       for (const r of filas) {
-        const area = areaDeLegajo.get(r.legajo.trim()) ?? areaDeLegajo.get(normLegajo(r.legajo)) ?? SIN_AREA;
+        const candidatos =
+          candidatosPorCodigo.get(r.legajo.trim()) ?? candidatosPorCodigo.get(normLegajo(r.legajo)) ?? [];
+        const elegido = elegirCandidato(candidatos, r.nombre);
+        const area = elegido?.area ?? SIN_AREA;
         porArea[area] = (porArea[area] ?? 0) + r.total;
       }
       return {
