@@ -433,6 +433,40 @@ model lugar {
   @@schema("everwear")
 }
 
+// Costo real de nómina por mes, cargado desde el Excel de "pago de sueldos"
+// que sube RRHH (2026-09-11, ver lib/rrhh/nomina.ts y NominaTab.tsx).
+//
+// `filas` guarda el detalle línea a línea (legajo, nombre, neto, bono,
+// costos, total = costos+bono, banco, liquidación) como JSONB — igual
+// criterio que premio_escala.tramos: siempre se lee/escribe el mes COMPLETO,
+// nunca una fila suelta, así que no hace falta una tabla hija.
+// `totalCosto` y `cantEmpleados` quedan desnormalizados (suma de `total` y
+// cantidad de filas) para que el gráfico mensual no tenga que traer y sumar
+// el JSON de cada mes.
+//
+// El desglose por área (Viajantes/Mostradores/Administración/Depósito/
+// Fábrica, ver /rrhh -> Nómina) NO se guarda acá: se resuelve al leer,
+// cruzando el `legajo` de cada fila contra legajo.codigo -> sectorRel ->
+// area, así siempre refleja el organigrama ACTUAL aunque cambie después de
+// cargado el mes.
+//
+// Reemplazar un mes ya cargado: SOLO ADMIN (requireAdmin) y el front pide
+// confirmación antes de mandar `confirmar: true` (POST /api/rrhh/nomina).
+// Ver sql/rrhh_nomina_mes.sql.
+model nomina_mes {
+  id            Int      @id @default(autoincrement())
+  mes           String   @unique @db.VarChar(7) // 'YYYY-MM'
+  archivoNombre String?  @db.VarChar(200)
+  filas         Json
+  totalCosto    Float
+  cantEmpleados Int
+  subidoPor     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@schema("everwear")
+}
+
 // Tabla legada: los clientes ahora se leen en vivo de Magnus
 // (MAGNUS_SITD.dbo.Clientes) desde /manguera/corte. Queda sin uso/relaciones.
 model cliente {
