@@ -144,14 +144,42 @@ function RelationTab({ relation }: { relation: RelationDef }) {
   );
 }
 
+// `initial` llega desde un Server Component (app/rrhh/legajos/[legajo]/page.tsx)
+// directo desde Prisma: los campos @db.Date / DateTime cruzan el límite
+// server->client como instancias reales de `Date` (React Server Components
+// las serializa así), no como strings. Un <input type="date"> sólo acepta
+// "YYYY-MM-DD" como value/defaultValue — con un `Date` crudo el campo se ve
+// vacío al entrar, aunque el dato SÍ esté guardado en la base (2026-09-11:
+// reportado como "no se guarda la fecha de inicio", pero era esto: el GET
+// después de guardar mostraba el campo en blanco por este mismo motivo, no
+// porque el PUT hubiera fallado). Se normaliza acá, antes de que
+// react-hook-form arme los defaultValues, en vez de tocar cada FieldControl.
+function normalizeDates<T>(value: T): T {
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => normalizeDates(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = normalizeDates(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 // ---------- editor ----------
 type Tab = { id: string; label: string; kind: "section" | "relation" };
 
 export default function LegajoEditor({ id, initial }: { id: number; initial: Record<string, unknown> }) {
   const router = useRouter();
+  const defaultValues = useMemo(() => normalizeDates(initial), [initial]);
   const methods = useForm({
     resolver: zodResolver(legajoUpdateSchema),
-    defaultValues: initial as never,
+    defaultValues: defaultValues as never,
     mode: "onBlur",
   });
   const [saving, setSaving] = useState(false);
