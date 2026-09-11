@@ -14,12 +14,26 @@
 // "activo") — el filtro usa mode "insensitive" en vez de comparar texto
 // exacto.
 //
+// El área "Directorio" (o el legajo sin sectorRel con sector = "Directorio")
+// se excluye de toda la pestaña: no cuenta para headcount, promedios,
+// gráficos ni la tabla de detalle. El filtro va en el WHERE de ambas
+// queries (no se trae y se descarta en JS) para no leer filas de más.
+//
 // Edad y antigüedad dependen de que el legajo tenga fechaNacimiento /
 // fechaInicio cargada — Pablo las está completando de a una; mientras no
 // estén, esos promedios salen sólo de los legajos que sí las tienen (los
 // KPI devuelven cuántos son, para que el front pueda mostrar la cobertura).
 
 import { prisma } from "@/lib/prisma";
+
+const EXCLUIR_DIRECTORIO = {
+  NOT: {
+    OR: [
+      { sectorRel: { area: { nombre: { equals: "Directorio", mode: "insensitive" as const } } } },
+      { sectorRel: { is: null }, sector: { equals: "Directorio", mode: "insensitive" as const } },
+    ],
+  },
+};
 
 const YEAR_MS = 1000 * 60 * 60 * 24 * 365.25;
 
@@ -70,7 +84,7 @@ export async function getHeadcountData(): Promise<HeadcountData> {
 
   const [activos, ingresos12mRows] = await Promise.all([
     prisma.legajo.findMany({
-      where: { estado: { equals: "ACTIVO", mode: "insensitive" } },
+      where: { estado: { equals: "ACTIVO", mode: "insensitive" }, ...EXCLUIR_DIRECTORIO },
       select: {
         codigo: true,
         nombre: true,
@@ -87,7 +101,7 @@ export async function getHeadcountData(): Promise<HeadcountData> {
     // estado (alguien que ya no está activo sigue contando como ingreso del
     // mes en que entró).
     prisma.legajo.findMany({
-      where: { fechaInicio: { gte: start12m } },
+      where: { fechaInicio: { gte: start12m }, ...EXCLUIR_DIRECTORIO },
       select: { fechaInicio: true },
     }),
   ]);
