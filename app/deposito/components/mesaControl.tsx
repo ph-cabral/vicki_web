@@ -47,15 +47,40 @@ interface PorControlador {
   por_mes: Record<string, number>;
   total: number;
 }
+interface PorDia {
+  fecha: string; // YYYY-MM-DD
+  total: number;
+}
+interface PorSemana {
+  semana: string; // YYYY-MM-DD, lunes de esa semana
+  total: number;
+}
+interface PorHora {
+  hora: number; // 0-23
+  total: number;
+}
 interface MesaControlData {
   meses: string[];
   por_mes: PorMes[];
   por_controlador: PorControlador[];
+  por_dia: PorDia[];
+  por_semana: PorSemana[];
+  por_hora: PorHora[];
   total_general: number;
 }
 
+type EjeTiempo = "hora" | "dia" | "semana";
+
 const isoMes = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+// "YYYY-MM-DD" -> "dd/mm" sin el corrimiento de un día que da parsear con
+// `new Date(s)` (lo toma como medianoche UTC y en es-AR corre para atrás).
+function fmtDiaCorto(s: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return s;
+  return `${m[3]}/${m[2]}`;
+}
 
 // Últimos N meses (más reciente primero), para el selector.
 function ultimosMeses(n: number): string[] {
@@ -77,6 +102,7 @@ export function MesaControlTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verTodos, setVerTodos] = useState(false); // toggle carta por controlador
+  const [ejeTiempo, setEjeTiempo] = useState<EjeTiempo>("dia"); // Por hora/día/semana
 
   const load = useCallback(async (meses: string[]) => {
     if (!meses.length) {
@@ -152,6 +178,38 @@ export function MesaControlTab() {
     ? data?.total_general ?? 0
     : (ultimoMes && data?.por_mes.find((p) => p.mes === ultimoMes)?.total) ?? 0;
   const dobleControl = sumaControladores - totalRef;
+
+  // Barras por hora del día (0-23): distribución acumulada de los meses
+  // elegidos — en qué franja horaria se concentra el control.
+  const barHoraData = (data?.por_hora ?? []).map((h) => ({
+    hora: `${String(h.hora).padStart(2, "0")}:00`,
+    total: h.total,
+  }));
+  const horaPico = (data?.por_hora ?? []).reduce(
+    (top, h) => (h.total > top.total ? h : top),
+    { hora: -1, total: 0 },
+  );
+
+  // Barras por día calendario, un renglón por fecha (todos los meses elegidos
+  // concatenados en orden cronológico).
+  const barDiaData = (data?.por_dia ?? []).map((p) => ({
+    fecha: fmtDiaCorto(p.fecha),
+    total: p.total,
+  }));
+  const promedioDiario =
+    data && data.por_dia.length > 0
+      ? data.total_general / data.por_dia.length
+      : 0;
+
+  // Barras por semana (lunes de esa semana como etiqueta).
+  const barSemanaData = (data?.por_semana ?? []).map((p) => ({
+    semana: fmtDiaCorto(p.semana),
+    total: p.total,
+  }));
+  const promedioSemanal =
+    data && data.por_semana.length > 0
+      ? data.total_general / data.por_semana.length
+      : 0;
 
   return (
     <div>
@@ -308,6 +366,92 @@ export function MesaControlTab() {
               )}
             </p>
           </Panel>
+
+          <SectionTitle>⏱️ Por hora / día / semana</SectionTitle>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            {(
+              [
+                ["hora", "Por hora del día"],
+                ["dia", "Por día"],
+                ["semana", "Por semana"],
+              ] as [EjeTiempo, string][]
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setEjeTiempo(id)}
+                className={`px-3 py-1.5 rounded-lg text-[12px] font-medium border transition-colors ${
+                  ejeTiempo === id
+                    ? "bg-yellow-400/10 border-yellow-400/40 text-yellow-400"
+                    : "bg-[#1f1f1f] border-zinc-800 text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {ejeTiempo === "hora" && (
+            <Panel
+              title="Distribución por hora del día"
+              accent={
+                horaPico.hora >= 0
+                  ? `(pico: ${String(horaPico.hora).padStart(2, "0")}:00 con ${fmtNum(horaPico.total)})`
+                  : ""
+              }
+            >
+              <ChartBar
+                data={barHoraData}
+                xKey="hora"
+                height={280}
+                series={[{ key: "total", name: "Items controlados", color: PALETTE[2] }]}
+                fmt={(n) => fmtNum(n)}
+                showValues
+              />
+              <p className="text-[11px] text-zinc-600 mt-3">
+                Suma de todos los meses elegidos, agrupada por la hora del día
+                en que se controló cada renglón (no por día individual) — sirve
+                para ver en qué franja del día se concentra el trabajo de mesa
+                de control.
+              </p>
+            </Panel>
+          )}
+
+          {ejeTiempo === "dia" && (
+            <Panel
+              title="Total por día"
+              accent={`(${fmtNum(data.por_dia.length)} días · promedio ${fmtNum(Math.round(promedioDiario))}/día)`}
+            >
+              <ChartBar
+                data={barDiaData}
+                xKey="fecha"
+                height={300}
+                series={[{ key: "total", name: "Items controlados", color: PALETTE[3] }]}
+                fmt={(n) => fmtNum(n)}
+                angle={-60}
+              />
+            </Panel>
+          )}
+
+          {ejeTiempo === "semana" && (
+            <Panel
+              title="Total por semana"
+              accent={`(${fmtNum(data.por_semana.length)} semanas · promedio ${fmtNum(Math.round(promedioSemanal))}/semana)`}
+            >
+              <ChartBar
+                data={barSemanaData}
+                xKey="semana"
+                height={300}
+                series={[{ key: "total", name: "Items controlados", color: PALETTE[4] }]}
+                fmt={(n) => fmtNum(n)}
+                angle={-35}
+                showValues
+              />
+              <p className="text-[11px] text-zinc-600 mt-3">
+                Cada barra es la semana que arranca en la fecha indicada (lunes
+                a domingo).
+              </p>
+            </Panel>
+          )}
 
           <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
             Fuente: EVERWEAR.dbo.Ven_PedImpresoCP (CodControlador1/2, FechaControl)

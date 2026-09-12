@@ -15,6 +15,7 @@ from deposito import (
     fetch_contenedor,
     guardar_snapshot_abiertos, guardar_snapshot_wms_estados,
     fetch_pick_heatmap, fetch_pick_ots, fetch_pick_ot_items,
+    fetch_reposicion_ot_abiertas,
     PEDIDOS_ABIERTOS_SNAPSHOT_INTERVALO_MIN,
 )
 from compras import (
@@ -463,6 +464,18 @@ def deposito_ot_diferencias(
     Sin params → último día Cumplido antes de hoy."""
     try:
         return fetch_ot_diferencias(desde, hasta)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/reposicion-ot")
+def deposito_reposicion_ot():
+    """Alerta de reposición: artículos con demanda pendiente en OT de Picking
+    abiertas o en proceso (vivas) cuyo Stock del depósito central no alcanza
+    para cubrirlas — se van a agotar antes de que el operario llegue a
+    recolectarlos. Sin params: siempre en vivo (no hay rango de fechas, es
+    una foto del momento)."""
+    try:
+        return fetch_reposicion_ot_abiertas()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

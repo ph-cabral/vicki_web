@@ -1,8 +1,8 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, User, CalendarDays, CalendarRange, Calendar, LayoutGrid,
-  Loader2, RefreshCw, AlertTriangle, type LucideIcon,
+  Loader2, RefreshCw, AlertTriangle, PackageSearch, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, Bar, Line,
@@ -10,7 +10,7 @@ import {
 } from "recharts";
 import {
   PageTitle, SectionTitle, Panel, KPI, Grid, ChartBar, ChartDonut, Table,
-  fmtNum, fmtMes, C,
+  fmtNum, fmtMes, C, Col, Tag,
 } from "../components/ui";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { DateRangeField } from "@/components/ui/date-range-field";
@@ -38,7 +38,7 @@ type Row = Record<string, unknown>;
 interface Rec { d: Date; dp: Date | null; op: string; items: number }
 interface IngRec { d: Date; pedidos: number }
 type Gran = "dia" | "sem" | "mes";
-type Vista = "comp" | "ind" | "mat";
+type Vista = "comp" | "ind" | "mat" | "rep";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const fmtDM = (d: Date) => `${d.getDate()}/${d.getMonth() + 1}`;
@@ -220,6 +220,125 @@ function MatrixItems({
 
 interface RankRow { op: string; ots: number; items: number }
 interface BucketRow { lbl: string; ots: number; items: number }
+
+// ─── Reposición — alerta en vivo: OT de Picking abiertas/en proceso cuyo
+// stock del depósito central no alcanza para cubrir lo que todavía falta
+// recolectar. Sin rango de fechas (no es historial, es la foto de ahora):
+// /api/deposito/reposicion-ot.
+// ──────────────────────────────────────────────────────────────────────────
+interface ReposicionRow {
+  CodArticulo: string;
+  Nombre: string;
+  Proveedor: string;
+  Stock: number;
+  Pendiente: number;
+  Disponible: number;
+  Reponer: number;
+  OTs: number;
+  Pedidos: number;
+}
+interface ReposicionData {
+  total: number;
+  alerta: number;
+  otDescartadas: number;
+  rows: ReposicionRow[];
+}
+
+function ReposicionOtPanel() {
+  const [data, setData] = useState<ReposicionData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/deposito/reposicion-ot`, { cache: "no-store" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setData(j as ReposicionData);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al cargar");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const enRiesgo = data?.alerta ?? 0;
+
+  const cols: Col<ReposicionRow>[] = [
+    { key: "CodArticulo", label: "Código" },
+    { key: "Nombre", label: "Artículo" },
+    { key: "Proveedor", label: "Proveedor" },
+    { key: "Stock", label: "Stock central", num: true, render: (r) => fmtNum(r.Stock) },
+    { key: "Pendiente", label: "Pendiente en OT", num: true, render: (r) => fmtNum(r.Pendiente) },
+    {
+      key: "Disponible", label: "Disponible", num: true,
+      render: (r) => (
+        <span className={r.Disponible < 0 ? "text-red-400 font-semibold" : "text-zinc-300"}>
+          {fmtNum(r.Disponible)}
+        </span>
+      ),
+    },
+    {
+      key: "Reponer", label: "A reponer", num: true,
+      render: (r) => (r.Reponer > 0 ? <Tag tone="red">{fmtNum(r.Reponer)}</Tag> : "—"),
+    },
+    { key: "OTs", label: "OTs", num: true, render: (r) => fmtNum(r.OTs) },
+    { key: "Pedidos", label: "Pedidos", num: true, render: (r) => fmtNum(r.Pedidos) },
+  ];
+
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="text-[11px] text-zinc-600 leading-relaxed max-w-2xl">
+          Foto en vivo (no es historial): por cada artículo con demanda sin recolectar en
+          OT de Picking abiertas o en proceso, Disponible = Stock del depósito central −
+          Pendiente en esas OT. Negativo = no va a haber suficiente cuando el operario
+          pase a recolectar.
+        </p>
+        <button onClick={load} disabled={loading}
+          className="flex items-center gap-1.5 text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 disabled:opacity-40 text-sm shrink-0">
+          <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refrescar
+        </button>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-3 bg-[#1A1A1A] border border-red-400/40 rounded-xl px-5 py-3 text-sm text-red-300 mb-5">
+          <AlertTriangle size={16} className="text-red-400" /> {error}
+        </div>
+      )}
+
+      {loading && !data ? (
+        <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
+          <Loader2 size={36} className="text-yellow-400 animate-spin" />
+          <p className="text-zinc-400 font-medium">Consultando…</p>
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
+          <PackageSearch size={40} className="text-zinc-700" />
+          <p className="text-zinc-400 font-medium">Sin faltantes proyectados en las OT abiertas.</p>
+        </div>
+      ) : (
+        <>
+          <Grid cols={4}>
+            <KPI label="Artículos con demanda pendiente" value={fmtNum(data?.total ?? 0)} accent="neutral" />
+            <KPI label="A reponer" value={fmtNum(enRiesgo)} sub="Disponible < 0" accent={enRiesgo > 0 ? "red" : "green"} />
+            <KPI label="OT descartadas" value={fmtNum(data?.otDescartadas ?? 0)} sub="pedido Cancelado en Magnus" accent="neutral" />
+            <KPI label="Unidades a reponer" value={fmtNum(rows.reduce((a, r) => a + r.Reponer, 0))} accent="amber" />
+          </Grid>
+
+          <SectionTitle>Artículos a reponer · ordenado por urgencia</SectionTitle>
+          <Table<ReposicionRow> cols={cols} rows={rows} max={300} maxH={560} />
+        </>
+      )}
+    </>
+  );
+}
 
 export default function PedidosPreparadosPage() {
   const [desde, setDesde] = useState("");
@@ -408,13 +527,16 @@ export default function PedidosPreparadosPage() {
               { v: "comp", label: "Comparativa", icon: Users },
               { v: "mat", label: "Ítems", icon: LayoutGrid },
               { v: "ind", label: "Individual", icon: User },
+              { v: "rep", label: "Reposición", icon: PackageSearch },
             ]} />
+          {vista !== "rep" && (
           <Seg<Gran> val={gran} onChange={setGran}
             opts={[
               { v: "dia", label: "Diario", icon: CalendarDays },
               { v: "sem", label: "Semanal", icon: CalendarRange },
               { v: "mes", label: "Mensual", icon: Calendar },
             ]} />
+          )}
           {vista === "ind" && (
             <select value={op} onChange={(e) => setOp(e.target.value)}
               className="bg-[#1f1f1f] border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-100 focus:border-yellow-400 outline-none cursor-pointer max-w-[200px]">
@@ -424,7 +546,9 @@ export default function PedidosPreparadosPage() {
         </div>
         </div>
 
-        {!hayDatos ? (
+        {vista === "rep" ? (
+          <ReposicionOtPanel />
+        ) : !hayDatos ? (
           <div className="flex flex-col items-center justify-center py-28 gap-3 text-center">
             {loading ? <Loader2 size={40} className="text-yellow-400 animate-spin" />
               : <CalendarRange size={44} className="text-zinc-700" />}
@@ -524,12 +648,14 @@ export default function PedidosPreparadosPage() {
           </>
         )}
 
-        <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
-          La barra verde va apilada: tramo claro = pedidos ingresados en el mismo período; tramo oscuro = arrastre de períodos anteriores.
-          Preparado (OT) = WMS Picking (1 fila = 1 OT). Ingresados = pedidos registrados/día (Magnus, comprobantes 10, 70, 75, 100,
-          210, 310 y 410 — los 75 y 410 no se facturan, por eso no se les exige factura). Controlado: 3ª barra lista para cuando se
-          defina la fuente. Semanas lunes→domingo (ISO). SQL en vivo.
-        </p>
+        {vista !== "rep" && (
+          <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
+            La barra verde va apilada: tramo claro = pedidos ingresados en el mismo período; tramo oscuro = arrastre de períodos anteriores.
+            Preparado (OT) = WMS Picking (1 fila = 1 OT). Ingresados = pedidos registrados/día (Magnus, comprobantes 10, 70, 75, 100,
+            210, 310 y 410 — los 75 y 410 no se facturan, por eso no se les exige factura). Controlado: 3ª barra lista para cuando se
+            defina la fuente. Semanas lunes→domingo (ISO). SQL en vivo.
+          </p>
+        )}
       </main>
     </div>
   );

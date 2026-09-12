@@ -18,15 +18,55 @@ renglón (NroMovVenta+NroRenglon) UNA sola vez para el total, y por separado
 el desglose por controlador (que sí puede sumar más que el total si hubo
 doble control — es crédito de productividad, no el total real).
 
+Además del total por mes, `fetch_mesa_control()` desglosa el mismo total
+"exacto" (renglones únicos) por hora del día, por día calendario y por
+semana (lunes a lunes) — confirmado por muestra real de datos (magnus__query,
+2026-09-12) que Ven_PedImpresoCP.FechaControl es un entero Clarion (días
+desde 1800-12-28, igual convención que el resto de Magnus — ver _BASE_PEDIDO
+en deposito.py) y HoraControl es un entero Clarion de centésimas de segundo
+desde medianoche (valor/100 = segundos; rango 0..8639999). Ver
+`_fecha_desde_dias` / `_hora_desde_centesimas`.
+
 Las funciones basadas en el SP (`_exec_sp`, `_detectar_columnas`,
 `fetch_mesa_control_diag`) se dejan sólo como referencia/diagnóstico.
 ────────────────────────────────────────────────────────────────────────────
 """
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from db import get_connection
+
+_BASE_CLARION = date(1800, 12, 28)  # misma época que _BASE_PEDIDO en deposito.py
+
+
+def _fecha_desde_dias(dias) -> date | None:
+    """FechaControl (int Clarion, días desde 1800-12-28) -> date."""
+    try:
+        d = int(dias)
+    except (TypeError, ValueError):
+        return None
+    if d <= 0:
+        return None
+    try:
+        return _BASE_CLARION + timedelta(days=d)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _hora_desde_centesimas(valor) -> int | None:
+    """HoraControl (int Clarion, centésimas de segundo desde medianoche) ->
+    hora 0-23, o None si no hay hora registrada (valor <= 0 — no visto en la
+    práctica: 0 filas sin hora en una muestra de 2446 renglones controlados
+    recientes, pero se contempla por las dudas)."""
+    try:
+        v = int(valor)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return (v // 100 // 3600) % 24
+
 
 SP_NOMBRE = "dbo.RPT_V325_ProductividadPorControlador"
 CANTIDAD_COL = "CANTIDAD ITEMS CONTROLADOS"  # confirmada (control_extraccion.py)
@@ -126,7 +166,8 @@ def _detectar_columnas(cols: list[str]) -> dict:
 SQL_RENGLONES_CONTROLADOS = """
 SELECT
     reng.NroMovVenta, reng.NroRenglon,
-    ped.CodControlador1, ped.CodControlador2
+    ped.CodControlador1, ped.CodControlador2,
+    ped.FechaControl, ped.HoraControl
 FROM dbo.Ven_PedImpresoCP ped
 JOIN dbo.venfer_pedidoReng reng
   ON ped.NroMovVenta   = reng.NroMovVenta
@@ -145,9 +186,9 @@ def _nombres_usuarios(conn) -> dict[int, str]:
 
 
 def fetch_mesa_control(meses: list[str]) -> dict:
-    """Renglones (items) controlados por mes + por controlador — consulta
-    directa a las tablas fuente (no al SP). `meses` = ['YYYY-MM', ...].
-    Devuelve:
+    """Renglones (items) controlados por mes + por controlador + por hora del
+    día / día / semana — consulta directa a las tablas fuente (no al SP).
+    `meses` = ['YYYY-MM', ...]. Devuelve:
       · por_mes         = [{mes, total}]  (renglones DISTINTOS del mes, sin
         duplicar por doble controlador ni por recontroles del mismo renglón —
         pensado para reconciliar contra lo facturado/preparado)
@@ -156,13 +197,31 @@ def fetch_mesa_control(meses: list[str]) -> dict:
         del mismo renglón — por eso puede sumar más que total_general en ese
         caso puntual; pero YA NO duplica por CodControlador1==CodControlador2,
         que es el caso normal — ver comentario arriba de SQL_RENGLONES_CONTROLADOS)
+      · por_dia    = [{fecha: 'YYYY-MM-DD', total}]   (mismo criterio "renglón
+        único" que por_mes; la suma da total_general)
+      · por_semana = [{semana: 'YYYY-MM-DD' (lunes de esa semana), total}]
+        (por_dia agrupado de lunes a domingo)
+      · por_hora   = [{hora: 0..23, total}]  (distribución de esos mismos
+        renglones únicos según la hora del día en que se controlaron, sumada
+        sobre todos los meses elegidos — para ver en qué franja horaria se
+        concentra el control)
+    Cuando un renglón tiene más de un evento de control en el rango (recontrol/
+    reimpresión, ver SQL_RECONTROLES_DIAG), se lo ubica en la fecha/hora del
+    evento MÁS RECIENTE (determinístico, no depende del orden de filas del
+    driver) — igual criterio en por_dia/por_semana/por_hora.
     Solo lectura sobre EVERWEAR."""
     meses = sorted(set(m.strip() for m in meses if m.strip()))
     if not meses:
-        return {"meses": [], "por_mes": [], "por_controlador": [], "total_general": 0}
+        return {
+            "meses": [], "por_mes": [], "por_controlador": [],
+            "por_dia": [], "por_semana": [], "por_hora": [],
+            "total_general": 0,
+        }
 
     por_mes: dict[str, int] = {m: 0 for m in meses}
     por_ctrl: dict[int, dict] = {}
+    por_dia: dict[str, int] = {}
+    por_hora: dict[int, int] = {h: 0 for h in range(24)}
 
     conn = get_connection("EVERWEAR")
     try:
@@ -177,8 +236,19 @@ def fetch_mesa_control(meses: list[str]) -> dict:
             filas = cur.fetchall()
 
             renglones_unicos: set[tuple] = set()
-            for nro, nro_reng, cod1, cod2 in filas:
-                renglones_unicos.add((nro, nro_reng))
+            evento_por_renglon: dict[tuple, tuple[str, int]] = {}
+            for nro, nro_reng, cod1, cod2, fecha_ctrl, hora_ctrl in filas:
+                clave = (nro, nro_reng)
+                renglones_unicos.add(clave)
+
+                fecha_evt = _fecha_desde_dias(fecha_ctrl)
+                if fecha_evt is not None:
+                    hora_evt = _hora_desde_centesimas(hora_ctrl)
+                    candidato = (fecha_evt.isoformat(), hora_evt if hora_evt is not None else -1)
+                    previo = evento_por_renglon.get(clave)
+                    if previo is None or candidato > previo:
+                        evento_por_renglon[clave] = candidato
+
                 # dedupe: cod1==cod2 en el caso normal (1 sola persona
                 # controló) -> 1 solo crédito. Si algún día son distintos
                 # (control genuino de 2 personas), se acredita a las 2.
@@ -196,14 +266,33 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                     entry["por_mes"][mes] = entry["por_mes"].get(mes, 0) + 1
                     entry["total"] += 1
             por_mes[mes] = len(renglones_unicos)
+
+            for fecha_str, hora_num in evento_por_renglon.values():
+                por_dia[fecha_str] = por_dia.get(fecha_str, 0) + 1
+                if hora_num >= 0:
+                    por_hora[hora_num] = por_hora.get(hora_num, 0) + 1
     finally:
         conn.close()
 
     controladores = sorted(por_ctrl.values(), key=lambda x: -x["total"])
+
+    dias_ordenados = sorted(por_dia.keys())
+    por_semana: dict[str, int] = {}
+    for fecha_str in dias_ordenados:
+        lunes = date.fromisoformat(fecha_str)
+        lunes = lunes - timedelta(days=lunes.weekday())
+        clave = lunes.isoformat()
+        por_semana[clave] = por_semana.get(clave, 0) + por_dia[fecha_str]
+
     return {
         "meses": meses,
         "por_mes": [{"mes": m, "total": por_mes[m]} for m in meses],
         "por_controlador": controladores,
+        "por_dia": [{"fecha": f, "total": por_dia[f]} for f in dias_ordenados],
+        "por_semana": [
+            {"semana": s, "total": por_semana[s]} for s in sorted(por_semana.keys())
+        ],
+        "por_hora": [{"hora": hh, "total": por_hora[hh]} for hh in range(24)],
         "total_general": sum(por_mes.values()),
     }
 

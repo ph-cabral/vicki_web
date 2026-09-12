@@ -2042,6 +2042,123 @@ def fetch_wms_estados(desde=None, hasta=None, procesos: tuple[int, ...] = PROCES
     }
 
 
+# ── Riesgo de faltante en OT abiertas (alerta de reposición, /deposito/reposicion-ot) ──
+# Para cada artículo con demanda pendiente en OT de Picking VIVAS (abiertas o en
+# proceso, ver WMS_ESTADOS_VIVOS más arriba) se compara esa demanda contra el
+# stock del depósito central (mismo criterio que /deposito/stock y
+# /compras/faltantes: EVERWEAR.Stk_ArticSucursalDeposito, depósito 1, vía
+# fetch_stock_por_articulos). Si el pendiente supera el stock, ese artículo se
+# va a agotar antes de que el operario llegue a recolectarlo -> hay que
+# reponerlo (transferir de otro depósito o comprar) antes de que se termine de
+# armar esa OT.
+# Pendiente por renglón = CantPedida − CantCumplida (excluye lo ya recolectado,
+# mismo criterio que /deposito/ot-diferencias); se excluye la ubicación
+# PLAYA_PEDIDOS (no es una ubicación de stock real) y los pedidos Cancelados en
+# Magnus (mismo PATRONES_CANCELADO que el resto del archivo).
+# Universo chico (OT vivas de HOY, no historial): confirmado ~900 renglones /
+# ~750 artículos en un día normal, así que se resuelve todo en 2 consultas
+# (WMS agregado + stock por artículos), sin loops por renglón contra la base.
+SQL_OT_VIVAS_PENDIENTE = """
+SELECT
+    OT.OTId,
+    OT.{col_pedido}                  AS NroMovVenta,
+    LTRIM(RTRIM(i.OTItemArticuloId)) AS CodArticulo,
+    SUM(i.OTItemCantPedida)          AS CantPedida,
+    SUM(i.OTItemCantCumplida)        AS CantCumplida
+FROM OT
+INNER JOIN Codot   ON OT.CodotCodigo = Codot.CodotCodigo
+INNER JOIN OTItem i ON i.OTId = OT.OTId
+WHERE Codot.CodotProcesoNegocio = 4              -- Picking
+  AND OT.OTEstado IN ({vivos})                   -- vivas: Pendiente (0/1) o En proceso (5)
+  AND i.OTItemTipo = 1                           -- Recolectar
+  AND LTRIM(RTRIM(i.OTItemUbicacionCodigo)) <> 'PLAYA_PEDIDOS'
+GROUP BY OT.OTId, OT.{col_pedido}, LTRIM(RTRIM(i.OTItemArticuloId))
+HAVING SUM(i.OTItemCantPedida) > SUM(i.OTItemCantCumplida)
+"""
+
+
+def fetch_reposicion_ot_abiertas():
+    """Alerta de reposición: por artículo, Pendiente (demanda sin recolectar en
+    OT de Picking vivas) vs Stock del depósito central. Disponible = Stock -
+    Pendiente; Reponer = max(0, -Disponible) = lo que falta para cubrir esa
+    demanda YA comprometida en OT abiertas/en proceso, antes de que el
+    operario llegue a recolectarla. Ordenado por Reponer descendente (más
+    urgente primero). Excluye pedidos Cancelados en Magnus."""
+    conn = get_connection("WMS")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(
+            SQL_OT_VIVAS_PENDIENTE.format(
+                col_pedido=OT_COL_PEDIDO,
+                vivos=",".join(str(e) for e in WMS_ESTADOS_VIVOS),
+            )
+        )
+        cols = [c[0] for c in cur.description]
+        filas = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    pedidos = sorted({int(f["NroMovVenta"]) for f in filas if f.get("NroMovVenta") is not None})
+    info = _info_pedidos_resumen(pedidos)  # {NroMovVenta: {CompCodigo, Estado}}
+
+    por_articulo: dict[str, dict] = {}
+    ots_descartadas: set = set()
+    for f in filas:
+        nro = int(f["NroMovVenta"]) if f.get("NroMovVenta") is not None else None
+        estado = info.get(nro, {}).get("Estado") if nro is not None else None
+        if estado and any(p in str(estado).upper() for p in PATRONES_CANCELADO):
+            ots_descartadas.add(_int(f.get("OTId")))
+            continue
+        cod = _txt(f.get("CodArticulo"))
+        if not cod:
+            continue
+        pendiente = max(
+            0.0,
+            float(_safe(f.get("CantPedida")) or 0) - float(_safe(f.get("CantCumplida")) or 0),
+        )
+        if pendiente <= 0:
+            continue
+        e = por_articulo.setdefault(cod, {"Pendiente": 0.0, "ots": set(), "pedidos": set()})
+        e["Pendiente"] += pendiente
+        e["ots"].add(_int(f.get("OTId")))
+        if nro is not None:
+            e["pedidos"].add(nro)
+
+    codigos = sorted(por_articulo.keys())
+    stock = (
+        {r["CodArticulo"]: r["Stock"] for r in fetch_stock_por_articulos(codigos)["rows"]}
+        if codigos else {}
+    )
+    info_art = _info_articulos(codigos)
+
+    rows = []
+    for cod, e in por_articulo.items():
+        stk = stock.get(cod, 0.0)
+        pend = round(e["Pendiente"], 3)
+        disponible = round(stk - pend, 3)
+        meta = info_art.get(cod, {})
+        rows.append({
+            "CodArticulo": cod,
+            "Nombre":      meta.get("Nombre", ""),
+            "Proveedor":   meta.get("Proveedor", ""),
+            "Stock":       stk,
+            "Pendiente":   pend,
+            "Disponible":  disponible,
+            "Reponer":     round(max(0.0, -disponible), 3),
+            "OTs":         len(e["ots"]),
+            "Pedidos":     len(e["pedidos"]),
+        })
+    rows.sort(key=lambda r: (-r["Reponer"], -r["Pendiente"]))
+
+    return {
+        "total":          len(rows),
+        "alerta":         sum(1 for r in rows if r["Reponer"] > 0),
+        "otDescartadas":  len(ots_descartadas),
+        "rows":           rows,
+    }
+
+
 # Diagnóstico para clavar el mapeo de la vista /deposito/wms:
 #   · OTEstado reales (con conteo) en los últimos N días → confirma qué código es cada
 #     estado de la app (Pendiente / En Proceso / Cumplido / En Despacho / En Tránsito).
