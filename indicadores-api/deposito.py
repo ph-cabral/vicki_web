@@ -2058,23 +2058,32 @@ def fetch_wms_estados(desde=None, hasta=None, procesos: tuple[int, ...] = PROCES
 # Universo chico (OT vivas de HOY, no historial): confirmado ~900 renglones /
 # ~750 artículos en un día normal, así que se resuelve todo en 2 consultas
 # (WMS agregado + stock por artículos), sin loops por renglón contra la base.
+# Incluye el operario asignado (OTUsuarioGUID_Repositor, mismo join que
+# fetch_wms) para poder armar el desglose "por operario" además del detalle
+# por artículo: el stock es compartido (Disponible/Reponer se calculan a nivel
+# artículo, sumando TODAS las OT vivas), pero cada operario necesita ver cuáles
+# de SUS OT abiertas tocan un artículo que ya está en riesgo.
 SQL_OT_VIVAS_PENDIENTE = """
 SELECT
     OT.OTId,
     OT.{col_pedido}                  AS NroMovVenta,
+    P_Repositor.PersonalNombre       AS Operario,
     LTRIM(RTRIM(i.OTItemArticuloId)) AS CodArticulo,
     SUM(i.OTItemCantPedida)          AS CantPedida,
     SUM(i.OTItemCantCumplida)        AS CantCumplida
 FROM OT
 INNER JOIN Codot   ON OT.CodotCodigo = Codot.CodotCodigo
 INNER JOIN OTItem i ON i.OTId = OT.OTId
+LEFT JOIN Personal P_Repositor ON OT.OTUsuarioGUID_Repositor = P_Repositor.PersonalId
 WHERE Codot.CodotProcesoNegocio = 4              -- Picking
   AND OT.OTEstado IN ({vivos})                   -- vivas: Pendiente (0/1) o En proceso (5)
   AND i.OTItemTipo = 1                           -- Recolectar
   AND LTRIM(RTRIM(i.OTItemUbicacionCodigo)) <> 'PLAYA_PEDIDOS'
-GROUP BY OT.OTId, OT.{col_pedido}, LTRIM(RTRIM(i.OTItemArticuloId))
+GROUP BY OT.OTId, OT.{col_pedido}, P_Repositor.PersonalNombre, LTRIM(RTRIM(i.OTItemArticuloId))
 HAVING SUM(i.OTItemCantPedida) > SUM(i.OTItemCantCumplida)
 """
+
+SIN_OPERARIO_ASIGNADO = "— Sin asignar"
 
 
 def fetch_reposicion_ot_abiertas():
@@ -2083,7 +2092,13 @@ def fetch_reposicion_ot_abiertas():
     Pendiente; Reponer = max(0, -Disponible) = lo que falta para cubrir esa
     demanda YA comprometida en OT abiertas/en proceso, antes de que el
     operario llegue a recolectarla. Ordenado por Reponer descendente (más
-    urgente primero). Excluye pedidos Cancelados en Magnus."""
+    urgente primero). Excluye pedidos Cancelados en Magnus.
+
+    Además arma 'porOperario': para cada operario con OT vivas, cuántos
+    artículos EN RIESGO (Reponer > 0) tiene entre sus propios pendientes, en
+    cuántas OT y por cuántas unidades — para que cada uno vea de un vistazo
+    qué de lo suyo se va a quedar sin stock. El Disponible/Reponer del
+    artículo sigue siendo global (el stock no es de un operario en particular)."""
     conn = get_connection("WMS")
     try:
         cur = conn.cursor()
@@ -2103,6 +2118,7 @@ def fetch_reposicion_ot_abiertas():
     info = _info_pedidos_resumen(pedidos)  # {NroMovVenta: {CompCodigo, Estado}}
 
     por_articulo: dict[str, dict] = {}
+    por_op_articulo: dict[tuple[str, str], dict] = {}
     ots_descartadas: set = set()
     for f in filas:
         nro = int(f["NroMovVenta"]) if f.get("NroMovVenta") is not None else None
@@ -2119,11 +2135,18 @@ def fetch_reposicion_ot_abiertas():
         )
         if pendiente <= 0:
             continue
+        otid = _int(f.get("OTId"))
+        operario = _txt(f.get("Operario")) or SIN_OPERARIO_ASIGNADO
+
         e = por_articulo.setdefault(cod, {"Pendiente": 0.0, "ots": set(), "pedidos": set()})
         e["Pendiente"] += pendiente
-        e["ots"].add(_int(f.get("OTId")))
+        e["ots"].add(otid)
         if nro is not None:
             e["pedidos"].add(nro)
+
+        oe = por_op_articulo.setdefault((operario, cod), {"Pendiente": 0.0, "ots": set()})
+        oe["Pendiente"] += pendiente
+        oe["ots"].add(otid)
 
     codigos = sorted(por_articulo.keys())
     stock = (
@@ -2133,10 +2156,14 @@ def fetch_reposicion_ot_abiertas():
     info_art = _info_articulos(codigos)
 
     rows = []
+    riesgo_articulos: set[str] = set()
     for cod, e in por_articulo.items():
         stk = stock.get(cod, 0.0)
         pend = round(e["Pendiente"], 3)
         disponible = round(stk - pend, 3)
+        reponer = round(max(0.0, -disponible), 3)
+        if reponer > 0:
+            riesgo_articulos.add(cod)
         meta = info_art.get(cod, {})
         rows.append({
             "CodArticulo": cod,
@@ -2145,17 +2172,38 @@ def fetch_reposicion_ot_abiertas():
             "Stock":       stk,
             "Pendiente":   pend,
             "Disponible":  disponible,
-            "Reponer":     round(max(0.0, -disponible), 3),
+            "Reponer":     reponer,
             "OTs":         len(e["ots"]),
             "Pedidos":     len(e["pedidos"]),
         })
     rows.sort(key=lambda r: (-r["Reponer"], -r["Pendiente"]))
 
+    por_operario: dict[str, dict] = {}
+    for (operario, cod), oe in por_op_articulo.items():
+        if cod not in riesgo_articulos:
+            continue
+        o = por_operario.setdefault(operario, {"articulos": set(), "ots": set(), "pendiente": 0.0})
+        o["articulos"].add(cod)
+        o["ots"] |= oe["ots"]
+        o["pendiente"] += oe["Pendiente"]
+
+    operarios_rows = [
+        {
+            "Operario":  op,
+            "Articulos": len(v["articulos"]),
+            "OTs":       len(v["ots"]),
+            "Pendiente": round(v["pendiente"], 3),
+        }
+        for op, v in por_operario.items()
+    ]
+    operarios_rows.sort(key=lambda r: (-r["Articulos"], -r["Pendiente"]))
+
     return {
         "total":          len(rows),
-        "alerta":         sum(1 for r in rows if r["Reponer"] > 0),
+        "alerta":         len(riesgo_articulos),
         "otDescartadas":  len(ots_descartadas),
         "rows":           rows,
+        "porOperario":    operarios_rows,
     }
 
 

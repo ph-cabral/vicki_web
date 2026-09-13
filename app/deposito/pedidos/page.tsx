@@ -237,11 +237,18 @@ interface ReposicionRow {
   OTs: number;
   Pedidos: number;
 }
+interface OperarioRiesgoRow {
+  Operario: string;
+  Articulos: number;
+  OTs: number;
+  Pendiente: number;
+}
 interface ReposicionData {
   total: number;
   alerta: number;
   otDescartadas: number;
   rows: ReposicionRow[];
+  porOperario: OperarioRiesgoRow[];
 }
 
 function ReposicionOtPanel() {
@@ -292,6 +299,14 @@ function ReposicionOtPanel() {
     { key: "Pedidos", label: "Pedidos", num: true, render: (r) => fmtNum(r.Pedidos) },
   ];
 
+  const opCols: Col<OperarioRiesgoRow>[] = [
+    { key: "Operario", label: "Operario" },
+    { key: "Articulos", label: "Artículos en riesgo", num: true, render: (r) => <Tag tone="red">{fmtNum(r.Articulos)}</Tag> },
+    { key: "OTs", label: "OTs afectadas", num: true, render: (r) => fmtNum(r.OTs) },
+    { key: "Pendiente", label: "Unidades propias pendientes", num: true, render: (r) => fmtNum(r.Pendiente) },
+  ];
+  const porOperario = data?.porOperario ?? [];
+
   return (
     <>
       <div className="flex items-center justify-between gap-3 mb-3">
@@ -332,8 +347,23 @@ function ReposicionOtPanel() {
             <KPI label="Unidades a reponer" value={fmtNum(rows.reduce((a, r) => a + r.Reponer, 0))} accent="amber" />
           </Grid>
 
+          <SectionTitle>👷 Desglose por operario · artículos en riesgo en sus OT abiertas</SectionTitle>
+          <Table<OperarioRiesgoRow>
+            cols={opCols}
+            rows={porOperario}
+            maxH={320}
+            empty="Ningún operario tiene artículos en riesgo entre sus OT abiertas."
+          />
+
           <SectionTitle>Artículos a reponer · ordenado por urgencia</SectionTitle>
           <Table<ReposicionRow> cols={cols} rows={rows} max={300} maxH={560} />
+
+          <p className="text-[11px] text-zinc-600 mt-3 leading-relaxed">
+            El desglose por operario cuenta solo los artículos que YA están en riesgo (Reponer &gt; 0);
+            "Unidades propias pendientes" es lo que ese operario todavía tiene que recolectar de esos
+            artículos en sus propias OT (el stock es compartido, así que puede no alcanzar para todos
+            los operarios con ese artículo pendiente).
+          </p>
         </>
       )}
     </>
