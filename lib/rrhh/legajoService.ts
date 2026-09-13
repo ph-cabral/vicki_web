@@ -70,13 +70,20 @@ export async function resolverConvenio(
 }
 
 export async function updateLegajo(id: number, data: LegajoUpdate) {
-  let payload: LegajoUpdate & Partial<ConvenioResuelto> = data;
+  let payload: LegajoUpdate & Partial<ConvenioResuelto> & { fechaCese?: Date | null } = data;
 
   if ("convenioId" in data || "categoriaId" in data) {
     payload = { ...data, ...(await resolverConvenio(data.convenioId, data.categoriaId)) };
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    // Una sola lectura para las dos cosas que necesitan el estado "antes"
+    // del update (evita dos roundtrips separados contra la base).
+    const necesitaActual = "codigo" in data || "estado" in data;
+    const actual = necesitaActual
+      ? await tx.legajo.findUnique({ where: { id }, select: { codigo: true, estado: true } })
+      : null;
+
     // Si el N° de legajo (`codigo`) cambia — típico al cambiar de puesto o
     // convenio (ver sql/rrhh_legajo_convenio_carga.sql) — el código anterior
     // se guarda en legajo_codigo_historial en vez de perderse: así, si ese
@@ -84,11 +91,18 @@ export async function updateLegajo(id: number, data: LegajoUpdate) {
     // de nómina (app/api/rrhh/nomina/route.ts) sigue reconociendo a AMBOS
     // dueños del código y desambigua por similitud de nombre contra el
     // Excel (ver elegirCandidato() ahí).
-    if ("codigo" in data) {
-      const actual = await tx.legajo.findUnique({ where: { id }, select: { codigo: true } });
-      if (actual?.codigo && actual.codigo !== data.codigo) {
-        await tx.legajo_codigo_historial.create({ data: { legajoId: id, codigo: actual.codigo } });
-      }
+    if ("codigo" in data && actual?.codigo && actual.codigo !== data.codigo) {
+      await tx.legajo_codigo_historial.create({ data: { legajoId: id, codigo: actual.codigo } });
+    }
+
+    // Fecha de cese: nunca llega en `data` (no está en legajoUpdateSchema,
+    // ver el comentario ahí) — es 100% derivada del cambio de estado, nunca
+    // un valor tipeado a mano. Al pasar a INACTIVO se fija sola a "ahora";
+    // al volver a ACTIVO se borra sola. Guardar sin cambiar el estado no la
+    // toca.
+    if ("estado" in data && actual && actual.estado !== data.estado) {
+      if (data.estado === "INACTIVO") payload.fechaCese = new Date();
+      else if (data.estado === "ACTIVO") payload.fechaCese = null;
     }
 
     return tx.legajo.update({

@@ -26,8 +26,21 @@ const ESTADO_CLASS: Record<string, string> = {
 
 // ---------- control de campo (reusado por escalares y celdas de relación) ----------
 function FieldControl({ def, name }: { def: FieldDef; name: string }) {
-  const { register } = useFormContext();
+  const { register, watch } = useFormContext();
   const cls = "h-9 w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 [color-scheme:dark]";
+
+  // Campo de sólo lectura (p. ej. fechaCese): se muestra el valor guardado
+  // pero no se registra en el form — no hay forma de tipearlo a mano, y como
+  // tampoco está en legajoUpdateSchema, un valor colado acá se descartaría
+  // igual al guardar.
+  if (def.readOnly) {
+    const valor = watch(name) as string | null | undefined;
+    return (
+      <div className={`${cls} flex cursor-not-allowed items-center text-zinc-500`}>
+        {valor || "—"}
+      </div>
+    );
+  }
 
   if (def.type === "bool") return <input type="checkbox" {...register(name)} className="h-4 w-4" />;
   if (def.type === "textarea")

@@ -131,7 +131,11 @@ export async function POST(req: NextRequest) {
         create: {
           employeeNo: userInfo.employeeNo,
           codigo: userInfo.employeeNo,
-          estado: "activo",
+          estado: "ACTIVO", // en mayúscula: mismo valor que usa el resto del sistema (OPC.estado)
+          // fechaInicio = momento de creación del legajo, sin importar por
+          // qué medio se dio de alta (wizard de RRHH o, como acá, alta desde
+          // el reloj biométrico) — ver rrhh_fecha_ingreso_unica.
+          fechaInicio: new Date(),
           nombre: userInfo.name,
           sexo: SEXO_MAP[userInfo.gender ?? "unknown"],
         },

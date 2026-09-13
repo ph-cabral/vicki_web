@@ -1,10 +1,16 @@
 import { z } from "zod";
+import { OPC } from "./legajoFields";
 
 // Update parcial de legajo (RRHH). Solo columnas escalares.
 // Claves desconocidas (id, relaciones, createdAt…) se descartan solas.
 // `codigo` SÍ se valida acá (2026-09-11): es el N° de legajo editable desde
 // la primera pestaña del editor (ver legajoFields.ts), necesario para cruzar
 // el Excel de pago de sueldos contra el área/sector real de cada persona.
+// `fechaCese` NO se valida acá a propósito (2026-09-13): no es un campo que
+// se pueda mandar en el PUT — al no estar en el schema, Zod lo descarta
+// (el object no es .strict(), ver el comentario del final) aunque el
+// cliente lo mande. La fija/borra sola updateLegajo() según el estado; ver
+// rrhh_fecha_cese_automatica en la memoria del proyecto.
 const str  = z.string().trim().max(300).optional().nullable();
 const bool = z.boolean().optional();
 const num  = z.coerce.number().optional().nullable();
@@ -16,7 +22,10 @@ const uniqueStr = (max: number) =>
     .transform((v) => (v === "" ? null : v));
 
 export const legajoUpdateSchema = z.object({
-  estado: z.string().max(20).optional(),
+  // Sólo ACTIVO/INACTIVO (2026-09-13, ver OPC.estado): el enum evita que un
+  // PUT directo (fuera del editor) deje un legajo en un estado que ya no se
+  // ofrece en la UI.
+  estado: z.enum(OPC.estado).optional(),
   codigo: uniqueStr(20),
   employeeNo: uniqueStr(50), anvizId: uniqueStr(20),
   // step1
@@ -31,7 +40,7 @@ export const legajoUpdateSchema = z.object({
   calle: str, numero: str, piso: str, depto: str, codigoPostal: str,
   localidad: str, provincia: str, comprobanteUrl: str, ddjjConformidad: bool,
   // step3
-  fechaInicio: date, fechaCese: date, modalidadContrato: str, situacionRevista: str,
+  fechaInicio: date, modalidadContrato: str, situacionRevista: str,
   regimen: str, convenio: str, categoria: str, puestoInterno: str, sector: str,
   retribucionPactada: num, modalidadLiquidacion: str, obraSocial: str,
   tipoServicio: str, actividadEconomica: str, domicilioExplotacion: str,

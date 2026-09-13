@@ -133,7 +133,10 @@ export async function POST(req: NextRequest) {
         // en la memoria del proyecto). Es el mismo campo que usan los
         // gráficos de /rrhh (lib/rrhh/headcountDb.ts).
         fechaInicio: new Date(),
-        fechaCese: step3?.fechaCese ? new Date(step3.fechaCese) : null,
+        // Fecha de cese: nunca se tipea a mano, ni siquiera al alta (se sacó
+        // el input del wizard, ver rrhh_fecha_cese_automatica). La fija sola
+        // updateLegajo() cuando el estado pasa a INACTIVO.
+        fechaCese: null,
         modalidadContrato: step3?.modalidadContrato ?? null,
         situacionRevista: step3?.situacionRevista ?? null,
         regimen: step3?.regimen ?? null,

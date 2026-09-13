@@ -19,6 +19,10 @@ export interface FieldDef {
   max?: number; // maxLength para VarChar
   options?: string[]; // para select
   col?: 1 | 2 | 3; // ancho en grilla (default 1)
+  // Se muestra pero no se puede tipear a mano (ver FieldControl en
+  // LegajoEditor.tsx). Usado por fechaCese: la fija sola updateLegajo()
+  // según el estado, nunca un input.
+  readOnly?: boolean;
 }
 
 export interface SectionDef {
@@ -29,7 +33,11 @@ export interface SectionDef {
 
 // ---- Opciones de selects (ajustar a tus catálogos reales) ----
 export const OPC = {
-  estado: ["ACTIVO", "INACTIVO", "SUSPENDIDO", "BAJA"],
+  // Sólo 2 estados (2026-09-13): pasar a INACTIVO registra la fecha de cese
+  // sola; volver a ACTIVO la borra sola (ver updateLegajo() en
+  // legajoService.ts). SUSPENDIDO/BAJA quedaron de un esquema anterior — no
+  // se ofrecen más acá, aunque puedan seguir existiendo en legajos viejos.
+  estado: ["ACTIVO", "INACTIVO"],
   sexo: ["M", "F", "X"],
   estadoCivil: ["Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Conviviente"],
   manoHabil: ["Diestro", "Zurdo", "Ambidiestro"],
@@ -106,7 +114,9 @@ export const SECTIONS: SectionDef[] = [
       // sola a la fecha de creación del legajo — queda editable acá sólo para
       // corregirla a mano si hace falta.
       { name: "fechaInicio", label: "Fecha de inicio", type: "date" },
-      { name: "fechaCese", label: "Fecha de cese", type: "date" },
+      // No editable a mano: la fija sola updateLegajo() al pasar el estado
+      // a INACTIVO (y la borra al volver a ACTIVO). Ver legajoService.ts.
+      { name: "fechaCese", label: "Fecha de cese (automática)", type: "date", readOnly: true },
       { name: "modalidadContrato", label: "Modalidad de contrato", type: "text", max: 100 },
       { name: "situacionRevista", label: "Situación de revista", type: "text", max: 20 },
       { name: "regimen", label: "Régimen", type: "text", max: 40 },

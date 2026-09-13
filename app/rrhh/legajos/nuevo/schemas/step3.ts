@@ -2,7 +2,6 @@ import { z } from "zod";
 
 export const step3Schema = z.object({
   fechaInicio: z.string().optional(),
-  fechaCese: z.string().optional(),
 
   modalidadContrato: z.string().optional(), // ej "014 - Nuevo período de prueba"
   situacionRevista: z.string().optional().default("01"),
