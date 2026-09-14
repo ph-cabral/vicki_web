@@ -43,16 +43,19 @@ interface PorMes {
 }
 interface PorDiaControlador {
   fecha: string; // YYYY-MM-DD
-  total: number;
+  total: number; // items (renglones/créditos)
+  ot: number; // pedidos (NroMovVenta) distintos detrás de esos items
 }
 interface PorDowControlador {
   dow: number; // 0=lunes .. 6=domingo (ISO)
   total: number;
+  ot: number;
 }
 interface PorSlot30Controlador {
   slot: number; // 0..47
   hora: string; // "HH:MM", inicio de la franja de 30 min
   total: number;
+  ot: number;
 }
 interface PorLineaControlador {
   linea: string;
@@ -255,12 +258,16 @@ export function MesaControlTab() {
     if (granCtrl === "dia") {
       return c.por_slot30
         .filter((s) => s.total > 0)
-        .map((s) => ({ x: s.hora, total: s.total }));
+        .map((s) => ({ x: s.hora, total: s.total, ot: s.ot }));
     }
     if (granCtrl === "semana") {
-      return c.por_dow.map((d) => ({ x: DIAS_SEMANA[d.dow].slice(0, 3), total: d.total }));
+      return c.por_dow.map((d) => ({
+        x: DIAS_SEMANA[d.dow].slice(0, 3),
+        total: d.total,
+        ot: d.ot,
+      }));
     }
-    return c.por_dia.map((d) => ({ x: fmtDiaCorto(d.fecha), total: d.total }));
+    return c.por_dia.map((d) => ({ x: fmtDiaCorto(d.fecha), total: d.total, ot: d.ot }));
   }
 
   // Top 5 líneas + "Otros" para la torta de un controlador.
@@ -562,6 +569,9 @@ export function MesaControlTab() {
                         series={[{ key: "total", name: "Items controlados", color: PALETTE[1] }]}
                         fmt={(n) => fmtNum(n)}
                         angle={granCtrl === "semana" ? undefined : -60}
+                        insideValues
+                        topLabelKey="ot"
+                        topLabelFmt={(n) => fmtNum(n)}
                       />
                       <p className="text-[10px] uppercase tracking-wider text-zinc-600 mt-4 mb-1">
                         Top 5 líneas más controladas
@@ -574,9 +584,12 @@ export function MesaControlTab() {
               <p className="text-[11px] text-zinc-600 mt-3">
                 Cada gráfico agrega TODOS los meses elegidos arriba (no un
                 día/semana puntual) — "Día" suma por franja de 30 min, "Semana"
-                por día de la semana y "Mes" por día calendario. La torta
-                muestra las 5 líneas de catálogo más controladas por esa
-                persona en el período; el resto se agrupa en "Otros".
+                por día de la semana y "Mes" por día calendario. El número
+                dentro de cada barra es items (renglones) controlados; el
+                número arriba es la cantidad de pedidos (OT) distintos detrás
+                de esos items. La torta muestra las 5 líneas de catálogo más
+                controladas por esa persona en el período; el resto se agrupa
+                en "Otros".
               </p>
             </>
           )}

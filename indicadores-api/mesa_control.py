@@ -254,15 +254,20 @@ def fetch_mesa_control(meses: list[str]) -> dict:
     Desglose por controlador (2026-09-14, para el toggle "Por controlador" del
     front — 1 gráfico de barras por controlador + torta de líneas debajo):
     cada `por_controlador[i]` agrega ADEMÁS:
-      · por_dia    = [{fecha: 'YYYY-MM-DD', total}]   — vista "Mes": 1 columna
-        por día calendario, sólo días con controles de ESE controlador.
-      · por_dow    = [{dow: 0..6, total}]  (0=lunes..6=domingo, ISO) — vista
-        "Semana": 1 columna por día de la semana, sumado sobre todos los
-        meses elegidos (no una semana calendario puntual).
-      · por_slot30 = [{slot: 0..47, hora: 'HH:MM', total}]  — vista "Día":
-        1 columna cada 30 min (slot = hora*2 + 0/1), sumado sobre todos los
-        meses elegidos — mismo criterio de agregación que `por_hora` pero al
-        doble de resolución y acotado a ese controlador.
+      · por_dia    = [{fecha: 'YYYY-MM-DD', total, ot}]   — vista "Mes": 1
+        columna por día calendario, sólo días con controles de ESE
+        controlador.
+      · por_dow    = [{dow: 0..6, total, ot}]  (0=lunes..6=domingo, ISO) —
+        vista "Semana": 1 columna por día de la semana, sumado sobre todos
+        los meses elegidos (no una semana calendario puntual).
+      · por_slot30 = [{slot: 0..47, hora: 'HH:MM', total, ot}]  — vista
+        "Día": 1 columna cada 30 min (slot = hora*2 + 0/1), sumado sobre
+        todos los meses elegidos — mismo criterio de agregación que
+        `por_hora` pero al doble de resolución y acotado a ese controlador.
+      En los 3, `total` = renglones/items (créditos, cuenta recontroles) y
+      `ot` = NroMovVenta (pedidos) DISTINTOS detrás de esos créditos — un
+      pedido con varios renglones controlados en la misma franja suma 1 solo
+      OT pero N items.
       · por_linea  = [{linea, total}]  ordenado desc — línea de catálogo
         (Stk_Nivel1.Detalle) del artículo de cada renglón que controló; el
         front arma el top 5 + "Otros" para la torta.
@@ -332,9 +337,13 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                             "codigo": codigo,
                             "por_mes": {},
                             "total": 0,
+                            # cada valor: {"items": int, "ots": set()} — "ots"
+                            # junta NroMovVenta distintos para poder mostrar,
+                            # además de items (renglones), la cantidad de
+                            # pedidos/OT distintos detrás de esa barra.
                             "_por_dia": {},
-                            "_por_dow": {i: 0 for i in range(7)},
-                            "_por_slot30": {i: 0 for i in range(48)},
+                            "_por_dow": {i: {"items": 0, "ots": set()} for i in range(7)},
+                            "_por_slot30": {i: {"items": 0, "ots": set()} for i in range(48)},
                             "_por_linea": {},
                         },
                     )
@@ -342,10 +351,16 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                     entry["total"] += 1
                     if fecha_evt is not None:
                         fs = fecha_evt.isoformat()
-                        entry["_por_dia"][fs] = entry["_por_dia"].get(fs, 0) + 1
-                        entry["_por_dow"][dow] += 1
+                        dia_entry = entry["_por_dia"].setdefault(
+                            fs, {"items": 0, "ots": set()}
+                        )
+                        dia_entry["items"] += 1
+                        dia_entry["ots"].add(nro)
+                        entry["_por_dow"][dow]["items"] += 1
+                        entry["_por_dow"][dow]["ots"].add(nro)
                     if slot30 is not None:
-                        entry["_por_slot30"][slot30] += 1
+                        entry["_por_slot30"][slot30]["items"] += 1
+                        entry["_por_slot30"][slot30]["ots"].add(nro)
                     entry["_por_linea"][linea_nombre] = (
                         entry["_por_linea"].get(linea_nombre, 0) + 1
                     )
@@ -366,10 +381,21 @@ def fetch_mesa_control(meses: list[str]) -> dict:
         _dow = entry.pop("_por_dow")
         _slot30 = entry.pop("_por_slot30")
         _linea = entry.pop("_por_linea")
-        entry["por_dia"] = [{"fecha": f, "total": _dia[f]} for f in sorted(_dia)]
-        entry["por_dow"] = [{"dow": dw, "total": _dow[dw]} for dw in range(7)]
+        entry["por_dia"] = [
+            {"fecha": f, "total": _dia[f]["items"], "ot": len(_dia[f]["ots"])}
+            for f in sorted(_dia)
+        ]
+        entry["por_dow"] = [
+            {"dow": dw, "total": _dow[dw]["items"], "ot": len(_dow[dw]["ots"])}
+            for dw in range(7)
+        ]
         entry["por_slot30"] = [
-            {"slot": s, "hora": f"{s // 2:02d}:{'00' if s % 2 == 0 else '30'}", "total": _slot30[s]}
+            {
+                "slot": s,
+                "hora": f"{s // 2:02d}:{'00' if s % 2 == 0 else '30'}",
+                "total": _slot30[s]["items"],
+                "ot": len(_slot30[s]["ots"]),
+            }
             for s in range(48)
         ]
         entry["por_linea"] = sorted(

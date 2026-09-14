@@ -534,6 +534,9 @@ export function ChartBar({
   showValues = false,
   colorByIndex = false,
   refLines,
+  insideValues = false,
+  topLabelKey,
+  topLabelFmt,
 }: {
   data: unknown[];
   xKey: string;
@@ -545,6 +548,12 @@ export function ChartBar({
   showValues?: boolean;
   colorByIndex?: boolean;
   refLines?: RefLinea[];
+  /** Valor de cada serie IMPRESO DENTRO de la barra (arriba, alto contraste). */
+  insideValues?: boolean;
+  /** Campo extra (no es una serie graficada) impreso ARRIBA de la barra —
+   * ej. cantidad de OT/pedidos distintos, cuando la barra en sí mide items. */
+  topLabelKey?: string;
+  topLabelFmt?: (n: number) => string;
 }) {
   if (!data.length) return <Empty h={height} />;
   return (
@@ -664,6 +673,28 @@ export function ChartBar({
                 angle={angle ?? 0}
                 offset={angle ? 18 : 8}
                 style={{ fontSize: 11, fill: C.muted }}
+              />
+            )}
+            {insideValues && (
+              <LabelList
+                dataKey={s.key}
+                position={horizontal ? "insideRight" : "insideTop"}
+                formatter={(v: unknown) => (Number(v) > 0 ? fmt(Number(v)) : "")}
+                style={{ fontSize: 10, fontWeight: 700, fill: "#0d1117" }}
+              />
+            )}
+            {topLabelKey && i === 0 && (
+              <LabelList
+                dataKey={topLabelKey}
+                position={horizontal ? "right" : "top"}
+                formatter={(v: unknown) =>
+                  Number(v) > 0
+                    ? topLabelFmt
+                      ? topLabelFmt(Number(v))
+                      : fmtNum(Number(v))
+                    : ""
+                }
+                style={{ fontSize: 11, fontWeight: 700, fill: C.muted }}
               />
             )}
           </Bar>
