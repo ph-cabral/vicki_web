@@ -11,7 +11,9 @@ def get_connection(database: str | None = None):
     server   = os.getenv("SQL_SERVER", "10.10.0.195")
     database = database or os.getenv("SQL_DATABASE")
     user     = os.getenv("SQL_USER", "sa")
-    pwd      = os.getenv("SQL_PASSWORD", "ORUM_A2P2")
+    pwd      = os.getenv("SQL_PASSWORD")
+    if not pwd:
+        raise RuntimeError("Falta SQL_PASSWORD en el entorno (.env) — no hardcodear la clave en el código")
 
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
