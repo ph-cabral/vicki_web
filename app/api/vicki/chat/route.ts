@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolverAccesoVickiRrhh } from "@/lib/rrhh/vickiRrhhAcceso";
 import { resolverAccesoVickiVentas } from "@/lib/ventas/vickiVentasAcceso";
 import { resolverAccesoVickiCompras } from "@/lib/compras/vickiComprasAcceso";
+import { resolverAccesoVickiDeposito } from "@/lib/deposito/vickiDepositoAcceso";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +18,13 @@ export async function POST(req: NextRequest) {
     // porque vienen de este backend, nunca del cliente — si se leyeran del
     // body tal cual, cualquiera podría mandar `vendedorCodigo` de otra
     // persona. Ver lib/ventas/vickiVentasAcceso.ts.
-    // Los dos permisos se resuelven en paralelo: son dos lookups distintos
-    // sobre la misma sesión y esto corre en CADA mensaje del chat.
-    const [acceso, accesoRrhh, accesoCompras] = await Promise.all([
+    // Los permisos se resuelven en paralelo: son lookups distintos sobre la
+    // misma sesión y esto corre en CADA mensaje del chat.
+    const [acceso, accesoRrhh, accesoCompras, accesoDeposito] = await Promise.all([
       resolverAccesoVickiVentas(),
       resolverAccesoVickiRrhh(),
       resolverAccesoVickiCompras(),
+      resolverAccesoVickiDeposito(),
     ]);
     if (!acceso.ok) {
       return NextResponse.json({ error: acceso.error }, { status: acceso.status });
@@ -36,6 +38,9 @@ export async function POST(req: NextRequest) {
     // Compras (intent "compras"): el permiso ES el de la vista /compras, leído
     // de la cookie de sesión — ver lib/compras/vickiComprasAcceso.ts.
     body.vicki_compras_habilitado = accesoCompras.ok && accesoCompras.habilitado;
+    // Depósito (intent "deposito"): el permiso ES el de la vista /deposito,
+    // leído de la cookie de sesión — ver lib/deposito/vickiDepositoAcceso.ts.
+    body.vicki_deposito_habilitado = accesoDeposito.ok && accesoDeposito.habilitado;
 
     const r = await fetch(`${VICKI_URL}/chat`, {
       method: "POST",
