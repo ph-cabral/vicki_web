@@ -41,11 +41,36 @@ interface PorMes {
   mes: string;
   total: number;
 }
+interface PorDiaControlador {
+  fecha: string; // YYYY-MM-DD
+  total: number;
+}
+interface PorDowControlador {
+  dow: number; // 0=lunes .. 6=domingo (ISO)
+  total: number;
+}
+interface PorSlot30Controlador {
+  slot: number; // 0..47
+  hora: string; // "HH:MM", inicio de la franja de 30 min
+  total: number;
+}
+interface PorLineaControlador {
+  linea: string;
+  total: number;
+}
 interface PorControlador {
   controlador: string;
   codigo: number | string | null;
   por_mes: Record<string, number>;
   total: number;
+  // Desglose 2026-09-14 para el toggle "Por controlador" (ver mesa_control.py):
+  // cada crédito (incluye recontroles) ubicado en la fecha/hora de ESE
+  // control puntual — no en la del "evento más reciente del renglón" que usa
+  // el resto de la vista (por_dia/por_semana/por_hora de arriba).
+  por_dia: PorDiaControlador[];
+  por_dow: PorDowControlador[];
+  por_slot30: PorSlot30Controlador[];
+  por_linea: PorLineaControlador[];
 }
 interface PorDia {
   fecha: string; // YYYY-MM-DD
@@ -69,7 +94,15 @@ interface MesaControlData {
   total_general: number;
 }
 
-type EjeTiempo = "hora" | "dia" | "semana";
+type EjeTiempo = "hora" | "dia" | "semana" | "controlador";
+// Sub-eje del modo "Por controlador" — mismos nombres visuales que el eje de
+// arriba, pero significan otra cosa: acá SIEMPRE se agrega sobre todos los
+// meses tildados (no hay selector de fecha puntual, ver mesa_control.py):
+// "dia" = franjas de 30 min del día, "semana" = día de la semana, "mes" =
+// día calendario.
+type GranCtrl = "dia" | "semana" | "mes";
+
+const DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 
 const isoMes = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -102,7 +135,8 @@ export function MesaControlTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verTodos, setVerTodos] = useState(false); // toggle carta por controlador
-  const [ejeTiempo, setEjeTiempo] = useState<EjeTiempo>("dia"); // Por hora/día/semana
+  const [ejeTiempo, setEjeTiempo] = useState<EjeTiempo>("dia"); // Por hora/día/semana/controlador
+  const [granCtrl, setGranCtrl] = useState<GranCtrl>("mes"); // sub-eje de "Por controlador"
 
   const load = useCallback(async (meses: string[]) => {
     if (!meses.length) {
@@ -210,6 +244,37 @@ export function MesaControlTab() {
     data && data.por_semana.length > 0
       ? data.total_general / data.por_semana.length
       : 0;
+
+  // ── "Por controlador": 1 gráfico de barras por controlador + torta de
+  // líneas debajo. Siempre agrega sobre TODOS los meses tildados arriba (ver
+  // GranCtrl) — no hay selector de fecha puntual.
+  const controladoresConDatos = (data?.por_controlador ?? []).filter((c) => c.total > 0);
+
+  // Barras de un controlador según el sub-eje elegido.
+  function barControladorEje(c: PorControlador) {
+    if (granCtrl === "dia") {
+      return c.por_slot30
+        .filter((s) => s.total > 0)
+        .map((s) => ({ x: s.hora, total: s.total }));
+    }
+    if (granCtrl === "semana") {
+      return c.por_dow.map((d) => ({ x: DIAS_SEMANA[d.dow].slice(0, 3), total: d.total }));
+    }
+    return c.por_dia.map((d) => ({ x: fmtDiaCorto(d.fecha), total: d.total }));
+  }
+
+  // Top 5 líneas + "Otros" para la torta de un controlador.
+  function donutLineasControlador(c: PorControlador) {
+    const top5 = c.por_linea.slice(0, 5);
+    const restoTotal = c.por_linea.slice(5).reduce((s, l) => s + l.total, 0);
+    const out = top5.map((l, i) => ({
+      name: l.linea,
+      value: l.total,
+      color: PALETTE[i % PALETTE.length],
+    }));
+    if (restoTotal > 0) out.push({ name: "Otros", value: restoTotal, color: "#6b7280" });
+    return out;
+  }
 
   return (
     <div>
@@ -367,13 +432,14 @@ export function MesaControlTab() {
             </p>
           </Panel>
 
-          <SectionTitle>⏱️ Por hora / día / semana</SectionTitle>
+          <SectionTitle>⏱️ Por hora / día / semana / controlador</SectionTitle>
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             {(
               [
                 ["hora", "Por hora del día"],
                 ["dia", "Por día"],
                 ["semana", "Por semana"],
+                ["controlador", "Por controlador"],
               ] as [EjeTiempo, string][]
             ).map(([id, label]) => (
               <button
@@ -451,6 +517,68 @@ export function MesaControlTab() {
                 a domingo).
               </p>
             </Panel>
+          )}
+
+          {ejeTiempo === "controlador" && (
+            <>
+              <div className="flex items-center gap-2 mb-4 flex-wrap">
+                {(
+                  [
+                    ["dia", "Día (franjas de 30 min)"],
+                    ["semana", "Semana (día de la semana)"],
+                    ["mes", "Mes (día calendario)"],
+                  ] as [GranCtrl, string][]
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setGranCtrl(id)}
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-colors ${
+                      granCtrl === id
+                        ? "bg-yellow-400/10 border-yellow-400/40 text-yellow-400"
+                        : "bg-[#1f1f1f] border-zinc-800 text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {controladoresConDatos.length === 0 ? (
+                <div className="py-10 text-center text-zinc-600 text-sm">
+                  Sin controles en los meses elegidos.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {controladoresConDatos.map((c) => (
+                    <Panel
+                      key={c.codigo ?? c.controlador}
+                      title={c.controlador}
+                      accent={`(${fmtNum(c.total)} controlados)`}
+                    >
+                      <ChartBar
+                        data={barControladorEje(c)}
+                        xKey="x"
+                        height={200}
+                        series={[{ key: "total", name: "Items controlados", color: PALETTE[1] }]}
+                        fmt={(n) => fmtNum(n)}
+                        angle={granCtrl === "semana" ? undefined : -60}
+                      />
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-600 mt-4 mb-1">
+                        Top 5 líneas más controladas
+                      </p>
+                      <ChartDonut data={donutLineasControlador(c)} height={200} fmt={(n) => fmtNum(n)} />
+                    </Panel>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-zinc-600 mt-3">
+                Cada gráfico agrega TODOS los meses elegidos arriba (no un
+                día/semana puntual) — "Día" suma por franja de 30 min, "Semana"
+                por día de la semana y "Mes" por día calendario. La torta
+                muestra las 5 líneas de catálogo más controladas por esa
+                persona en el período; el resto se agrupa en "Otros".
+              </p>
+            </>
           )}
 
           <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">

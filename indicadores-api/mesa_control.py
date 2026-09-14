@@ -68,8 +68,29 @@ def _hora_desde_centesimas(valor) -> int | None:
     return (v // 100 // 3600) % 24
 
 
+def _slot30_desde_centesimas(valor) -> int | None:
+    """HoraControl (centésimas de segundo desde medianoche) -> franja de 30
+    minutos del día, 0..47 (0 = '00:00', 1 = '00:30', ..., 47 = '23:30').
+    Mismo dato que _hora_desde_centesimas, al doble de resolución — usado
+    sólo en el desglose "Por controlador > Día" (2026-09-14)."""
+    try:
+        v = int(valor)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    minutos_del_dia = (v // 100 // 60) % 1440
+    return minutos_del_dia // 30
+
+
 SP_NOMBRE = "dbo.RPT_V325_ProductividadPorControlador"
 CANTIDAD_COL = "CANTIDAD ITEMS CONTROLADOS"  # confirmada (control_extraccion.py)
+
+# Nombre a mostrar cuando el artículo del renglón no tiene línea cargada o su
+# código no matchea el catálogo (LEFT JOIN da NULL) — mismo texto/criterio
+# que SIN_LINEA en ventas.py, pero declarado acá aparte para no acoplar los
+# dos módulos por un import.
+LINEA_SIN = "(Sin línea)"
 
 
 def _safe(value):
@@ -163,18 +184,38 @@ def _detectar_columnas(cols: list[str]) -> dict:
 # caso real de 2 controladores distintos en la misma fila, se sigue
 # acreditando a los 2 (no se pierde ese caso), pero el duplicado artificial
 # (cod1==cod2, el caso normal) ya no infla el total.
+# Línea de catálogo del artículo de cada renglón (para "Por controlador >
+# 5 líneas más controladas", 2026-09-14): mismo join ya usado en ventas.py /
+# bulones.py — venfer_pedidoReng.CodArticu -> StkFer_Articulos.CodArticulo
+# (ojo, nombres distintos) -> StkFer_ArtParamet.ArticuloPatron -> Nivel1 (int,
+# código de línea) -> Stk_Nivel1.Detalle (char(30), nombre a mostrar). LEFT
+# JOIN a propósito: un artículo sin línea cargada o con código que no está en
+# Stk_Nivel1 no debe perder el renglón, cae en LINEA_SIN (ver _nombre_linea
+# más abajo). Son todos joins 1:1 sobre columnas tipo PK — no hay fan-out.
 SQL_RENGLONES_CONTROLADOS = """
 SELECT
     reng.NroMovVenta, reng.NroRenglon,
     ped.CodControlador1, ped.CodControlador2,
-    ped.FechaControl, ped.HoraControl
+    ped.FechaControl, ped.HoraControl,
+    LTRIM(RTRIM(n1.Detalle)) AS Linea
 FROM dbo.Ven_PedImpresoCP ped
 JOIN dbo.venfer_pedidoReng reng
   ON ped.NroMovVenta   = reng.NroMovVenta
  AND ped.CodCentroPrep = reng.CodCentroPrep
+LEFT JOIN dbo.StkFer_Articulos  s  ON s.CodArticulo     = reng.CodArticu
+LEFT JOIN dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+LEFT JOIN dbo.Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE (ped.CodControlador1 > 0 OR ped.CodControlador2 > 0)
   AND ped.FechaControl BETWEEN dbo.FECHA_SQL2Cla(?) AND dbo.FECHA_SQL2Cla(?)
 """
+
+
+def _nombre_linea(raw: str | None) -> str:
+    """Linea ya trimeada por el SQL -> nombre a mostrar, o LINEA_SIN si vino
+    NULL/vacía (artículo sin línea cargada o código fuera de Stk_Nivel1)."""
+    raw_norm = (raw or "").strip()
+    return raw_norm or LINEA_SIN
+
 
 SQL_USUARIOS = "SELECT Numero, Nombre FROM dbo.Gen_Usuarios"
 
@@ -209,6 +250,27 @@ def fetch_mesa_control(meses: list[str]) -> dict:
     reimpresión, ver SQL_RECONTROLES_DIAG), se lo ubica en la fecha/hora del
     evento MÁS RECIENTE (determinístico, no depende del orden de filas del
     driver) — igual criterio en por_dia/por_semana/por_hora.
+
+    Desglose por controlador (2026-09-14, para el toggle "Por controlador" del
+    front — 1 gráfico de barras por controlador + torta de líneas debajo):
+    cada `por_controlador[i]` agrega ADEMÁS:
+      · por_dia    = [{fecha: 'YYYY-MM-DD', total}]   — vista "Mes": 1 columna
+        por día calendario, sólo días con controles de ESE controlador.
+      · por_dow    = [{dow: 0..6, total}]  (0=lunes..6=domingo, ISO) — vista
+        "Semana": 1 columna por día de la semana, sumado sobre todos los
+        meses elegidos (no una semana calendario puntual).
+      · por_slot30 = [{slot: 0..47, hora: 'HH:MM', total}]  — vista "Día":
+        1 columna cada 30 min (slot = hora*2 + 0/1), sumado sobre todos los
+        meses elegidos — mismo criterio de agregación que `por_hora` pero al
+        doble de resolución y acotado a ese controlador.
+      · por_linea  = [{linea, total}]  ordenado desc — línea de catálogo
+        (Stk_Nivel1.Detalle) del artículo de cada renglón que controló; el
+        front arma el top 5 + "Otros" para la torta.
+    OJO — criterio distinto al de por_dia/por_semana/por_hora de arriba: estos
+    4 campos ubican CADA CRÉDITO (cod1/cod2, incluye recontroles) en la fecha/
+    hora de ESE control puntual, no en la del evento más reciente del renglón
+    — es la extensión natural de por_controlador.total (que ya cuenta créditos,
+    no renglones únicos), para que sumen entre sí sin sorpresas.
     Solo lectura sobre EVERWEAR."""
     meses = sorted(set(m.strip() for m in meses if m.strip()))
     if not meses:
@@ -237,7 +299,7 @@ def fetch_mesa_control(meses: list[str]) -> dict:
 
             renglones_unicos: set[tuple] = set()
             evento_por_renglon: dict[tuple, tuple[str, int]] = {}
-            for nro, nro_reng, cod1, cod2, fecha_ctrl, hora_ctrl in filas:
+            for nro, nro_reng, cod1, cod2, fecha_ctrl, hora_ctrl, linea_raw in filas:
                 clave = (nro, nro_reng)
                 renglones_unicos.add(clave)
 
@@ -248,6 +310,15 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                     previo = evento_por_renglon.get(clave)
                     if previo is None or candidato > previo:
                         evento_por_renglon[clave] = candidato
+
+                # Fecha/hora/línea DE ESTE control puntual (no el "evento más
+                # reciente del renglón" de arriba) — es lo que alimenta los
+                # desgloses por_dia/por_dow/por_slot30/por_linea de CADA
+                # controlador, que siguen el mismo criterio "cada crédito
+                # cuenta" que entry["total"] más abajo (ver docstring).
+                slot30 = _slot30_desde_centesimas(hora_ctrl)
+                dow = fecha_evt.weekday() if fecha_evt is not None else None  # 0=lunes
+                linea_nombre = _nombre_linea(linea_raw)
 
                 # dedupe: cod1==cod2 en el caso normal (1 sola persona
                 # controló) -> 1 solo crédito. Si algún día son distintos
@@ -261,10 +332,23 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                             "codigo": codigo,
                             "por_mes": {},
                             "total": 0,
+                            "_por_dia": {},
+                            "_por_dow": {i: 0 for i in range(7)},
+                            "_por_slot30": {i: 0 for i in range(48)},
+                            "_por_linea": {},
                         },
                     )
                     entry["por_mes"][mes] = entry["por_mes"].get(mes, 0) + 1
                     entry["total"] += 1
+                    if fecha_evt is not None:
+                        fs = fecha_evt.isoformat()
+                        entry["_por_dia"][fs] = entry["_por_dia"].get(fs, 0) + 1
+                        entry["_por_dow"][dow] += 1
+                    if slot30 is not None:
+                        entry["_por_slot30"][slot30] += 1
+                    entry["_por_linea"][linea_nombre] = (
+                        entry["_por_linea"].get(linea_nombre, 0) + 1
+                    )
             por_mes[mes] = len(renglones_unicos)
 
             for fecha_str, hora_num in evento_por_renglon.values():
@@ -273,6 +357,25 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                     por_hora[hora_num] = por_hora.get(hora_num, 0) + 1
     finally:
         conn.close()
+
+    # Los dicts internos "_por_*" (acumulados por comodidad durante el fetch)
+    # se convierten acá a las listas ordenadas que consume el front, y se
+    # descartan las claves privadas.
+    for entry in por_ctrl.values():
+        _dia = entry.pop("_por_dia")
+        _dow = entry.pop("_por_dow")
+        _slot30 = entry.pop("_por_slot30")
+        _linea = entry.pop("_por_linea")
+        entry["por_dia"] = [{"fecha": f, "total": _dia[f]} for f in sorted(_dia)]
+        entry["por_dow"] = [{"dow": dw, "total": _dow[dw]} for dw in range(7)]
+        entry["por_slot30"] = [
+            {"slot": s, "hora": f"{s // 2:02d}:{'00' if s % 2 == 0 else '30'}", "total": _slot30[s]}
+            for s in range(48)
+        ]
+        entry["por_linea"] = sorted(
+            ({"linea": l, "total": t} for l, t in _linea.items()),
+            key=lambda x: -x["total"],
+        )
 
     controladores = sorted(por_ctrl.values(), key=lambda x: -x["total"])
 
