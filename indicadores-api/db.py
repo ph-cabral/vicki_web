@@ -5,18 +5,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_connection(database: str | None = None):
-    server   = os.getenv("SQL_SERVER")
+    # Auth SQL nativa: el server migrado a 10.10.0.195 ya no acepta
+    # Trusted_Connection/Kerberos AD (ver MIGRACION_SQLSERVER_MAGNUS.md). Ya no
+    # hace falta KRB5CCNAME/ccache.
+    server   = os.getenv("SQL_SERVER", "10.10.0.195")
     database = database or os.getenv("SQL_DATABASE")
-    # ccname   = os.getenv("KRB5_CCNAME", "/tmp/krb5cc_1000")
-    ccname   = os.getenv("KRB5_CCNAME", "/opt/krb5cc/cc")
-
-    os.environ["KRB5CCNAME"] = ccname
+    user     = os.getenv("SQL_USER", "sa")
+    pwd      = os.getenv("SQL_PASSWORD", "ORUM_A2P2")
 
     conn_str = (
         "DRIVER={ODBC Driver 18 for SQL Server};"
         f"SERVER={server};"
         f"DATABASE={database};"
-        "Trusted_Connection=yes;"
+        f"UID={user};PWD={pwd};"
         "TrustServerCertificate=yes;"
     )
     return pyodbc.connect(conn_str)
