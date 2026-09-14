@@ -470,6 +470,12 @@ const tooltipStyle = {
   fontSize: 12,
   color: C.text,
 } as const;
+// Recharts pisa el color del texto de cada ítem con el color de la serie
+// (barra/línea/porción) y el del label no trae color por default — ambos
+// quedaban casi invisibles sobre el fondo casi negro del tooltip. Se fuerza
+// blanco/claro en los dos.
+const tooltipLabelStyle = { color: C.text } as const;
+const tooltipItemStyle = { color: C.text } as const;
 
 export type Serie = {
   key: string;
@@ -615,6 +621,8 @@ export function ChartBar({
         )}
         <Tooltip
           contentStyle={tooltipStyle}
+          labelStyle={tooltipLabelStyle}
+          itemStyle={tooltipItemStyle}
           cursor={{ fill: "rgba(250,204,21,.06)" }}
           formatter={(v: unknown) => fmt(Number(v))}
         />
@@ -808,6 +816,8 @@ export function ChartLine({
         />
         <Tooltip
           contentStyle={tooltipStyle}
+          labelStyle={tooltipLabelStyle}
+          itemStyle={tooltipItemStyle}
           formatter={(v: unknown) => fmt(Number(v))}
         />
         {series.length > 1 && (
@@ -869,7 +879,12 @@ export function ChartComboBarLine({
           tick={{ fontSize: 11, fill: C.muted }}
           allowDecimals={false}
         />
-        <Tooltip contentStyle={tooltipStyle} formatter={(v: unknown) => fmtNum(Number(v))} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          labelStyle={tooltipLabelStyle}
+          itemStyle={tooltipItemStyle}
+          formatter={(v: unknown) => fmtNum(Number(v))}
+        />
         <Legend
           verticalAlign="top"
           align="center"
@@ -934,6 +949,8 @@ export function ChartDonut({
         </Pie>
         <Tooltip
           contentStyle={tooltipStyle}
+          labelStyle={tooltipLabelStyle}
+          itemStyle={tooltipItemStyle}
           formatter={(v: unknown) => fmt(Number(v))}
         />
         <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
