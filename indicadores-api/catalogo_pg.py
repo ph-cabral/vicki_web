@@ -118,9 +118,19 @@ def lineas_con_apertura_comercial(forzar: bool = False) -> set[str]:
 
 def codigos_de_sub_linea(sub_linea: str, linea: str) -> list[str]:
     """Códigos de artículo de una (línea, sub_línea) puntual — para la
-    'variante rápida' de fetch_clientes_por_linea (arrancar por los
+    'variante rápida' de fetch_clientes_por_sub_linea (arrancar por los
     artículos de la sub_línea en vez de escanear todo Ven_CompRenglon).
     `linea` hace falta porque el mismo nombre de sub_línea puede repetirse
     bajo líneas distintas (UNIQUE(nombre, linea_id), no UNIQUE(nombre))."""
     mapa = mapa_articulo_sub_linea()
     return [cod for cod, (sl, l) in mapa.items() if sl == sub_linea and l == linea]
+
+
+def codigos_de_linea(linea: str) -> list[str]:
+    """Códigos de artículo de una línea COMPLETA (todas sus sub_líneas) —
+    para la 'variante rápida' de fetch_clientes_por_linea (ventas.py):
+    drill-down "línea de un cliente puntual -> quién más la compró", migrado
+    de Stk_Nivel1 (Magnus) a este catálogo el 2026-09-15. Hermano de
+    codigos_de_sub_linea, un nivel más arriba en la jerarquía."""
+    mapa = mapa_articulo_sub_linea()
+    return [cod for cod, (_, l) in mapa.items() if l == linea]

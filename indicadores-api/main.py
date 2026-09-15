@@ -1005,7 +1005,7 @@ def ventas_vendedor_top_lineas(
 
 @app.get("/ventas/vendedor/clientes-por-linea")
 def ventas_vendedor_clientes_por_linea(
-    linea: str = Query(..., min_length=1, description="Nombre de línea (Stk_Nivel1.Detalle), o '(Sin línea)'"),
+    linea: str = Query(..., min_length=1, description="Nombre de línea (catalogo.linea, Postgres), o '(Sin línea)'"),
     vendedor: int | None = Query(default=None, description="Filtra a clientes de este vendedor (no-admin)"),
     # Antes default=100, le=500, y después default=10000, le=10000: con
     # líneas grandes (ej. línea 44, 385 clientes) el modal se cortaba.
@@ -1015,18 +1015,20 @@ def ventas_vendedor_clientes_por_linea(
     # rango; el front agrupa de a 50 en acordeones colapsables en pantalla.
     limit: int = Query(default=1_000_000, ge=1),
 ):
-    """Clientes que compraron una línea de artículo (Stk_Nivel1, Magnus), con
-    el MISMO desglose que la tabla línea×año del modo "cliente": año
-    anterior y año actual, cada uno con total y los 12 meses, en cantidad y
-    monto (2026-08-20, para que el modal de línea tenga los mismos toggles
-    $/Unidades y por mes/por año). Ordenados por monto total de mayor a
-    menor. Trae TODOS los clientes de esa línea (2026-08-19), no un recorte
-    a 100.
+    """Clientes que compraron una línea de artículo (catálogo de Postgres,
+    migrado desde Stk_Nivel1/Magnus el 2026-09-15), con el MISMO desglose
+    que la tabla línea×año del modo "cliente": año anterior y año actual,
+    cada uno con total y los 12 meses, en cantidad y monto (2026-08-20,
+    para que el modal de línea tenga los mismos toggles $/Unidades y por
+    mes/por año). Ordenados por monto total de mayor a menor. Trae TODOS
+    los clientes de esa línea (2026-08-19), no un recorte a 100.
 
-    OJO (2026-09-15): esto es SOLO para el drill-down "línea de un cliente
-    puntual → quién más la compró" (modo "cliente" del modal). El ranking
-    "Top líneas" del pie usa /ventas/vendedor/clientes-por-sub-linea, acá
-    abajo — ver fetch_clientes_por_linea (ventas.py) para por qué son dos.
+    Esto es SOLO para el drill-down "línea de un cliente puntual → quién
+    más la compró" (modo "cliente" del modal). El ranking "Top líneas" del
+    pie usa /ventas/vendedor/clientes-por-sub-linea, acá abajo — ver
+    fetch_clientes_por_linea (ventas.py) para por qué son dos (agrupan a
+    distinto nivel de la jerarquía: línea completa acá, sub_línea puntual
+    allá).
 
     Ya NO recibe desde/hasta: el filtro YTD/Meses lo hace el front sobre el
     desglose mensual ya traído, igual que en modo "cliente" — así el toggle

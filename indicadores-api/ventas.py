@@ -30,6 +30,7 @@ from subempresas import filas_dos, sql_prueba, unir
 from catalogo_pg import (
     mapa_articulo_sub_linea,
     codigos_de_sub_linea,
+    codigos_de_linea,
     lineas_con_apertura_comercial,
     LINEA_SIN_CLASIFICAR,
     SUB_LINEA_SIN_CLASIFICAR,
@@ -151,9 +152,11 @@ def fetch_pedidos_mes(desde: str, hasta: str) -> dict:
 # por qué esto importa: un pedido de un mes facturado al siguiente cae en el
 # mes de la factura).
 #
-# Línea = nombre de dbo.Stk_Nivel1.Detalle, resuelto desde el CÓDIGO
-# StkFer_ArtParamet.Nivel1 (int) vía StkFer_Articulos.ArticuloPatron — mismo
-# campo que ya usan /compras/consumo y /deposito/faltantes.
+# Línea = línea/sub_línea del catálogo de Postgres (`catalogo.*`), resuelta
+# en Python desde `r.CodArticu` vía catalogo_pg.mapa_articulo_sub_linea —
+# reemplaza el join a dbo.Stk_Nivel1 (2026-09-15, mismo motivo y mecanismo
+# que fetch_top_lineas — ver el comentario de más abajo y
+# depara_pool_linea_sublinea_patron.md).
 #
 # Gotcha fecha (ver HANDOFF): NO se filtra por fecha en el SQL (comparar una
 # fecha calculada con dbo.fecha_cla2sql() contra un parámetro de fecha no
@@ -161,7 +164,6 @@ def fetch_pedidos_mes(desde: str, hasta: str) -> dict:
 # por CodCliente en el WHERE (columna simple, sí filtra bien) — se trae TODO
 # el historial de ESE cliente y se agrupa por año/mes en Python.
 MESES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-SIN_LINEA = "(Sin línea)"
 
 # ──────────────────────────────────────────────────────────────────────────
 # QUÉ COMPROBANTES SON VENTA (criterio de contaduría, 2026-09-07)
@@ -243,30 +245,19 @@ def _prueba(sql: str) -> str:
     return sql_prueba(sql, COMPROBANTES_VENTA, COMPROBANTES_AJUSTE)
 
 # ──────────────────────────────────────────────────────────────────────────
-# Catálogo de líneas: dbo.Stk_Nivel1 (2026-08-20). StkFer_ArtParamet.Nivel1
-# es un INT — el CÓDIGO de la línea, no su nombre. El nombre que muestra el
-# ERP en "Artículos > Línea, Rubro, Sub Rubro" vive en Stk_Nivel1
-# (Nivel1 int PK, Detalle char(30)); Stk_Nivel2/3/4 son Rubro/SubRubro/4º
-# nivel, mismo patrón. Ojo: las tablas PRU_* son copias de prueba, no usar.
-#
-# Antes esto se resolvía con una tabla hardcodeada en Postgres (ventas.linea
-# + cache TTL + match en Python, ver ever/sql/ventas_lineas_catalogo.sql):
-# quedó DEPRECADO — el join sale directo en SQL Server, sin cache, sin
-# segunda conexión y sin códigos faltantes. Detalle es CHAR(30): siempre
-# LTRIM(RTRIM(...)).
-
-
-def _nombre_linea(raw: str) -> str:
-    """Detalle de Stk_Nivel1 (ya trimeado por el SQL) -> nombre para mostrar,
-    o SIN_LINEA si el artículo no tiene línea / su código no está en el
-    catálogo (el LEFT JOIN devuelve NULL)."""
-    raw_norm = (raw or "").strip()
-    return raw_norm or SIN_LINEA
+# Catálogo de líneas: catalogo.* en Postgres (reemplazó a dbo.Stk_Nivel1 acá
+# el 2026-09-15, mismo motivo que fetch_top_lineas: Stk_Nivel1 no tiene
+# noción de sub_línea y Magnus/Postgres son motores distintos sin JOIN
+# posible). SQL_VENTAS_CLIENTE ya no resuelve la línea en SQL Server: trae
+# `r.CodArticu` crudo y fetch_ventas_por_linea cruza contra
+# catalogo_pg.mapa_articulo_sub_linea() en Python (ver
+# depara_pool_linea_sublinea_patron.md). Un código sin match — o mientras
+# `catalogo.articulo` esté vacía — cae en LINEA_SIN_CLASIFICAR.
 
 
 SQL_VENTAS_CLIENTE = """
 SELECT  -- ver COMPROBANTES_VENTA: el IN del WHERE define qué es venta
-    LTRIM(RTRIM(n1.Detalle)) AS Linea,
+    r.CodArticu AS CodArticu,
     dbo.fecha_cla2sql(c.FecMovim) AS Fecha,
     cc.EvitaInformesYListados AS Evita,
     CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS CantidadNeta,
@@ -274,9 +265,6 @@ SELECT  -- ver COMPROBANTES_VENTA: el IN del WHERE define qué es venta
 FROM Ven_CompCabecera c
 JOIN Ven_CompRenglon r ON r.NroMovVenta = c.NroMovVenta
 JOIN Ven_CodCom cc      ON c.CompCodigo = cc.CompCodigo
-LEFT JOIN StkFer_Articulos  s  ON s.CodArticulo     = r.CodArticu
-LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
-LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE c.CodCliente = ?
   AND cc.CompCodigo IN (%s)
 """ % ",".join(str(c) for c in COMPROBANTES_VENTA)
@@ -1015,14 +1003,15 @@ def fetch_top_lineas(
 # modal de /ventas/vendedor tiene que mostrar los CLIENTES que compraron esa
 # línea).
 #
-# OJO (2026-09-15): esta función quedó reservada para el drill-down
-# "línea de un cliente puntual → quién más la compró" (fetch_ventas_por_linea
-# / LineaRow, adentro del modo "cliente" del modal) — sigue 100% Magnus
-# (Stk_Nivel1), sin tocar. El ranking "Top líneas" del PIE de la página
-# ahora agrupa por el catálogo de Postgres (línea > sub_línea) y usa la
-# función HERMANA `fetch_clientes_por_sub_linea`, más abajo — con su propio
-# endpoint (`/ventas/vendedor/clientes-por-sub-linea`) porque ya no hay forma
-# de resolver una sub_línea contra Stk_Nivel1 (no existe ahí).
+# Drill-down "línea de un cliente puntual → quién más la compró"
+# (fetch_ventas_por_linea / LineaRow, adentro del modo "cliente" del
+# modal). Migrado a Postgres el 2026-09-15 (mismo día y mismo motivo que
+# fetch_ventas_por_linea y fetch_top_lineas): la línea que manda el front ya
+# no es Stk_Nivel1 de Magnus, es línea del catálogo `catalogo.*` de
+# Postgres — el filtro de "artículos de esta línea" también se resuelve ahí
+# (catalogo_pg.codigos_de_linea) en vez de un JOIN a Stk_Nivel1. La función
+# HERMANA `fetch_clientes_por_sub_linea`, más abajo, hace lo mismo un nivel
+# más abajo (sub_línea) para el ranking "Top líneas" del PIE de la página.
 #
 # Desde 2026-08-20 esta vista es el ESPEJO EXACTO de la
 # tabla línea×año del modo "cliente" (fetch_ventas_por_linea): mismos dos
@@ -1037,17 +1026,14 @@ def fetch_top_lineas(
 # filtro YTD/Meses lo hace el front sobre el desglose mensual ya cargado —
 # igual que en modo "cliente", y sin refetch por toggle.
 #
-# El front manda el NOMBRE de la línea (es lo que muestra el ranking), pero
-# ap.Nivel1 guarda el CÓDIGO (int) — la traducción se hace dentro del SQL
-# contra Stk_Nivel1, no en Python: `ap.Nivel1 IN (SELECT ...)` mantiene el
-# filtro sargable sobre la columna entera y resuelve el nombre en una tabla
-# de 82 filas.
-#
-# `linea == SIN_LINEA` es un caso especial: no hay ninguna fila con ese
-# texto en la base, lo arma fetch_top_lineas en Python para consolidar los
-# artículos sin línea con los que tienen un código que no existe en
-# Stk_Nivel1 — así que el filtro es "no matchea el catálogo" (NOT EXISTS) en
-# vez de una comparación de nombre.
+# `linea == LINEA_SIN_CLASIFICAR` ("(Sin línea)") es el caso especial: no
+# hay una lista de códigos que mandar (es el COMPLEMENTO — artículos sin
+# match en `catalogo.articulo`, o el catálogo todavía sin cargar), así que
+# ahí se trae el rango completo con CodArticu y se descarta en Python lo
+# que SÍ matchea — mismo patrón y mismas consultas
+# (`_SUB_CLIENTES_SIN_CLASIF_TPL`/`SQL_CLIENTES_SIN_CLASIF_WRAP`, definidas
+# más abajo) que usa fetch_clientes_por_sub_linea para su propio
+# SUB_LINEA_SIN_CLASIFICAR.
 #
 # Agregación en SQL (GROUP BY cliente/año/mes) y no en Python — el
 # resultset que viaja es a lo sumo clientes × 24 filas, no un renglón por
@@ -1068,77 +1054,34 @@ _TOP_CLIENTES_LINEA_TTL_SEG = 15 * 60  # 15 minutos
 # WHERE que las filtraría. Comparar enteros no puede fallar así.
 #
 # El CASE va en una subconsulta y el GROUP BY afuera, para no repetirlo.
-_SUB_CLIENTES_LINEA_TPL = _solo_venta("""
-SELECT
-    c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
-    {case_anio_mes} AS AnioMes,
-    CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS Cant,
-    CASE cc.DebitoCredito WHEN 1 THEN (r.Cantidad * r.PrecioVenta) ELSE (r.Cantidad * r.PrecioVenta) * -1 END AS Monto
-FROM MAGNUS_SITD.dbo.Clientes c
-JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
-JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
-JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-LEFT JOIN StkFer_Articulos  s  ON s.CodArticulo    = r.CodArticu
-LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
-WHERE cc.EvitaInformesYListados <> 1
-  AND vc.FecMovim BETWEEN ? AND ?
-  AND {linea_cond}
-""" + MARCA_VENDEDOR + """
-""")
 
 # ── Variante rápida: arrancar por los ARTÍCULOS de la línea ────────────────
-# (2026-08-26, medido) La forma de arriba arranca por Clientes/comprobantes y
-# filtra por línea al final. El plan real hacía Clustered Index Scan de
-# `Ven_CompRenglon` (385.232 filas leídas para quedarse con 3.896, sobre una
-# tabla de 3,1 M) y 90.697 key lookups en `Ven_CompCabecera` (7,5 GB).
+# (2026-08-26, medido, la razón sigue valiendo con la lista de códigos
+# resuelta en Postgres) Arrancar por Clientes/comprobantes y filtrar por
+# línea al final hacía Clustered Index Scan de `Ven_CompRenglon` (385.232
+# filas leídas para quedarse con 3.896, sobre una tabla de 3,1 M) y 90.697
+# key lookups en `Ven_CompCabecera` (7,5 GB).
 #
 # Una línea son POCOS artículos (PRECINTOS: 40) y existe el índice
-# `V_REN_Cla_Articu (CodArticu, FecMovim)`: resolviendo primero los artículos
-# se entra por SEEK en vez de escanear la tabla entera. Medido en PRECINTOS:
-# 4,07 s -> 0,69 s en frío, 1,34 s -> 0,53 s en caliente, resultado IDÉNTICO
-# (518 clientes, 1.293 filas agregadas).
+# `V_REN_Cla_Articu (CodArticu, FecMovim)`: resolviendo primero los códigos
+# (ahora vía catalogo_pg.codigos_de_linea) se entra por SEEK en vez de
+# escanear la tabla entera. Medido en PRECINTOS: 4,07 s -> 0,69 s en frío,
+# 1,34 s -> 0,53 s en caliente.
 #
 # `r.FecMovim BETWEEN ...` es lo que habilita el seek — sin eso el índice no
-# sirve. Se verificó que la fecha del renglón coincide con la de la cabecera
-# (385.205 de 385.207 filas de 2 años; las 2 restantes difieren en 1 día),
-# igual va con margen de ±_MARGEN_FECHA_RENGLON días y la fecha que MANDA
+# sirve. Va con margen de ±_MARGEN_FECHA_RENGLON días y la fecha que MANDA
 # sigue siendo `vc.FecMovim`.
 #
-# Solo aplica a una línea concreta. Para SIN_LINEA se sigue usando la forma de
-# arriba: ahí el criterio es el COMPLEMENTO (artículos que no matchean el
-# catálogo, más renglones cuyo artículo ni siquiera existe) y el LEFT JOIN es
-# parte del criterio, no una optimización.
+# Solo aplica a una línea concreta. Para LINEA_SIN_CLASIFICAR se usa la
+# variante SIN_CLASIFICAR de más abajo: ahí el criterio es el COMPLEMENTO
+# (artículos sin match en el catálogo), no una lista de códigos.
 #
-# `_MARGEN_FECHA_RENGLON` y `SQL_CLIENTES_LINEA_WRAP` (agregador genérico) se
-# comparten con fetch_clientes_por_sub_linea, más abajo.
+# `_MARGEN_FECHA_RENGLON`, `SQL_CLIENTES_LINEA_WRAP` y las consultas
+# `_SUB_CLIENTES_SUB_LINEA_ART_TPL`/`_SUB_CLIENTES_SIN_CLASIF_TPL`/
+# `SQL_CLIENTES_SIN_CLASIF_WRAP` (agregadores genéricos, no dependen de qué
+# nivel de la jerarquía vino la lista de códigos) se comparten con
+# fetch_clientes_por_sub_linea, más abajo.
 _MARGEN_FECHA_RENGLON = 7
-
-_SUB_ART_DE_LINEA = """
-    SELECT s.CodArticulo
-    FROM StkFer_ArtParamet ap
-    JOIN StkFer_Articulos s ON s.ArticuloPatron = ap.ArticuloPatron
-    WHERE {linea_cond}
-"""
-
-_SUB_CLIENTES_LINEA_ART_TPL = _solo_venta("""
-SELECT
-    c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
-    {case_anio_mes} AS AnioMes,
-    CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS Cant,
-    CASE cc.DebitoCredito WHEN 1 THEN (r.Cantidad * r.PrecioVenta) ELSE (r.Cantidad * r.PrecioVenta) * -1 END AS Monto
-FROM (""" + _SUB_ART_DE_LINEA + """) a
-JOIN Ven_CompRenglon r          ON r.CodArticu    = a.CodArticulo
-JOIN Ven_CompCabecera vc        ON vc.NroMovVenta = r.NroMovVenta
-JOIN Ven_CodCom cc              ON cc.CompCodigo  = vc.CompCodigo
-JOIN MAGNUS_SITD.dbo.Clientes c ON c.CodCliente   = vc.CodCliente
-WHERE cc.EvitaInformesYListados <> 1
-  AND r.FecMovim  BETWEEN ? AND ?
-  AND vc.FecMovim BETWEEN ? AND ?
-""" + MARCA_VENDEDOR + """
-""")
-
 
 SQL_CLIENTES_LINEA_WRAP = """
 SELECT CodCliente, Nombre, AnioMes,
@@ -1162,15 +1105,6 @@ def _case_anio_mes(anios: tuple[int, ...], columna: str = "vc.FecMovim") -> str:
             ramas.append(f"WHEN {columna} BETWEEN {d1} AND {d2} THEN {anio * 100 + mes}")
     return "CASE " + " ".join(ramas) + " ELSE NULL END"
 
-_LINEA_COND_EXACTA = (
-    "ap.Nivel1 IN (SELECT n.Nivel1 FROM Stk_Nivel1 n "
-    "WHERE LTRIM(RTRIM(n.Detalle)) = ?)"
-)
-_LINEA_COND_SIN_LINEA = (
-    "(ap.Nivel1 IS NULL OR NOT EXISTS (SELECT 1 FROM Stk_Nivel1 n "
-    "WHERE n.Nivel1 = ap.Nivel1 AND LTRIM(RTRIM(n.Detalle)) <> ''))"
-)
-
 
 def fetch_clientes_por_linea(
     linea: str,
@@ -1178,15 +1112,16 @@ def fetch_clientes_por_linea(
     limit: int = 1_000_000,  # "sin límite" (2026-08-19) — ver main.py
     forzar: bool = False,
 ) -> dict:
-    """Clientes que compraron una línea de artículo (Stk_Nivel1, Magnus), con
-    el MISMO desglose que la tabla línea×año del modo "cliente": año
+    """Clientes que compraron una línea de artículo (catálogo de Postgres),
+    con el MISMO desglose que la tabla línea×año del modo "cliente": año
     anterior y año actual, cada uno con total y los 12 meses, en cantidad y
     en monto.
 
     Usado SOLO por el drill-down "línea de un cliente → quién más la
     compró" (LineaRow / fetch_ventas_por_linea, modo "cliente" del modal).
     El ranking "Top líneas" del pie usa fetch_clientes_por_sub_linea, más
-    abajo — catálogos distintos, no intercambiables.
+    abajo — mismo catálogo, un nivel más abajo (sub_línea): acá se agrupa
+    TODA la línea (todas sus sub_líneas juntas), no son intercambiables.
 
     El front elige qué métrica mostrar ($/unidades) y si desglosar por mes,
     y filtra YTD/Meses sobre los meses ya traídos — acá no se recorta nada
@@ -1194,7 +1129,7 @@ def fetch_clientes_por_linea(
     recibía desde/hasta).
 
     `linea`: nombre de línea tal cual lo devuelve fetch_ventas_por_linea
-    (Stk_Nivel1.Detalle trimeado) — o SIN_LINEA, caso especial que no
+    (catálogo de Postgres) — o LINEA_SIN_CLASIFICAR, caso especial que no
     compara nombre sino que filtra los artículos sin match en el catálogo.
 
     `vendedor`: mismo criterio que fetch_top_clientes — si se pasa, sólo
@@ -1220,76 +1155,94 @@ def fetch_clientes_por_linea(
         if cacheado is not None and (ahora - cacheado[0]) < _TOP_CLIENTES_LINEA_TTL_SEG:
             return cacheado[1]
 
-    es_sin_linea = linea_norm == SIN_LINEA
-    linea_cond = _LINEA_COND_SIN_LINEA if es_sin_linea else _LINEA_COND_EXACTA
+    es_sin_linea = linea_norm == LINEA_SIN_CLASIFICAR
 
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         case_am = _case_anio_mes((anio_anterior, anio_actual))
-        if es_sin_linea:
-            # Complemento del catálogo: hay que recorrer por comprobante, no
-            # se puede resolver como "los artículos de la línea".
-            sub = _SUB_CLIENTES_LINEA_TPL.format(
-                case_anio_mes=case_am, linea_cond=linea_cond)
-            params = (dia_desde, dia_hasta)
-        else:
-            # Forma rápida: arranca por los artículos de la línea y entra a
-            # Ven_CompRenglon por seek. Orden de parámetros: línea, fechas del
-            # renglón (con margen), fechas de la cabecera — el recorte por
-            # vendedor no consume ninguno.
-            sub = _SUB_CLIENTES_LINEA_ART_TPL.format(
-                case_anio_mes=case_am, linea_cond=linea_cond)
-            m = _MARGEN_FECHA_RENGLON
-            params = (linea_norm,
-                      dia_desde - m, dia_hasta + m, dia_desde, dia_hasta)
-        # El recorte por vendedor se inyecta ANTES de armar la gemela: es una
-        # línea de WHERE sobre `vc.vendedor`, sin tablas `Ven_*`, así que
-        # sobrevive intacta la transformación a PRUEBA.
-        sub = recortar_vendedor(sub, vendedor)
-
-        # La gemela de PRUEBA se arma sobre la subconsulta YA formateada: la
-        # transformación es textual y ni el CASE de año/mes ni la condición de
-        # línea tocan tablas `Ven_*`. Mismos parámetros para las dos.
-        sql_m = SQL_CLIENTES_LINEA_WRAP.format(sub=sub)
-        sql_p = SQL_CLIENTES_LINEA_WRAP.format(sub=_prueba(sub))
 
         clientes: dict[int, dict] = {}
         tot_anterior = _anio_vacio()
         tot_actual = _anio_vacio()
 
-        for cod, nombre, anio_mes, cant, monto in filas_dos(cur, sql_m, sql_p, params):
-            if cod is None or anio_mes is None:
-                continue
-            anio, mes = divmod(int(anio_mes), 100)
-            if anio not in (anio_actual, anio_anterior) or not 1 <= mes <= 12:
-                continue
-            cod = int(cod)
-            cant = float(_safe(cant) or 0)
-            monto = float(_safe(monto) or 0)
+        def _acumular(filas, con_codigo: bool):
+            """con_codigo=True: la fila trae CodArticu en la posición 2 (caso
+            LINEA_SIN_CLASIFICAR, hay que descartar en Python lo que SÍ
+            matchea)."""
+            mapa = mapa_articulo_sub_linea() if con_codigo else None
+            for fila in filas:
+                if con_codigo:
+                    cod, nombre, cod_articu, anio_mes, cant, monto = fila
+                    if str(cod_articu or "").strip() in mapa:
+                        continue  # tiene línea: no es Sin clasificar
+                else:
+                    cod, nombre, anio_mes, cant, monto = fila
+                if cod is None or anio_mes is None:
+                    continue
+                anio, mes = divmod(int(anio_mes), 100)
+                if anio not in (anio_actual, anio_anterior) or not 1 <= mes <= 12:
+                    continue
+                cod = int(cod)
+                cant = float(_safe(cant) or 0)
+                monto = float(_safe(monto) or 0)
 
-            bucket = clientes.get(cod)
-            if bucket is None:
-                bucket = {
-                    "numero": cod,
-                    "nombre": (str(nombre).strip() if nombre else None),
-                    "anioAnterior": _anio_vacio(),
-                    "anioActual": _anio_vacio(),
-                }
-                clientes[cod] = bucket
+                bucket = clientes.get(cod)
+                if bucket is None:
+                    bucket = {
+                        "numero": cod,
+                        "nombre": (str(nombre).strip() if nombre else None),
+                        "anioAnterior": _anio_vacio(),
+                        "anioActual": _anio_vacio(),
+                    }
+                    clientes[cod] = bucket
 
-            destino = bucket["anioActual"] if anio == anio_actual else bucket["anioAnterior"]
-            destino["cantidad"] += cant
-            destino["monto"] += monto
-            destino["meses"][mes - 1]["cantidad"] += cant
-            destino["meses"][mes - 1]["monto"] += monto
+                destino = bucket["anioActual"] if anio == anio_actual else bucket["anioAnterior"]
+                destino["cantidad"] += cant
+                destino["monto"] += monto
+                destino["meses"][mes - 1]["cantidad"] += cant
+                destino["meses"][mes - 1]["monto"] += monto
 
-            tot_destino = tot_actual if anio == anio_actual else tot_anterior
-            tot_destino["cantidad"] += cant
-            tot_destino["monto"] += monto
-            tot_destino["meses"][mes - 1]["cantidad"] += cant
-            tot_destino["meses"][mes - 1]["monto"] += monto
+                tot_destino = tot_actual if anio == anio_actual else tot_anterior
+                tot_destino["cantidad"] += cant
+                tot_destino["monto"] += monto
+                tot_destino["meses"][mes - 1]["cantidad"] += cant
+                tot_destino["meses"][mes - 1]["monto"] += monto
+
+        if es_sin_linea:
+            # Complemento del catálogo: SIN filtro de artículo del lado de
+            # SQL Server — se trae el rango completo con CodArticu y se
+            # descarta en Python lo que sí tiene match en Postgres. Reusa el
+            # template de la función hermana (definido junto a ella, más
+            # abajo).
+            sub = _SUB_CLIENTES_SIN_CLASIF_TPL.format(case_anio_mes=case_am)
+            sub = recortar_vendedor(sub, vendedor)
+            sql_m = SQL_CLIENTES_SIN_CLASIF_WRAP.format(sub=sub)
+            sql_p = SQL_CLIENTES_SIN_CLASIF_WRAP.format(sub=_prueba(sub))
+            params = (dia_desde, dia_hasta)
+            _acumular(filas_dos(cur, sql_m, sql_p, params), con_codigo=True)
+        else:
+            # Forma rápida: arranca por los artículos de la línea (TODAS sus
+            # sub_líneas, resueltos en Postgres vía codigos_de_linea) y
+            # entra a Ven_CompRenglon por seek, en chunks para no pasarse
+            # del límite de parámetros de SQL Server.
+            codigos = codigos_de_linea(linea_norm)
+            m = _MARGEN_FECHA_RENGLON
+            for i in range(0, len(codigos), _CHUNK_CODIGOS):
+                chunk = codigos[i:i + _CHUNK_CODIGOS]
+                placeholders = ",".join("?" for _ in chunk)
+                sub = _SUB_CLIENTES_SUB_LINEA_ART_TPL.format(
+                    case_anio_mes=case_am, placeholders=placeholders)
+                # El recorte por vendedor se inyecta ANTES de armar la
+                # gemela: es una línea de WHERE sobre `vc.vendedor`, sin
+                # tablas `Ven_*`, así que sobrevive intacta la
+                # transformación a PRUEBA.
+                sub = recortar_vendedor(sub, vendedor)
+                sql_m = SQL_CLIENTES_LINEA_WRAP.format(sub=sub)
+                sql_p = SQL_CLIENTES_LINEA_WRAP.format(sub=_prueba(sub))
+                params = tuple(chunk) + (dia_desde - m, dia_hasta + m, dia_desde, dia_hasta)
+                _acumular(filas_dos(cur, sql_m, sql_p, params), con_codigo=False)
 
         clientes_out = []
         for b in clientes.values():
@@ -1319,20 +1272,19 @@ def fetch_clientes_por_linea(
         conn.close()
 
 
-# ──────────────────────────────────────────────────────────────────────────
 # Clientes por sub_línea — /ventas/vendedor/clientes-por-sub-linea (nuevo
-# 2026-09-15). Hermana de fetch_clientes_por_linea (arriba): mismo contrato
-# de salida, mismo desglose año×mes, pero para el ranking "Top líneas" del
-# PIE de /ventas/vendedor, que desde fetch_top_lineas agrupa por el catálogo
-# de Postgres (línea > sub_línea, `catalogo.*`) en vez de Stk_Nivel1.
+# 2026-09-15). Hermana de fetch_clientes_por_linea (arriba, migrada a
+# Postgres el mismo día): mismo contrato de salida, mismo desglose año×mes,
+# mismo mecanismo (resolver códigos de artículo en Postgres y filtrar
+# `r.CodArticu IN (...)` en Magnus, en chunks) — la diferencia es el nivel
+# de la jerarquía: acá sub_línea puntual (para el ranking "Top líneas" del
+# PIE, que agrupa por línea > sub_línea vía fetch_top_lineas), allá la línea
+# completa (para el drill-down dentro de la ficha de un cliente).
 #
-# La sub_línea NO vive en Magnus: en vez de resolver "los artículos de la
-# línea" con un JOIN a Stk_Nivel1 (como hace la función hermana), acá se
-# resuelve la lista de códigos de artículo de la (línea, sub_línea) en
-# Postgres (catalogo_pg.codigos_de_sub_linea, cacheado 15 min) y se filtra
-# `r.CodArticu IN (...)` en Magnus — en chunks porque SQL Server no acepta
-# más de ~2100 parámetros por consulta. SUB_LINEA_SIN_CLASIFICAR sigue el
-# mismo patrón que el SIN_LINEA de la función hermana: es el COMPLEMENTO
+# La sub_línea se resuelve con catalogo_pg.codigos_de_sub_linea (cacheado 15
+# min) — la hermana usa codigos_de_linea, mismo mapa subyacente
+# (mapa_articulo_sub_linea). SUB_LINEA_SIN_CLASIFICAR sigue el mismo patrón
+# que el LINEA_SIN_CLASIFICAR de la función hermana: es el COMPLEMENTO
 # (artículos sin match en `catalogo.articulo`), así que ahí no hay lista de
 # códigos para filtrar del lado de SQL Server — se trae TODO el rango sin
 # filtrar por artículo y se descarta en Python lo que SÍ tiene match.
@@ -1341,7 +1293,7 @@ _TOP_CLIENTES_SUBLINEA_TTL_SEG = 15 * 60  # 15 minutos
 
 # Variante SIN_CLASIFICAR: trae TODO el rango con el código de artículo
 # (para descartar en Python), sin filtro de artículo — mismo costo que tiene
-# el caso SIN_LINEA de la función hermana.
+# el caso LINEA_SIN_CLASIFICAR de la función hermana.
 _SUB_CLIENTES_SIN_CLASIF_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
@@ -1603,6 +1555,11 @@ def fetch_ventas_por_linea(cod_cliente: int, vendedor: int | None = None) -> dic
         tot_anterior = _anio_vacio()
         tot_actual = _anio_vacio()
         tiene_datos = False
+        # Mapeo código de artículo -> (sub_línea, línea) del catálogo de
+        # Postgres, cacheado 15 min — mismo mecanismo que fetch_top_lineas
+        # (ver catalogo_pg.py). Se trae UNA vez para todo el historial del
+        # cliente, no por renglón.
+        mapa = mapa_articulo_sub_linea()
 
         for row in filas:
             d = dict(zip(cols, row))
@@ -1619,7 +1576,8 @@ def fetch_ventas_por_linea(cod_cliente: int, vendedor: int | None = None) -> dic
             if anio not in (anio_actual, anio_anterior):
                 continue
             mes = fecha.month
-            linea = _nombre_linea(str(d.get("Linea") or ""))
+            cod_articu = str(d.get("CodArticu") or "").strip()
+            _, linea = mapa.get(cod_articu, (SUB_LINEA_SIN_CLASIFICAR, LINEA_SIN_CLASIFICAR))
             cant = float(_safe(d.get("CantidadNeta")) or 0)
             monto = float(_safe(d.get("MontoNeto")) or 0)
             tiene_datos = True
