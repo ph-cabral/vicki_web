@@ -454,3 +454,213 @@ export function MonthRangeField({
     </div>
   );
 }
+
+/* ---------------- MonthRangePickerField (1 input, popup con grilla de meses) ---------------- */
+
+// Mismo patrón de interacción que DateRangeField (1 solo trigger + 1 solo
+// popup; 1er click fija el mes de inicio y NO cierra; 2do click define el
+// cierre del rango —ordenado solo— y ahí sí cierra; hover previsualiza el
+// rango mientras se elige el 2do mes; cierra con click afuera o Escape) pero
+// la grilla del popup son los 12 meses del año (con nav ◀ año ▶) en vez de
+// los días de un mes. Para vistas que agrupan todo por mes calendario
+// (ej. /deposito/pedidos) donde no tiene sentido elegir un día suelto.
+export interface MonthRangePickerFieldProps {
+  /** Primer día ISO del mes "desde". */
+  desde: string;
+  /** Último día ISO del mes "hasta". */
+  hasta: string;
+  /** Se llama una sola vez por selección, con el primer día del mes "desde" y el último día del mes "hasta". */
+  onChange: (desde: string, hasta: string) => void;
+  /** Mes mínimo seleccionable (ISO "yyyy-mm" o "yyyy-mm-dd"), opcional. */
+  min?: string;
+  /** Mes máximo seleccionable (ISO "yyyy-mm" o "yyyy-mm-dd"), opcional — ej. el mes actual para no elegir futuro. */
+  max?: string;
+  variant?: Variant;
+  /** Lado por el que se alinea el desplegable respecto del trigger. */
+  align?: "start" | "end";
+  placeholder?: string;
+  className?: string;
+}
+
+export function MonthRangePickerField({
+  desde,
+  hasta,
+  onChange,
+  min,
+  max,
+  variant = "dark",
+  align = "start",
+  placeholder = "Elegir meses",
+  className,
+}: MonthRangePickerFieldProps) {
+  const s = STYLES[variant];
+  const [open, setOpen] = React.useState(false);
+  // "yyyy-mm" ya clickeado en esta sesión de selección; null = todavía no
+  // eligió el 1er mes (o ya cerró el rango y espera un click para arrancar de nuevo).
+  const [pendingStart, setPendingStart] = React.useState<string | null>(null);
+  const [hoverYm, setHoverYm] = React.useState<string | null>(null);
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+
+  const desdeYm = desde ? monthKeyOf(desde) : "";
+  const hastaYm = hasta ? monthKeyOf(hasta) : "";
+  const minYm = min ? monthKeyOf(min) : "";
+  const maxYm = max ? monthKeyOf(max) : "";
+
+  const [cursorYear, setCursorYear] = React.useState<number>(() =>
+    desdeYm ? +desdeYm.slice(0, 4) : new Date().getFullYear(),
+  );
+
+  const openPicker = () => {
+    setPendingStart(null);
+    setHoverYm(null);
+    setCursorYear(desdeYm ? +desdeYm.slice(0, 4) : new Date().getFullYear());
+    setOpen(true);
+  };
+  const closePicker = () => {
+    setOpen(false);
+    setPendingStart(null);
+    setHoverYm(null);
+  };
+
+  // Cierra al clickear afuera del trigger/popover, o con Escape.
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) closePicker();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closePicker();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const ymOf = (year: number, monthIdx: number) => `${year}-${pad(monthIdx + 1)}`;
+
+  const isDisabled = (ym: string) => {
+    if (minYm && ym < minYm) return true;
+    if (maxYm && ym > maxYm) return true;
+    return false;
+  };
+
+  const handleMonthClick = (ym: string) => {
+    if (isDisabled(ym)) return;
+    if (!pendingStart) {
+      // 1er click: fija el inicio ya mismo (desde = hasta = ese mes) y sigue abierto.
+      setPendingStart(ym);
+      const [d, h] = monthBounds(ym);
+      onChange(d, h);
+    } else {
+      // 2do click: cierra el rango (ordenado) y el desplegable.
+      const lo = ym < pendingStart ? ym : pendingStart;
+      const hi = ym < pendingStart ? pendingStart : ym;
+      const [d] = monthBounds(lo);
+      const [, h] = monthBounds(hi);
+      onChange(d, h);
+      closePicker();
+    }
+  };
+
+  // Límites a pintar: si hay una selección en curso, preview en vivo contra el
+  // hover; si no, el rango ya confirmado (desde/hasta).
+  let rangeLo: string | null;
+  let rangeHi: string | null;
+  if (pendingStart) {
+    const other = hoverYm ?? pendingStart;
+    if (other < pendingStart) {
+      rangeLo = other;
+      rangeHi = pendingStart;
+    } else {
+      rangeLo = pendingStart;
+      rangeHi = other;
+    }
+  } else {
+    rangeLo = desdeYm || null;
+    rangeHi = hastaYm || null;
+  }
+
+  const label =
+    desdeYm && hastaYm
+      ? desdeYm === hastaYm
+        ? monthLabel(desdeYm)
+        : `${monthLabel(desdeYm)} – ${monthLabel(hastaYm)}`
+      : placeholder;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => (open ? closePicker() : openPicker())}
+        className={cn(s.trigger, open && s.triggerOpen, className)}
+      >
+        <CalendarIcon className={cn("h-3.5 w-3.5 shrink-0", s.icon)} />
+        <span className="whitespace-nowrap tabular-nums">{label}</span>
+      </button>
+
+      {open && (
+        <div
+          className={cn(
+            "absolute top-full mt-1.5 p-3 w-[220px] select-none z-50",
+            align === "end" ? "right-0" : "left-0",
+            s.popup,
+          )}
+          onMouseLeave={() => setHoverYm(null)}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <button
+              type="button"
+              onClick={() => setCursorYear((y) => y - 1)}
+              className={cn("p-1 rounded", s.navBtn)}
+              aria-label="Año anterior"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className={cn("text-sm font-medium", s.monthLabel)}>{cursorYear}</div>
+            <button
+              type="button"
+              onClick={() => setCursorYear((y) => y + 1)}
+              className={cn("p-1 rounded", s.navBtn)}
+              aria-label="Año siguiente"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1">
+            {MONTHS.map((mName, i) => {
+              const ym = ymOf(cursorYear, i);
+              const disabled = isDisabled(ym);
+              const isStart = !!rangeLo && ym === rangeLo;
+              const isEnd = !!rangeHi && ym === rangeHi;
+              const inRange = !!rangeLo && !!rangeHi && ym >= rangeLo && ym <= rangeHi;
+              return (
+                <button
+                  key={ym}
+                  type="button"
+                  disabled={disabled}
+                  // Evita que el mousedown le saque foco al trigger antes del click.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => pendingStart && setHoverYm(ym)}
+                  onClick={() => handleMonthClick(ym)}
+                  className={cn(
+                    "h-8 rounded text-xs transition-colors",
+                    s.day,
+                    inRange && !disabled && s.dayInRange,
+                    (isStart || isEnd) && !disabled && s.dayEndpoint,
+                    disabled && s.dayDisabled,
+                  )}
+                >
+                  {mName.slice(0, 3)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

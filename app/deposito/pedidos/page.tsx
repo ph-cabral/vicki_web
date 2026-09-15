@@ -14,7 +14,7 @@ import {
   fmtNum, fmtMes, C, Col, Tag,
 } from "../components/ui";
 import { InicioButton } from "@/components/ui/InicioButton";
-import { DateRangeField } from "@/components/ui/date-range-field";
+import { MonthRangePickerField } from "@/components/ui/date-range-field";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
 import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 
@@ -381,12 +381,12 @@ function ReposicionOtPanel() {
       ),
     },
     { key: "Nombre", label: "Artículo" },
-    { key: "Proveedor", label: "Proveedor" },
     {
       key: "Reponer", label: "A reponer", num: true,
       render: (r) => (r.Reponer > 0 ? <Tag tone="red">{fmtNum(r.Reponer)}</Tag> : "—"),
     },
-    { key: "OTs", label: "OTs", num: true, render: (r) => fmtNum(r.OTs) },
+    { key: "OTs", label: "OT", num: true, render: (r) => fmtNum(r.OTs) },
+    { key: "Pedidos", label: "Pedidos", num: true, render: (r) => fmtNum(r.Pedidos) },
   ];
 
   const opCols: Col<OperarioRiesgoRow>[] = [
@@ -470,10 +470,11 @@ export default function PedidosPreparadosPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Default: últimos 3 meses calendario completos (el filtro ahora elige mes, no día).
   useEffect(() => {
     const t = new Date();
-    setHasta(iso(t));
-    setDesde(iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 70)));
+    setHasta(iso(new Date(t.getFullYear(), t.getMonth() + 1, 0)));
+    setDesde(iso(new Date(t.getFullYear(), t.getMonth() - 2, 1)));
   }, []);
 
   useEffect(() => {
@@ -624,7 +625,7 @@ export default function PedidosPreparadosPage() {
           <PageTitle title="Pedidos preparados"
             sub="Ingresados vs preparados (Picking) y productividad por preparador · Depósito Central" />
           <div className="flex items-center gap-2 flex-wrap mt-1 text-sm">
-            <DateRangeField
+            <MonthRangePickerField
               desde={desde}
               hasta={hasta}
               onChange={(d, h) => {
@@ -632,6 +633,7 @@ export default function PedidosPreparadosPage() {
                 setHasta(h);
               }}
               align="end"
+              placeholder="Elegir meses"
             />
             <button onClick={reload} title="Refrescar" disabled={loading}
               className="text-zinc-400 hover:text-yellow-400 transition-colors p-2 disabled:opacity-40">

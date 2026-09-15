@@ -18,9 +18,7 @@ import {
 import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 import {
   escalaVigente,
-  premiadoDe,
   usePremioEscala,
-  type Tramo,
   type VersionEscala,
 } from "@/lib/rrhh/premioEscala";
 import { MargenesModal } from "./MargenesModal";
@@ -42,20 +40,18 @@ import { MargenesModal } from "./MargenesModal";
 // /deposito y /deposito/pedidos, para que la lista de preparadores sea la
 // misma en las tres vistas.
 //
-// Última columna ("Premiado"): la escala de márgenes toma el % de error de la
-// fila (la columna anterior), lo ubica en su tramo y ESE porcentaje se le resta
-// a la cantidad — o sea ítems − margen. La escala se carga desde el botón
-// "Márgenes", es por ámbito y está versionada por mes (ver
-// lib/rrhh/premioEscala.ts): cada tabla usa la que regía en el mes elegido. Si
-// para ese mes no hay ninguna versión cargada, la columna queda en "—" (no se
-// asume premio completo).
+// La columna "% Error" se pinta con un gradiente continuo verde (0%) → rojo
+// (100%), clampeado, en vez de un color fijo — así el ojo capta la magnitud
+// del error sin leer el número. La escala de márgenes (botón "Márgenes",
+// versionada por mes en lib/rrhh/premioEscala.ts) sigue existiendo para el
+// cálculo de premio en el back, pero ya no se muestra como columna acá.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface PreparadorRow { operario: string; items: number; errores: number }
 interface MesaRow { controlador: string; codigo: number | null; renglones: number; errores: number }
 interface Premios { mes: string; preparadores: PreparadorRow[]; mesa: MesaRow[] }
 
-type Orden = "cantidad" | "errores" | "pct" | "premio" | "nombre";
+type Orden = "cantidad" | "errores" | "pct" | "nombre";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -76,36 +72,47 @@ function nombreMes(mes: string): string {
 }
 
 const fmtNum = (n: number) => n.toLocaleString("es-AR");
-const fmtPct = (errores: number, base: number) =>
-  base > 0 ? `${((errores / base) * 100).toFixed(2)}%` : "—";
+/** % de error, o null si no hay base (cantidad = 0). */
+const pctErrorDe = (errores: number, base: number): number | null =>
+  base > 0 ? (errores / base) * 100 : null;
+const fmtPct = (errores: number, base: number) => {
+  const p = pctErrorDe(errores, base);
+  return p === null ? "—" : `${p.toFixed(2)}%`;
+};
 
 interface Fila { nombre: string; cantidad: number; errores: number }
 
-function ordenar(filas: Fila[], orden: Orden, tramos?: Tramo[]): Fila[] {
+function ordenar(filas: Fila[], orden: Orden): Fila[] {
   const pct = (f: Fila) => (f.cantidad > 0 ? f.errores / f.cantidad : f.errores > 0 ? Infinity : -1);
   const copia = [...filas];
   if (orden === "nombre") return copia.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   if (orden === "errores") return copia.sort((a, b) => b.errores - a.errores || b.cantidad - a.cantidad);
   if (orden === "pct") return copia.sort((a, b) => pct(b) - pct(a) || b.errores - a.errores);
-  if (orden === "premio")
-    return copia.sort((a, b) => {
-      const pa = premiadoDe(tramos, a.cantidad, a.errores)?.premiado ?? -1;
-      const pb = premiadoDe(tramos, b.cantidad, b.errores)?.premiado ?? -1;
-      return pb - pa || b.cantidad - a.cantidad;
-    });
   return copia.sort((a, b) => b.cantidad - a.cantidad);
 }
 
-/** Verde si no se le restó nada, rojo si perdió todo, ámbar en el medio. */
-const colorPremio = (descuento: number) =>
-  descuento <= 0 ? "text-[#3fb950]" : descuento >= 100 ? "text-[#f85149]" : "text-amber-400";
+/** Interpola RGB entre dos colores, t en [0, 1]. */
+function mezclarColor(a: [number, number, number], b: [number, number, number], t: number): string {
+  const r = Math.round(a[0] + (b[0] - a[0]) * t);
+  const g = Math.round(a[1] + (b[1] - a[1]) * t);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+/** Gradiente continuo verde (0%) → rojo (100%) para el % de error, clampeado. */
+const VERDE: [number, number, number] = [63, 185, 80]; // #3fb950
+const AMBAR: [number, number, number] = [217, 168, 46]; // punto medio
+const ROJO: [number, number, number] = [248, 81, 73]; // #f85149
+function colorGradientePct(pct: number): string {
+  const t = Math.max(0, Math.min(100, pct)) / 100;
+  return t <= 0.5 ? mezclarColor(VERDE, AMBAR, t / 0.5) : mezclarColor(AMBAR, ROJO, (t - 0.5) / 0.5);
+}
 
 function TablaPremios({
   titulo,
   subtitulo,
   etiquetaNombre,
   etiquetaCantidad,
-  etiquetaPremiado,
   filas,
   cargando,
   escala,
@@ -114,23 +121,15 @@ function TablaPremios({
   subtitulo: string;
   etiquetaNombre: string;
   etiquetaCantidad: string;
-  /** Rótulo de la última columna: lo que queda después del margen. */
-  etiquetaPremiado: string;
   filas: Fila[];
   cargando: boolean;
   /** Versión de la escala que rige para el mes que se está mirando. */
   escala: VersionEscala | null;
 }) {
   const [orden, setOrden] = useState<Orden>("cantidad");
-  const tramos = escala?.tramos;
-  const ordenadas = useMemo(() => ordenar(filas, orden, tramos), [filas, orden, tramos]);
+  const ordenadas = useMemo(() => ordenar(filas, orden), [filas, orden]);
   const totCant = filas.reduce((a, f) => a + f.cantidad, 0);
   const totErr = filas.reduce((a, f) => a + f.errores, 0);
-  // Pie: lo premiado de toda la tabla (suma de cantidad − margen de cada uno),
-  // null si el mes no tiene escala cargada.
-  const totPremiado = tramos
-    ? filas.reduce((a, f) => a + (premiadoDe(tramos, f.cantidad, f.errores)?.premiado ?? 0), 0)
-    : null;
 
   const Th = ({ campo, children, className = "" }: { campo: Orden; children: ReactNode; className?: string }) => (
     <TableHead
@@ -160,13 +159,12 @@ function TablaPremios({
             <Th campo="cantidad" className="text-right">{etiquetaCantidad}</Th>
             <Th campo="errores" className="text-right">Errores</Th>
             <Th campo="pct" className="text-right">% Error</Th>
-            <Th campo="premio" className="text-right">{etiquetaPremiado}</Th>
           </TableRow>
         </TableHeader>
         <TableBody>
           {cargando && (
             <TableRow>
-              <TableCell colSpan={5} className="py-10 text-center text-zinc-600">
+              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
                 <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
                 Consultando…
               </TableCell>
@@ -174,14 +172,14 @@ function TablaPremios({
           )}
           {!cargando && !ordenadas.length && (
             <TableRow>
-              <TableCell colSpan={5} className="py-10 text-center text-zinc-600">
+              <TableCell colSpan={4} className="py-10 text-center text-zinc-600">
                 Sin datos en el mes
               </TableCell>
             </TableRow>
           )}
           {!cargando &&
             ordenadas.map((f) => {
-              const p = premiadoDe(tramos, f.cantidad, f.errores);
+              const pctError = pctErrorDe(f.errores, f.cantidad);
               return (
                 <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
                   <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
@@ -189,23 +187,11 @@ function TablaPremios({
                   <TableCell className={`px-2.5 text-right tabular-nums ${f.errores > 0 ? "text-[#f85149]" : "text-zinc-600"}`}>
                     {fmtNum(f.errores)}
                   </TableCell>
-                  <TableCell className="px-2.5 text-right tabular-nums text-zinc-400">
-                    {fmtPct(f.errores, f.cantidad)}
-                  </TableCell>
                   <TableCell
-                    className={`px-2.5 text-right tabular-nums font-medium ${p === null ? "text-zinc-600" : colorPremio(p.descuento)}`}
-                    title={
-                      p === null
-                        ? "Sin escala de márgenes para este mes"
-                        : `${fmtNum(f.cantidad)} − ${p.descuento}% (${fmtNum(p.margen)})`
-                    }
+                    className="px-2.5 text-right tabular-nums font-medium"
+                    style={pctError === null ? undefined : { color: colorGradientePct(pctError) }}
                   >
-                    {p === null ? "—" : fmtNum(p.premiado)}
-                    {p !== null && p.descuento > 0 && (
-                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
-                        −{p.descuento}%
-                      </span>
-                    )}
+                    {fmtPct(f.errores, f.cantidad)}
                   </TableCell>
                 </TableRow>
               );
@@ -217,12 +203,11 @@ function TablaPremios({
               <TableCell className="px-2.5 font-semibold text-zinc-200 border-t border-zinc-700">TOTAL</TableCell>
               <TableCell className="px-2.5 text-right tabular-nums font-semibold text-yellow-400 border-t border-zinc-700">{fmtNum(totCant)}</TableCell>
               <TableCell className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700">{fmtNum(totErr)}</TableCell>
-              <TableCell className="px-2.5 text-right tabular-nums text-zinc-400 border-t border-zinc-700">{fmtPct(totErr, totCant)}</TableCell>
               <TableCell
-                className="px-2.5 text-right tabular-nums font-semibold text-zinc-200 border-t border-zinc-700"
-                title="Suma de lo premiado, ya descontado el margen de cada uno"
+                className="px-2.5 text-right tabular-nums font-semibold border-t border-zinc-700"
+                style={totCant > 0 ? { color: colorGradientePct((totErr / totCant) * 100) } : undefined}
               >
-                {totPremiado === null ? "—" : fmtNum(totPremiado)}
+                {fmtPct(totErr, totCant)}
               </TableCell>
             </TableRow>
           </TableFooter>
@@ -327,20 +312,18 @@ export default function PremiosPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <TablaPremios
           titulo="Preparadores"
-          subtitulo="Ítems recolectados en OT de Picking, errores detectados sobre lo que preparó y lo premiado después del margen."
+          subtitulo="Ítems recolectados en OT de Picking y errores detectados sobre lo que preparó."
           etiquetaNombre="Preparador"
           etiquetaCantidad="Preparado (ítems)"
-          etiquetaPremiado="Premiado (ítems)"
           filas={preparadores}
           cargando={cargando}
           escala={escalaPrep}
         />
         <TablaPremios
           titulo="Mesa de Control"
-          subtitulo="Renglones controlados, errores que se le escaparon (detectados por Calidad) y lo premiado después del margen."
+          subtitulo="Renglones controlados y errores que se le escaparon (detectados por Calidad)."
           etiquetaNombre="Controlador"
           etiquetaCantidad="Controlado (renglones)"
-          etiquetaPremiado="Premiado (renglones)"
           filas={mesa}
           cargando={cargando}
           escala={escalaMesa}
