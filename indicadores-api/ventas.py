@@ -30,6 +30,7 @@ from subempresas import filas_dos, sql_prueba, unir
 from catalogo_pg import (
     mapa_articulo_sub_linea,
     codigos_de_sub_linea,
+    lineas_con_apertura_comercial,
     LINEA_SIN_CLASIFICAR,
     SUB_LINEA_SIN_CLASIFICAR,
 )
@@ -911,6 +912,11 @@ def fetch_top_lineas(
         # acá). Vacío mientras el DePara no se cargó: todo cae en
         # SIN_CLASIFICAR, no es un error.
         mapa = mapa_articulo_sub_linea()
+        # Set de líneas con al menos un patrón de apertura comercial — ver
+        # catalogo_pg.lineas_con_apertura_comercial. El front sólo deja
+        # desplegar (ver sub_líneas) las líneas de este set; las demás se
+        # muestran sin chevron y sin click, aunque tengan venta.
+        lineas_apertura = lineas_con_apertura_comercial()
 
         # Acumulado en DOS niveles: por (línea, sub_línea) para las filas, y
         # por línea sola para el total del grupo. Las filas de las DOS
@@ -976,6 +982,7 @@ def fetch_top_lineas(
                     "unidadesMes": round(g["unidadesMes"], 2),
                     "montoMes": round(g["montoMes"], 2),
                     "subLineas": subs,
+                    "aperturaComercial": g["linea"] in lineas_apertura,
                 })
             out.sort(key=orden_key, reverse=True)
             return out

@@ -70,6 +70,52 @@ def mapa_articulo_sub_linea(forzar: bool = False) -> dict[str, tuple[str, str]]:
     return _cache
 
 
+# Cache aparte de mapa_articulo_sub_linea: mismo TTL/patrón, pero el dato es
+# distinto (nombre de línea -> se puede desplegar comercialmente) y cambia
+# con mucha menos frecuencia que el mapeo de artículos, no tiene sentido
+# atarlos al mismo _cache.
+_cache_apertura: set[str] | None = None
+_cache_apertura_ts: float = 0.0
+
+
+def _cargar_apertura_comercial() -> set[str]:
+    """Nombres de línea con AL MENOS UN patrón `apertura_comercial = true`
+    (columna M "Apertura Comercial" del DePara, ver
+    depara_pool_linea_sublinea_patron.md). En la práctica el flag es
+    uniforme para todos los patrones de una misma línea salvo "Varios"
+    (mezcla SI/NO) — ahí ANY, no ALL, es el criterio correcto: si algún
+    patrón de la línea habilita apertura comercial, la línea se puede
+    desplegar."""
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT l.nombre
+            FROM catalogo.linea l
+            JOIN catalogo.sub_linea sl ON sl.linea_id = l.id
+            JOIN catalogo.patron pa    ON pa.sub_linea_id = sl.id
+            WHERE pa.apertura_comercial = TRUE
+        """)
+        return {(nombre or "").strip() for (nombre,) in cur.fetchall() if nombre}
+    finally:
+        conn.close()
+
+
+def lineas_con_apertura_comercial(forzar: bool = False) -> set[str]:
+    """Devuelve (y cachea 15 min, mismo TTL que mapa_articulo_sub_linea) el
+    set de nombres de línea que se pueden desplegar comercialmente — usado
+    por fetch_top_lineas (ventas.py) para marcar `aperturaComercial` en cada
+    línea del ranking y que el front sólo deje abrir el acordeón de esas.
+    Vacío (nada desplegable) si `catalogo.patron` todavía no tiene filas,
+    mismo criterio de "no es error" que mapa_articulo_sub_linea."""
+    global _cache_apertura, _cache_apertura_ts
+    ahora = time.monotonic()
+    if forzar or _cache_apertura is None or (ahora - _cache_apertura_ts) > _CACHE_TTL_SEG:
+        _cache_apertura = _cargar_apertura_comercial()
+        _cache_apertura_ts = ahora
+    return _cache_apertura
+
+
 def codigos_de_sub_linea(sub_linea: str, linea: str) -> list[str]:
     """Códigos de artículo de una (línea, sub_línea) puntual — para la
     'variante rápida' de fetch_clientes_por_linea (arrancar por los

@@ -179,6 +179,11 @@ interface TopLinea {
   unidadesMes: number;
   montoMes: number;
   subLineas: TopSubLinea[];
+  // Sólo las líneas con algún patrón "Apertura Comercial" = SI en el DePara
+  // se pueden desplegar (ver catalogo_pg.lineas_con_apertura_comercial /
+  // fetch_top_lineas, 2026-09-15). Las demás muestran el total pero sin
+  // chevron ni click — no tienen sub_línea "comercial" que mostrar.
+  aperturaComercial: boolean;
 }
 
 interface RespTopLineas {
@@ -2197,20 +2202,37 @@ export default function VentasVendedorPage() {
                                 // que abre el modal de clientes (2026-09-15,
                                 // catálogo de Postgres — ver fetch_top_lineas).
                                 (grupo as TopLinea[]).map((l, i) => {
-                                  const lineaAbierta = lineasAbiertas.has(l.linea);
+                                  // Sólo se puede abrir si el back marcó la
+                                  // línea con apertura comercial (ver
+                                  // TopLinea.aperturaComercial) — el && corta
+                                  // en false para cualquier línea sin
+                                  // apertura aunque quedara un resabio en
+                                  // lineasAbiertas (cambio de vendedor/rango).
+                                  const lineaAbierta =
+                                    l.aperturaComercial && lineasAbiertas.has(l.linea);
                                   return (
                                   <Fragment key={l.linea}>
                                     <tr
-                                      onClick={() => toggleLinea(l.linea)}
-                                      className={`cursor-pointer border-t border-l-2 transition-colors ${
+                                      onClick={
+                                        l.aperturaComercial
+                                          ? () => toggleLinea(l.linea)
+                                          : undefined
+                                      }
+                                      className={`border-t border-l-2 transition-colors ${
+                                        l.aperturaComercial ? "cursor-pointer" : ""
+                                      } ${
                                         lineaAbierta
                                           ? "border-t-zinc-800/60 border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
-                                          : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
+                                          : l.aperturaComercial
+                                            ? "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
+                                            : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60"
                                       }`}
                                       title={
-                                        lineaAbierta
-                                          ? "Contraer sub_líneas"
-                                          : "Expandir para ver sub_líneas"
+                                        l.aperturaComercial
+                                          ? lineaAbierta
+                                            ? "Contraer sub_líneas"
+                                            : "Expandir para ver sub_líneas"
+                                          : undefined
                                       }
                                     >
                                       <td className="px-3 py-2 text-zinc-500 tabular-nums">
@@ -2221,10 +2243,14 @@ export default function VentasVendedorPage() {
                                         title={l.linea}
                                       >
                                         <span className="inline-flex items-center gap-1.5">
-                                          {lineaAbierta ? (
-                                            <ChevronUp size={14} className="shrink-0 text-yellow-400" />
+                                          {l.aperturaComercial ? (
+                                            lineaAbierta ? (
+                                              <ChevronUp size={14} className="shrink-0 text-yellow-400" />
+                                            ) : (
+                                              <ChevronDown size={14} className="shrink-0 text-zinc-500" />
+                                            )
                                           ) : (
-                                            <ChevronDown size={14} className="shrink-0 text-zinc-500" />
+                                            <span className="inline-block w-[14px] shrink-0" />
                                           )}
                                           {l.linea}
                                         </span>
