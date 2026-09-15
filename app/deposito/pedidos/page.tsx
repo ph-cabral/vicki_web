@@ -381,6 +381,11 @@ function ReposicionOtPanel() {
       ),
     },
     { key: "Nombre", label: "Artículo" },
+    { key: "Pendiente", label: "En picking", num: true, render: (r) => fmtNum(r.Pendiente) },
+    {
+      key: "Stock", label: "Stock central", num: true,
+      render: (r) => (r.Stock <= 0 ? <Tag tone="red">{fmtNum(r.Stock)}</Tag> : fmtNum(r.Stock)),
+    },
     {
       key: "Reponer", label: "A reponer", num: true,
       render: (r) => (r.Reponer > 0 ? <Tag tone="red">{fmtNum(r.Reponer)}</Tag> : "—"),
@@ -439,7 +444,10 @@ function ReposicionOtPanel() {
           />
 
           <SectionTitle>Artículos a reponer · ordenado por urgencia</SectionTitle>
-          <Table<ReposicionRow> cols={cols} rows={rows} max={300} maxH={560} />
+          <Table<ReposicionRow>
+            cols={cols} rows={rows} max={300} maxH={560}
+            rowClassName={(r) => (r.Stock <= 0 ? "bg-red-400/10" : "")}
+          />
 
           <p className="text-[11px] text-zinc-600 mt-3 leading-relaxed">
             El desglose por operario cuenta solo los artículos que YA están en riesgo (Reponer &gt; 0);

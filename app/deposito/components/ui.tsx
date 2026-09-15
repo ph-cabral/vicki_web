@@ -396,12 +396,14 @@ export function Table<T>({
   max = 200,
   empty = "Sin datos",
   maxH,
+  rowClassName,
 }: {
   cols: Col<T>[];
   rows: T[];
   max?: number;
   empty?: string;
   maxH?: number;
+  rowClassName?: (row: T) => string;
 }) {
   const shown = rows.slice(0, max);
   return (
@@ -426,7 +428,7 @@ export function Table<T>({
           {shown.map((row, i) => (
             <tr
               key={i}
-              className="border-b border-zinc-800/60 hover:bg-[#1f1f1f] transition-colors"
+              className={`border-b border-zinc-800/60 hover:bg-[#1f1f1f] transition-colors ${rowClassName ? rowClassName(row) : ""}`}
             >
               {cols.map((c) => (
                 <td

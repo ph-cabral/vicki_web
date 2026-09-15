@@ -17,7 +17,9 @@ import {
 } from "@/components/ui/table";
 import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 import {
+  descuentoDe,
   escalaVigente,
+  pctError,
   usePremioEscala,
   type VersionEscala,
 } from "@/lib/rrhh/premioEscala";
@@ -72,11 +74,8 @@ function nombreMes(mes: string): string {
 }
 
 const fmtNum = (n: number) => n.toLocaleString("es-AR");
-/** % de error, o null si no hay base (cantidad = 0). */
-const pctErrorDe = (errores: number, base: number): number | null =>
-  base > 0 ? (errores / base) * 100 : null;
 const fmtPct = (errores: number, base: number) => {
-  const p = pctErrorDe(errores, base);
+  const p = pctError(errores, base);
   return p === null ? "—" : `${p.toFixed(2)}%`;
 };
 
@@ -127,6 +126,7 @@ function TablaPremios({
   escala: VersionEscala | null;
 }) {
   const [orden, setOrden] = useState<Orden>("cantidad");
+  const tramos = escala?.tramos;
   const ordenadas = useMemo(() => ordenar(filas, orden), [filas, orden]);
   const totCant = filas.reduce((a, f) => a + f.cantidad, 0);
   const totErr = filas.reduce((a, f) => a + f.errores, 0);
@@ -179,7 +179,8 @@ function TablaPremios({
           )}
           {!cargando &&
             ordenadas.map((f) => {
-              const pctError = pctErrorDe(f.errores, f.cantidad);
+              const pct = pctError(f.errores, f.cantidad);
+              const descuento = descuentoDe(tramos, pct);
               return (
                 <TableRow key={f.nombre} className="border-b border-zinc-800/60 hover:bg-[#1f1f1f]">
                   <TableCell className="px-2.5 text-zinc-100">{f.nombre}</TableCell>
@@ -189,9 +190,15 @@ function TablaPremios({
                   </TableCell>
                   <TableCell
                     className="px-2.5 text-right tabular-nums font-medium"
-                    style={pctError === null ? undefined : { color: colorGradientePct(pctError) }}
+                    style={pct === null ? undefined : { color: colorGradientePct(pct) }}
+                    title={descuento === null ? "Sin escala de márgenes para este mes" : `Tramo: −${descuento}% de premio`}
                   >
                     {fmtPct(f.errores, f.cantidad)}
+                    {descuento !== null && descuento > 0 && (
+                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
+                        −{descuento}%
+                      </span>
+                    )}
                   </TableCell>
                 </TableRow>
               );
