@@ -2,7 +2,8 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, User, CalendarDays, CalendarRange, Calendar, LayoutGrid,
-  Loader2, RefreshCw, AlertTriangle, PackageSearch, type LucideIcon,
+  Loader2, RefreshCw, AlertTriangle, PackageSearch, MapPin, X,
+  type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, Bar, Line,
@@ -226,6 +227,11 @@ interface BucketRow { lbl: string; ots: number; items: number }
 // recolectar. Sin rango de fechas (no es historial, es la foto de ahora):
 // /api/deposito/reposicion-ot.
 // ──────────────────────────────────────────────────────────────────────────
+interface OTDetalleRow {
+  OTId: number;
+  NroMovVenta: number | null;
+  Operario: string;
+}
 interface ReposicionRow {
   CodArticulo: string;
   Nombre: string;
@@ -236,6 +242,7 @@ interface ReposicionRow {
   Reponer: number;
   OTs: number;
   Pedidos: number;
+  OTsDetalle: OTDetalleRow[];
 }
 interface OperarioRiesgoRow {
   Operario: string;
@@ -247,14 +254,92 @@ interface ReposicionData {
   total: number;
   alerta: number;
   otDescartadas: number;
+  otEsperaMercaderia: number;
   rows: ReposicionRow[];
   porOperario: OperarioRiesgoRow[];
+}
+
+// Modal de ubicaciones de un artículo — mismo patrón que /picking (reutiliza
+// /api/deposito/faltantes/ubicaciones) pero además lista arriba las OT reales
+// (ya excluido el buzón "Mercaderia X Llegar") que están esperando ese
+// artículo, con el operario que la tiene asignada.
+function UbicacionesModal({
+  articulo,
+  ots,
+  onClose,
+}: {
+  articulo: string;
+  ots: OTDetalleRow[];
+  onClose: () => void;
+}) {
+  const [rows, setRows] = useState<{ Ubicacion: string; Cantidad: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let vivo = true;
+    fetch(`/api/deposito/faltantes/ubicaciones?articulo=${encodeURIComponent(articulo)}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => { if (vivo) setRows((j.rows ?? []).filter((r: any) => r.Cantidad > 0)); })
+      .catch(() => { if (vivo) setRows([]); })
+      .finally(() => { if (vivo) setLoading(false); });
+    return () => { vivo = false; };
+  }, [articulo]);
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-[#1A1A1A] border border-zinc-700 rounded-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+          <span className="font-mono text-sm text-yellow-400">{articulo}</span>
+          <button onClick={onClose} className="text-zinc-400 hover:text-white">
+            <X size={18} />
+          </button>
+        </div>
+
+        {ots.length > 0 && (
+          <div className="px-4 py-3 border-b border-zinc-800 bg-[#151515] max-h-36 overflow-y-auto">
+            <p className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1.5">
+              OT esperando este artículo
+            </p>
+            <div className="flex flex-col gap-1">
+              {ots.map((o) => (
+                <p key={o.OTId} className="text-xs text-zinc-300">
+                  OT <span className="text-zinc-100 font-semibold">{o.NroMovVenta ?? o.OTId}</span>
+                  {" · "}
+                  <span className="text-zinc-400">{o.Operario}</span>
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="max-h-80 overflow-y-auto">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="animate-spin text-zinc-500" />
+            </div>
+          ) : rows.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-zinc-500">Sin otras ubicaciones</p>
+          ) : (
+            <table className="w-full text-sm">
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className="border-b border-zinc-800/60">
+                    <td className="px-4 py-2 text-zinc-200">{r.Ubicacion}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-zinc-300">{fmtNum(r.Cantidad)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ReposicionOtPanel() {
   const [data, setData] = useState<ReposicionData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ubic, setUbic] = useState<{ codigo: string; ots: OTDetalleRow[] } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -278,7 +363,19 @@ function ReposicionOtPanel() {
   const enRiesgo = data?.alerta ?? 0;
 
   const cols: Col<ReposicionRow>[] = [
-    { key: "CodArticulo", label: "Código" },
+    {
+      key: "CodArticulo", label: "Código",
+      render: (r) => (
+        <button
+          onClick={() => setUbic({ codigo: r.CodArticulo, ots: r.OTsDetalle ?? [] })}
+          title="Ver ubicaciones"
+          className="inline-flex items-center gap-1 font-mono hover:text-yellow-400"
+        >
+          <MapPin size={13} className="text-zinc-500" />
+          {r.CodArticulo}
+        </button>
+      ),
+    },
     { key: "Nombre", label: "Artículo" },
     { key: "Proveedor", label: "Proveedor" },
     { key: "Stock", label: "Stock central", num: true, render: (r) => fmtNum(r.Stock) },
@@ -340,10 +437,11 @@ function ReposicionOtPanel() {
         </div>
       ) : (
         <>
-          <Grid cols={4}>
+          <Grid cols={5}>
             <KPI label="Artículos con demanda pendiente" value={fmtNum(data?.total ?? 0)} accent="neutral" />
             <KPI label="A reponer" value={fmtNum(enRiesgo)} sub="Disponible < 0" accent={enRiesgo > 0 ? "red" : "green"} />
             <KPI label="OT descartadas" value={fmtNum(data?.otDescartadas ?? 0)} sub="pedido Cancelado en Magnus" accent="neutral" />
+            <KPI label="Esperando mercadería" value={fmtNum(data?.otEsperaMercaderia ?? 0)} sub="OT excluidas (ya se sabe)" accent="neutral" />
             <KPI label="Unidades a reponer" value={fmtNum(rows.reduce((a, r) => a + r.Reponer, 0))} accent="amber" />
           </Grid>
 
@@ -362,9 +460,15 @@ function ReposicionOtPanel() {
             El desglose por operario cuenta solo los artículos que YA están en riesgo (Reponer &gt; 0);
             "Unidades propias pendientes" es lo que ese operario todavía tiene que recolectar de esos
             artículos en sus propias OT (el stock es compartido, así que puede no alcanzar para todos
-            los operarios con ese artículo pendiente).
+            los operarios con ese artículo pendiente). Las OT del buzón "Mercadería X Llegar" no se
+            cuentan en ningún lado de este tablero: ya se sabe que están esperando mercadería, así que
+            no aportan a la demanda ni aparecen como operario.
           </p>
         </>
+      )}
+
+      {ubic && (
+        <UbicacionesModal articulo={ubic.codigo} ots={ubic.ots} onClose={() => setUbic(null)} />
       )}
     </>
   );

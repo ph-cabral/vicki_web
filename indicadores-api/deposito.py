@@ -2098,7 +2098,15 @@ def fetch_reposicion_ot_abiertas():
     artículos EN RIESGO (Reponer > 0) tiene entre sus propios pendientes, en
     cuántas OT y por cuántas unidades — para que cada uno vea de un vistazo
     qué de lo suyo se va a quedar sin stock. El Disponible/Reponer del
-    artículo sigue siendo global (el stock no es de un operario en particular)."""
+    artículo sigue siendo global (el stock no es de un operario en particular).
+
+    Las OT del buzón 'Mercaderia X Llegar' (OPERARIO_ESPERA_MERCA) se excluyen
+    por completo (ni suman Pendiente/OTs/Pedidos del artículo ni aparecen en
+    porOperario) — ya se sabe que están esperando mercadería, no son la
+    sorpresa que esta alerta busca mostrar. Se cuentan aparte en
+    'otEsperaMercaderia'. Cada fila de 'rows' trae además 'OTsDetalle'
+    (OTId, NroMovVenta, Operario) de las OT reales con demanda de ese
+    artículo, para el modal de ubicaciones del front."""
     conn = get_connection("WMS")
     try:
         cur = conn.cursor()
@@ -2120,11 +2128,20 @@ def fetch_reposicion_ot_abiertas():
     por_articulo: dict[str, dict] = {}
     por_op_articulo: dict[tuple[str, str], dict] = {}
     ots_descartadas: set = set()
+    ots_espera_merca: set = set()
     for f in filas:
         nro = int(f["NroMovVenta"]) if f.get("NroMovVenta") is not None else None
         estado = info.get(nro, {}).get("Estado") if nro is not None else None
         if estado and any(p in str(estado).upper() for p in PATRONES_CANCELADO):
             ots_descartadas.add(_int(f.get("OTId")))
+            continue
+        operario = _txt(f.get("Operario")) or SIN_OPERARIO_ASIGNADO
+        if _es_operario_merca(operario):
+            # OT parqueada en el buzón "Mercaderia X Llegar": ya se sabe que
+            # está esperando que llegue la mercadería, no es demanda a punto
+            # de recolectarse por un operario real. Se excluye de la alerta
+            # de reposición (mismo criterio que guardar_snapshot_wms_estados).
+            ots_espera_merca.add(_int(f.get("OTId")))
             continue
         cod = _txt(f.get("CodArticulo"))
         if not cod:
@@ -2136,13 +2153,15 @@ def fetch_reposicion_ot_abiertas():
         if pendiente <= 0:
             continue
         otid = _int(f.get("OTId"))
-        operario = _txt(f.get("Operario")) or SIN_OPERARIO_ASIGNADO
 
-        e = por_articulo.setdefault(cod, {"Pendiente": 0.0, "ots": set(), "pedidos": set()})
+        e = por_articulo.setdefault(
+            cod, {"Pendiente": 0.0, "ots": set(), "pedidos": set(), "ot_detalle": {}}
+        )
         e["Pendiente"] += pendiente
         e["ots"].add(otid)
         if nro is not None:
             e["pedidos"].add(nro)
+        e["ot_detalle"][otid] = {"OTId": otid, "NroMovVenta": nro, "Operario": operario}
 
         oe = por_op_articulo.setdefault((operario, cod), {"Pendiente": 0.0, "ots": set()})
         oe["Pendiente"] += pendiente
@@ -2175,6 +2194,9 @@ def fetch_reposicion_ot_abiertas():
             "Reponer":     reponer,
             "OTs":         len(e["ots"]),
             "Pedidos":     len(e["pedidos"]),
+            "OTsDetalle":  sorted(
+                e["ot_detalle"].values(), key=lambda o: (o["Operario"], o["OTId"])
+            ),
         })
     rows.sort(key=lambda r: (-r["Reponer"], -r["Pendiente"]))
 
@@ -2199,11 +2221,12 @@ def fetch_reposicion_ot_abiertas():
     operarios_rows.sort(key=lambda r: (-r["Articulos"], -r["Pendiente"]))
 
     return {
-        "total":          len(rows),
-        "alerta":         len(riesgo_articulos),
-        "otDescartadas":  len(ots_descartadas),
-        "rows":           rows,
-        "porOperario":    operarios_rows,
+        "total":              len(rows),
+        "alerta":             len(riesgo_articulos),
+        "otDescartadas":      len(ots_descartadas),
+        "otEsperaMercaderia": len(ots_espera_merca),
+        "rows":               rows,
+        "porOperario":        operarios_rows,
     }
 
 
