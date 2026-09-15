@@ -1,5 +1,5 @@
 "use client";
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { Fragment, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Loader2,
   AlertTriangle,
@@ -158,6 +158,19 @@ interface RespTopClientes {
 // Desde 2026-08-26 cada línea trae las DOS métricas y el back manda las dos
 // listas ya ordenadas (`porUnidades` por unidades, `porMonto` por $) — el
 // botón $ | Unidades del ranking solo cambia cuál se usa, no refetchea.
+//
+// Reemplazado 2026-09-15: cada línea ahora es un GRUPO con sus sub_líneas
+// (catálogo de Postgres, no Stk_Nivel1 de Magnus — ver fetch_top_lineas).
+// `unidades`/`monto` de la línea son la suma de sus `subLineas`; el click
+// para ver clientes va en la sub_línea, no en la línea. Ver TopSubLinea.
+interface TopSubLinea {
+  subLinea: string;
+  unidades: number;
+  monto: number;
+  unidadesMes: number;
+  montoMes: number;
+}
+
 interface TopLinea {
   linea: string;
   unidades: number;
@@ -165,6 +178,7 @@ interface TopLinea {
   // Mes en curso, en las dos métricas (2026-09-04) — columna aparte.
   unidadesMes: number;
   montoMes: number;
+  subLineas: TopSubLinea[];
 }
 
 interface RespTopLineas {
@@ -198,6 +212,10 @@ interface ClientePorLinea {
 
 interface RespClientesPorLinea {
   linea: string;
+  // Presente sólo cuando viene de /clientes-por-sub-linea (ranking del pie,
+  // catálogo de Postgres) — ausente en el drill-down Magnus de siempre
+  // (línea de un cliente puntual). No se usa para nada acá, es informativo.
+  subLinea?: string;
   anioAnterior: number;
   anioActual: number;
   tieneDatos: boolean;
@@ -439,15 +457,33 @@ export default function VentasVendedorPage() {
   // cada uno vive en su propio estado (`data` para "cliente",
   // `clientesLinea` para "linea") y ninguno pisa al otro. Volver atrás es
   // solo recortar la pila.
-  type NivelModal = { mode: "cliente"; cliente: Cliente } | { mode: "linea"; linea: string };
+  // "sublinea" (2026-09-15): mismo nivel 2 que "linea" (lista de clientes),
+  // pero para el click en una sub_línea del ranking del pie (catálogo de
+  // Postgres) en vez de una línea de Stk_Nivel1 dentro de la ficha de un
+  // cliente — ver fetchClientesPorSubLinea/irASubLinea más abajo. Necesita
+  // línea Y sub_línea porque el mismo nombre de sub_línea puede repetirse
+  // bajo líneas distintas.
+  type NivelModal =
+    | { mode: "cliente"; cliente: Cliente }
+    | { mode: "linea"; linea: string }
+    | { mode: "sublinea"; linea: string; subLinea: string };
   const [modalOpen, setModalOpen] = useState(false);
   const [pila, setPila] = useState<NivelModal[]>([]);
   const nivelActual: NivelModal | null = pila.length ? pila[pila.length - 1] : null;
-  const modalMode: "cliente" | "linea" = nivelActual?.mode ?? "cliente";
-  const modalLinea = nivelActual?.mode === "linea" ? nivelActual.linea : null;
+  const modalMode: "cliente" | "linea" | "sublinea" = nivelActual?.mode ?? "cliente";
+  const modalLinea =
+    nivelActual?.mode === "linea"
+      ? nivelActual.linea
+      : nivelActual?.mode === "sublinea"
+        ? nivelActual.subLinea
+        : null;
   // Texto de cada nivel en las migas de pan del header.
   const etiquetaNivel = (n: NivelModal) =>
-    n.mode === "cliente" ? n.cliente.nombre ?? String(n.cliente.numero) : n.linea;
+    n.mode === "cliente"
+      ? n.cliente.nombre ?? String(n.cliente.numero)
+      : n.mode === "sublinea"
+        ? n.subLinea
+        : n.linea;
   // Nivel 1 = todavía se puede bajar un nivel más; nivel 2 = tope.
   const puedeBajar = pila.length < 2;
   const puedeVolver = pila.length > 1;
@@ -487,6 +523,34 @@ export default function VentasVendedorPage() {
       try {
         const qs = qsVendedor(new URLSearchParams({ linea }));
         const res = await fetch(`/api/ventas/vendedor/clientes-por-linea?${qs.toString()}`, {
+          cache: "no-store",
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        setClientesLinea(j);
+      } catch (e) {
+        setClientesLineaError(e instanceof Error ? e.message : "Error al cargar");
+        setClientesLinea(null);
+      } finally {
+        setClientesLineaLoading(false);
+      }
+    },
+    [qsVendedor],
+  );
+
+  // Hermana de fetchClientesPorLinea (2026-09-15): clientes de una
+  // SUB_LÍNEA del catálogo de Postgres — la usa el ranking "Top líneas" del
+  // pie (ver abrirModalSubLinea más abajo). Comparte el mismo estado
+  // `clientesLinea`/loading/error (la forma de la respuesta es la misma),
+  // sólo cambia el endpoint y que manda `linea` además de `subLinea`.
+  const fetchClientesPorSubLinea = useCallback(
+    async (subLinea: string, linea: string) => {
+      setClientesLineaLoading(true);
+      setClientesLineaError(null);
+      setFilasGrupoAbierto(0);
+      try {
+        const qs = qsVendedor(new URLSearchParams({ subLinea, linea }));
+        const res = await fetch(`/api/ventas/vendedor/clientes-por-sub-linea?${qs.toString()}`, {
           cache: "no-store",
         });
         const j = await res.json().catch(() => ({}));
@@ -562,6 +626,26 @@ export default function VentasVendedorPage() {
     [fetchClientesPorLinea],
   );
 
+  // Hermana de irALinea (2026-09-15) — misma mecánica, pero para una
+  // sub_línea del catálogo de Postgres (ranking del pie). Necesita línea Y
+  // sub_línea: el mismo nombre de sub_línea puede repetirse bajo líneas
+  // distintas.
+  const irASubLinea = useCallback(
+    (subLinea: string, linea: string, apilar: boolean) => {
+      setQCliente("");
+      setClienteSel(null);
+      setSugerencias([]);
+      setMostrarSug(false);
+      setPila((p) =>
+        apilar
+          ? [...p, { mode: "sublinea", linea, subLinea }]
+          : [{ mode: "sublinea", linea, subLinea }],
+      );
+      fetchClientesPorSubLinea(subLinea, linea);
+    },
+    [fetchClientesPorSubLinea],
+  );
+
   // Botón ← del header del modal. No refetchea nada (ver el comentario de
   // `pila` arriba): el nivel al que se vuelve es de otro modo, así que sus
   // datos siguen intactos en su propio estado. Lo único que se restaura a
@@ -597,13 +681,14 @@ export default function VentasVendedorPage() {
     [irACliente],
   );
 
-  const abrirModalLinea = useCallback(
-    (linea: string) => {
+  // Entrada desde el ranking del pie (Top líneas) — click en una SUB_LÍNEA.
+  const abrirModalSubLinea = useCallback(
+    (subLinea: string, linea: string) => {
       setModalOpen(true);
       setFiltroVisible(true);
-      irALinea(linea, false);
+      irASubLinea(subLinea, linea, false);
     },
-    [irALinea],
+    [irASubLinea],
   );
 
   // Abre el modal vacío en modo "cliente", listo para buscar — para no
@@ -749,11 +834,14 @@ export default function VentasVendedorPage() {
   // ── Tabla año-anterior vs. año-actual del modal ────────────────────────
   // MISMA tabla para los dos modos. Lo único que cambia es qué identifica a la fila:
   //   · modo "cliente" → una fila por LÍNEA    (data.lineas)
-  //   · modo "linea"   → una fila por CLIENTE  (clientesLinea.clientes)
+  //   · modo "linea"/"sublinea" → una fila por CLIENTE (clientesLinea.clientes)
   // Ambas respuestas traen la misma forma {anioAnterior, anioActual} con
   // cantidad/monto/meses, así que todo lo de abajo (valor/valorMes,
   // sumaPeriodo, hover, tendencia, acordeón) sirve igual para las dos.
-  const esModoLinea = modalMode === "linea";
+  // "sublinea" (2026-09-15) es el mismo tipo de vista que "linea" — ambas
+  // son "lista de clientes de una fila del ranking", sólo cambia de dónde
+  // salió esa fila (Magnus/Stk_Nivel1 vs. catálogo de Postgres).
+  const esModoLinea = modalMode === "linea" || modalMode === "sublinea";
   const fuenteTabla = esModoLinea ? clientesLinea : data;
   const filas: FilaTabla[] = useMemo(() => {
     const base: FilaTabla[] = esModoLinea
@@ -2086,42 +2174,74 @@ export default function VentasVendedorPage() {
                                     </td>
                                   </tr>
                                 ))
-                              : (grupo as TopLinea[]).map((l, i) => (
-                                  <tr
-                                    key={l.linea}
-                                    className="border-t border-zinc-800/60 hover:bg-zinc-800/30 transition-colors"
-                                  >
-                                    <td className="px-3 py-2 text-zinc-500 tabular-nums">
-                                      {gIdx * GROUP_SIZE + i + 1}
-                                    </td>
-                                    <td
-                                      className="px-3 py-2 text-zinc-100 max-w-0 w-full truncate"
-                                      title={l.linea}
-                                    >
-                                      <button
-                                        type="button"
-                                        onClick={() => abrirModalLinea(l.linea)}
-                                        className="hover:text-yellow-400 hover:underline transition-colors text-left"
-                                        title="Ver clientes que compraron esta línea"
+                              : // Línea = grupo colapsable (fila en negrita,
+                                // no clickeable, con el TOTAL de sus
+                                // sub_líneas); Sub_línea = fila clickeable
+                                // que abre el modal de clientes (2026-09-15,
+                                // catálogo de Postgres — ver fetch_top_lineas).
+                                (grupo as TopLinea[]).map((l, i) => (
+                                  <Fragment key={l.linea}>
+                                    <tr className="border-t border-zinc-800/60 bg-zinc-900/40">
+                                      <td className="px-3 py-2 text-zinc-500 tabular-nums">
+                                        {gIdx * GROUP_SIZE + i + 1}
+                                      </td>
+                                      <td
+                                        className="px-3 py-2 text-zinc-100 font-semibold max-w-0 w-full truncate"
+                                        title={l.linea}
                                       >
                                         {l.linea}
-                                      </button>
-                                    </td>
-                                    <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
-                                      {fmtTop(
-                                        topMetricaLineas === "pesos"
-                                          ? l.monto
-                                          : l.unidades,
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
-                                      {fmtTop(
-                                        topMetricaLineas === "pesos"
-                                          ? l.montoMes
-                                          : l.unidadesMes,
-                                      )}
-                                    </td>
-                                  </tr>
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                        {fmtTop(
+                                          topMetricaLineas === "pesos"
+                                            ? l.monto
+                                            : l.unidades,
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                        {fmtTop(
+                                          topMetricaLineas === "pesos"
+                                            ? l.montoMes
+                                            : l.unidadesMes,
+                                        )}
+                                      </td>
+                                    </tr>
+                                    {l.subLineas.map((sl) => (
+                                      <tr
+                                        key={`${l.linea}::${sl.subLinea}`}
+                                        className="border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors"
+                                      >
+                                        <td className="px-3 py-2" />
+                                        <td
+                                          className="px-3 py-2 pl-6 text-zinc-300 max-w-0 w-full truncate"
+                                          title={sl.subLinea}
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => abrirModalSubLinea(sl.subLinea, l.linea)}
+                                            className="hover:text-yellow-400 hover:underline transition-colors text-left"
+                                            title="Ver clientes que compraron esta sub_línea"
+                                          >
+                                            {sl.subLinea}
+                                          </button>
+                                        </td>
+                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
+                                          {fmtTop(
+                                            topMetricaLineas === "pesos"
+                                              ? sl.monto
+                                              : sl.unidades,
+                                          )}
+                                        </td>
+                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap">
+                                          {fmtTop(
+                                            topMetricaLineas === "pesos"
+                                              ? sl.montoMes
+                                              : sl.unidadesMes,
+                                          )}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </Fragment>
                                 )))}
                         </tbody>
                       ))}

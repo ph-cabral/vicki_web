@@ -7,23 +7,22 @@ const API_URL =
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Proxy → FastAPI indicadores-api: clientes que compraron una línea de
-// artículo (Stk_Nivel1, Magnus), con el mismo desglose año/mes y las mismas
-// dos métricas ($/unidades) que la tabla línea×año del modo "cliente" —
-// para el modal de /ventas/vendedor al hacer click en una línea DENTRO de
-// la ficha de un cliente puntual ("qué otros clientes compraron esta misma
-// línea"). Ver fetch_clientes_por_linea en ventas.py.
-//
-// OJO (2026-09-15): el ranking "Top líneas" del PIE de la página ahora usa
-// /api/ventas/vendedor/clientes-por-sub-linea (catálogo de Postgres) — esta
-// ruta quedó sólo para el drill-down de arriba, que sigue siendo Magnus.
+// Proxy → FastAPI indicadores-api: clientes que compraron una SUB_LÍNEA de
+// artículo (catálogo de Postgres, nuevo 2026-09-15 — hermano de
+// /api/ventas/vendedor/clientes-por-linea, que sigue Magnus/Stk_Nivel1 para
+// el drill-down desde la ficha de un cliente). Mismo desglose año/mes y las
+// mismas dos métricas ($/unidades) que la tabla línea×año del modo
+// "cliente" — para el modal de /ventas/vendedor al hacer click en una
+// sub_línea del ranking "Top líneas" del pie (que desde fetch_top_lineas
+// agrupa por línea > sub_línea de Postgres). Ver fetch_clientes_por_sub_linea
+// en ventas.py.
 //
 // Ya NO se pasan desde/hasta: el back devuelve los 2 años completos y el
 // filtro YTD/Meses lo hace el front sobre el desglose ya traído.
 //
 // Acceso por vendedor: mismo criterio que el resto de /api/ventas/vendedor/*
 // — se resuelve server-side si quien pide es admin (todos los clientes que
-// compraron esa línea) o no-admin (solo los de su cartera).
+// compraron esa sub_línea) o no-admin (solo los de su cartera).
 function aniosPorDefecto(): { anioAnterior: number; anioActual: number } {
   const y = new Date().getFullYear();
   return { anioAnterior: y - 1, anioActual: y };
@@ -43,10 +42,11 @@ function anioVacio() {
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
+  const subLinea = sp.get("subLinea")?.trim();
   const linea = sp.get("linea")?.trim();
 
-  if (!linea) {
-    return NextResponse.json({ error: "Falta 'linea'" }, { status: 400 });
+  if (!subLinea) {
+    return NextResponse.json({ error: "Falta 'subLinea'" }, { status: 400 });
   }
 
   const acceso = await resolverAccesoVendedor();
@@ -59,7 +59,8 @@ export async function GET(req: NextRequest) {
     // restricción".
     const { anioAnterior, anioActual } = aniosPorDefecto();
     return NextResponse.json({
-      linea,
+      linea: linea ?? "",
+      subLinea,
       anioAnterior,
       anioActual,
       tieneDatos: false,
@@ -70,10 +71,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const qs = new URLSearchParams({ linea });
+    const qs = new URLSearchParams({ subLinea });
+    if (linea) qs.set("linea", linea);
     const vend = vendedorParam(sp, acceso);
     if (vend) qs.set("vendedor", vend);
-    const res = await fetch(`${API_URL}/ventas/vendedor/clientes-por-linea?${qs.toString()}`, {
+    const res = await fetch(`${API_URL}/ventas/vendedor/clientes-por-sub-linea?${qs.toString()}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(55000),
     });
@@ -87,8 +89,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(
         {
           error: motivo
-            ? `Error en API de clientes por línea: ${motivo}`
-            : "Error en API de clientes por línea",
+            ? `Error en API de clientes por sub_línea: ${motivo}`
+            : "Error en API de clientes por sub_línea",
           detail,
         },
         { status: res.status },
@@ -97,7 +99,7 @@ export async function GET(req: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error("GET /api/ventas/vendedor/clientes-por-linea", error);
+    console.error("GET /api/ventas/vendedor/clientes-por-sub-linea", error);
     return NextResponse.json(
       { error: "No se pudo conectar al servicio de ventas" },
       { status: 503 },

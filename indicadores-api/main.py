@@ -30,6 +30,7 @@ from embolsado import fetch_embolsado, buscar_usuario as buscar_usuario_embolsad
 from ventas import (
     fetch_pedidos_mes, fetch_ventas_por_linea, fetch_vendedores,
     fetch_top_clientes, fetch_top_lineas, fetch_clientes_por_linea,
+    fetch_clientes_por_sub_linea,
 )
 # /ventas/bulones — misma vista que /ventas/vendedor pero acotada a la línea
 # BULONERÍA, con el corte por CÓDIGO PATRÓN y un ranking extra de vendedores
@@ -1014,19 +1015,54 @@ def ventas_vendedor_clientes_por_linea(
     # rango; el front agrupa de a 50 en acordeones colapsables en pantalla.
     limit: int = Query(default=1_000_000, ge=1),
 ):
-    """Clientes que compraron una línea de artículo, con el MISMO desglose
-    que la tabla línea×año del modo "cliente": año anterior y año actual,
-    cada uno con total y los 12 meses, en cantidad y monto (
-    2026-08-20, para que el modal de línea tenga los mismos toggles
+    """Clientes que compraron una línea de artículo (Stk_Nivel1, Magnus), con
+    el MISMO desglose que la tabla línea×año del modo "cliente": año
+    anterior y año actual, cada uno con total y los 12 meses, en cantidad y
+    monto (2026-08-20, para que el modal de línea tenga los mismos toggles
     $/Unidades y por mes/por año). Ordenados por monto total de mayor a
-    menor. Trae TODOS los clientes de esa línea (
-    2026-08-19), no un recorte a 100.
+    menor. Trae TODOS los clientes de esa línea (2026-08-19), no un recorte
+    a 100.
+
+    OJO (2026-09-15): esto es SOLO para el drill-down "línea de un cliente
+    puntual → quién más la compró" (modo "cliente" del modal). El ranking
+    "Top líneas" del pie usa /ventas/vendedor/clientes-por-sub-linea, acá
+    abajo — ver fetch_clientes_por_linea (ventas.py) para por qué son dos.
 
     Ya NO recibe desde/hasta: el filtro YTD/Meses lo hace el front sobre el
     desglose mensual ya traído, igual que en modo "cliente" — así el toggle
-    no vuelve a pegarle al back. Ver fetch_clientes_por_linea (ventas.py)."""
+    no vuelve a pegarle al back."""
     try:
         return fetch_clientes_por_linea(linea, vendedor=vendedor, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.get("/ventas/vendedor/clientes-por-sub-linea")
+def ventas_vendedor_clientes_por_sub_linea(
+    subLinea: str = Query(..., min_length=1, alias="subLinea", description="Nombre de sub_línea (catalogo.sub_linea, Postgres), o '(Sin clasificar)'"),
+    linea: str | None = Query(default=None, description="Nombre de línea (catalogo.linea) — obligatorio salvo con subLinea='(Sin clasificar)'"),
+    vendedor: int | None = Query(default=None, description="Filtra a clientes de este vendedor (no-admin)"),
+    # Mismo criterio que clientes-por-linea (2026-08-19): sin tope superior.
+    limit: int = Query(default=1_000_000, ge=1),
+):
+    """Clientes que compraron una SUB_LÍNEA de artículo (catálogo de
+    Postgres — nuevo 2026-09-15, hermano de /clientes-por-linea), con el
+    MISMO desglose que la tabla línea×año del modo "cliente": año anterior y
+    año actual, cada uno con total y los 12 meses, en cantidad y monto.
+    Ordenados por monto total de mayor a menor. Trae TODOS los clientes de
+    esa sub_línea.
+
+    Usado por el ranking "Top líneas" del pie de /ventas/vendedor (ver
+    fetch_top_lineas), que desde 2026-09-15 agrupa por línea > sub_línea de
+    Postgres en vez de Stk_Nivel1.
+
+    Ya NO recibe desde/hasta: el filtro YTD/Meses lo hace el front sobre el
+    desglose mensual ya traído. Ver fetch_clientes_por_sub_linea
+    (ventas.py)."""
+    try:
+        return fetch_clientes_por_sub_linea(subLinea, linea=linea, vendedor=vendedor, limit=limit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

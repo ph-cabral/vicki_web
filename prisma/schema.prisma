@@ -620,6 +620,11 @@ model usuario {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   legajo         legajo    @relation(fields: [legajoId], references: [id])
+  // Encargado de módulo, genérico (2026-09-15) — ver model
+  // usuario_modulo_encargado. Reemplaza tener que agregar una columna nueva
+  // (como depositoObjetivoAcceso arriba) por cada permiso puntual: un
+  // usuario puede ser encargado de N módulos. Se asigna en /admin/encargados.
+  modulosEncargado usuario_modulo_encargado[]
 
   @@index([dni])
   @@schema("everwear")
@@ -1043,5 +1048,29 @@ model premio_escala {
   // Única lectura que existe: todas las versiones de un ámbito ordenadas por
   // vigencia — la cubre el btree que ya crea la UNIQUE.
   @@unique([ambito, vigencia])
+  @@schema("everwear")
+}
+
+// Encargados de módulo (2026-09-15) — quién es responsable de un módulo
+// completo (hoy: depósito, para editar deposito_objetivo — ver
+// lib/deposito/objetivoAcceso.ts y lib/auth/encargados.ts). Genérico a
+// propósito: reemplaza tener que agregar una columna booleana nueva a
+// `usuario` (como bulonesAccesoTotal o depositoObjetivoAcceso) cada vez que
+// aparece un permiso "encargado de X" — un usuario puede ser encargado de
+// varios módulos, y un módulo nuevo no necesita ni migración ni columna.
+// Se asigna en /admin/encargados. DDL a mano en
+// sql/usuario_modulo_encargado.sql; acá sólo el modelo para Prisma
+// (`npx prisma generate` después de correr el SQL).
+model usuario_modulo_encargado {
+  id        Int      @id @default(autoincrement())
+  usuarioId Int
+  modulo    String   @db.VarChar(40)
+  createdAt DateTime @default(now())
+  usuario   usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  // Un usuario es encargado de un módulo una sola vez; el btree de la UNIQUE
+  // cubre también la única lectura que hace falta (¿es X encargado de Y?).
+  @@unique([usuarioId, modulo])
+  @@index([modulo])
   @@schema("everwear")
 }
