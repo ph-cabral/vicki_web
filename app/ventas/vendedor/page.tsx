@@ -722,6 +722,21 @@ export default function VentasVendedorPage() {
   // Acordeón de este ranking (ver agrupar/FilaGrupo arriba) — se resetea al
   // grupo 0 al alternar Clientes/Líneas (botón "Mostrar" de abajo).
   const [topGrupoAbierto, setTopGrupoAbierto] = useState(0);
+  // Acordeón por línea del ranking "Líneas" (2026-09-15): cada línea arranca
+  // contraída (sin sus sub_líneas) y un click la expande/contrae — el Set
+  // guarda las líneas ABIERTAS por nombre. Se resetea junto con
+  // topGrupoAbierto cada vez que cambia la vista/vendedor (ver los otros
+  // setTopGrupoAbierto(0) más abajo) para no quedar con una línea "abierta"
+  // que ya no está en pantalla.
+  const [lineasAbiertas, setLineasAbiertas] = useState<Set<string>>(new Set());
+  const toggleLinea = useCallback((linea: string) => {
+    setLineasAbiertas((prev) => {
+      const next = new Set(prev);
+      if (next.has(linea)) next.delete(linea);
+      else next.add(linea);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelado = false;
@@ -1162,6 +1177,7 @@ export default function VentasVendedorPage() {
                   if (topVista === v) return;
                   setTopVista(v);
                   setTopGrupoAbierto(0);
+                  setLineasAbiertas(new Set());
                 }}
                 title={v === "clientes" ? "Ranking de clientes ($)" : "Ranking de líneas ($ o unidades)"}
                 className={`px-2.5 py-2 text-xs font-semibold transition-colors md:px-3 md:text-sm ${
@@ -1193,6 +1209,7 @@ export default function VentasVendedorPage() {
                   setSugerencias([]);
                   setData(null);
                   setTopGrupoAbierto(0);
+                  setLineasAbiertas(new Set());
                 }}
                 title={
                   vendedores.length === 0
@@ -2179,26 +2196,47 @@ export default function VentasVendedorPage() {
                                 // sub_líneas); Sub_línea = fila clickeable
                                 // que abre el modal de clientes (2026-09-15,
                                 // catálogo de Postgres — ver fetch_top_lineas).
-                                (grupo as TopLinea[]).map((l, i) => (
+                                (grupo as TopLinea[]).map((l, i) => {
+                                  const lineaAbierta = lineasAbiertas.has(l.linea);
+                                  return (
                                   <Fragment key={l.linea}>
-                                    <tr className="border-t border-zinc-800/60 bg-zinc-900/40">
+                                    <tr
+                                      onClick={() => toggleLinea(l.linea)}
+                                      className={`cursor-pointer border-t border-l-2 transition-colors ${
+                                        lineaAbierta
+                                          ? "border-t-zinc-800/60 border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
+                                          : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
+                                      }`}
+                                      title={
+                                        lineaAbierta
+                                          ? "Contraer sub_líneas"
+                                          : "Expandir para ver sub_líneas"
+                                      }
+                                    >
                                       <td className="px-3 py-2 text-zinc-500 tabular-nums">
                                         {gIdx * GROUP_SIZE + i + 1}
                                       </td>
                                       <td
-                                        className="px-3 py-2 text-zinc-100 font-semibold max-w-0 w-full truncate"
+                                        className="px-3 py-2 text-zinc-50 font-bold text-[15px] max-w-0 w-full truncate"
                                         title={l.linea}
                                       >
-                                        {l.linea}
+                                        <span className="inline-flex items-center gap-1.5">
+                                          {lineaAbierta ? (
+                                            <ChevronUp size={14} className="shrink-0 text-yellow-400" />
+                                          ) : (
+                                            <ChevronDown size={14} className="shrink-0 text-zinc-500" />
+                                          )}
+                                          {l.linea}
+                                        </span>
                                       </td>
-                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
                                         {fmtTop(
                                           topMetricaLineas === "pesos"
                                             ? l.monto
                                             : l.unidades,
                                         )}
                                       </td>
-                                      <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                      <td className="px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap">
                                         {fmtTop(
                                           topMetricaLineas === "pesos"
                                             ? l.montoMes
@@ -2206,7 +2244,7 @@ export default function VentasVendedorPage() {
                                         )}
                                       </td>
                                     </tr>
-                                    {l.subLineas.map((sl) => (
+                                    {lineaAbierta && l.subLineas.map((sl) => (
                                       <tr
                                         key={`${l.linea}::${sl.subLinea}`}
                                         className="border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors"
@@ -2242,7 +2280,8 @@ export default function VentasVendedorPage() {
                                       </tr>
                                     ))}
                                   </Fragment>
-                                )))}
+                                  );
+                                }))}
                         </tbody>
                       ))}
                       {/* Totales (2026-09-04). Suman TODAS las
