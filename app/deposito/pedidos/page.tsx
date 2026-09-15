@@ -357,10 +357,14 @@ function ReposicionOtPanel() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Foto en vivo: se refresca sola cada 60s además del botón manual.
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 60000);
+    return () => clearInterval(interval);
+  }, [load]);
 
   const rows = useMemo(() => data?.rows ?? [], [data]);
-  const enRiesgo = data?.alerta ?? 0;
 
   const cols: Col<ReposicionRow>[] = [
     {
@@ -378,22 +382,11 @@ function ReposicionOtPanel() {
     },
     { key: "Nombre", label: "Artículo" },
     { key: "Proveedor", label: "Proveedor" },
-    { key: "Stock", label: "Stock central", num: true, render: (r) => fmtNum(r.Stock) },
-    { key: "Pendiente", label: "Pendiente en OT", num: true, render: (r) => fmtNum(r.Pendiente) },
-    {
-      key: "Disponible", label: "Disponible", num: true,
-      render: (r) => (
-        <span className={r.Disponible < 0 ? "text-red-400 font-semibold" : "text-zinc-300"}>
-          {fmtNum(r.Disponible)}
-        </span>
-      ),
-    },
     {
       key: "Reponer", label: "A reponer", num: true,
       render: (r) => (r.Reponer > 0 ? <Tag tone="red">{fmtNum(r.Reponer)}</Tag> : "—"),
     },
     { key: "OTs", label: "OTs", num: true, render: (r) => fmtNum(r.OTs) },
-    { key: "Pedidos", label: "Pedidos", num: true, render: (r) => fmtNum(r.Pedidos) },
   ];
 
   const opCols: Col<OperarioRiesgoRow>[] = [
@@ -437,14 +430,6 @@ function ReposicionOtPanel() {
         </div>
       ) : (
         <>
-          <Grid cols={5}>
-            <KPI label="Artículos con demanda pendiente" value={fmtNum(data?.total ?? 0)} accent="neutral" />
-            <KPI label="A reponer" value={fmtNum(enRiesgo)} sub="Disponible < 0" accent={enRiesgo > 0 ? "red" : "green"} />
-            <KPI label="OT descartadas" value={fmtNum(data?.otDescartadas ?? 0)} sub="pedido Cancelado en Magnus" accent="neutral" />
-            <KPI label="Esperando mercadería" value={fmtNum(data?.otEsperaMercaderia ?? 0)} sub="OT excluidas (ya se sabe)" accent="neutral" />
-            <KPI label="Unidades a reponer" value={fmtNum(rows.reduce((a, r) => a + r.Reponer, 0))} accent="amber" />
-          </Grid>
-
           <SectionTitle>👷 Desglose por operario · artículos en riesgo en sus OT abiertas</SectionTitle>
           <Table<OperarioRiesgoRow>
             cols={opCols}
