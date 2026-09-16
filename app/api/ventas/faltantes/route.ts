@@ -432,10 +432,19 @@ export async function GET(req: Request) {
         // Bug real 2026-07-24: /compras/faltantes con arribo cargado, /ventas
         // /faltantes seguía mostrando el estimado incluso después de deployar.
         const manual = cExact?.fechaArribo ?? cArt?.fechaArribo ?? null;
+        // 2026-09-16 — "siempre en vivo": se invierte la prioridad de arriba.
+        // El estimado recalculado desde la OC vigente en Magnus (`ocArribo`,
+        // ver más arriba) manda siempre que exista; lo cargado a mano en
+        // /compras/faltantes queda como último fallback, para cuando ya no
+        // hay OC pendiente de ese artículo. Antes lo manual pisaba siempre al
+        // estimado y quedaba clavado aunque Magnus reprogramara la OC (caso
+        // real: arribo confirmado en julio, OC movida a septiembre en
+        // Magnus, la vista seguía mostrando julio).
+        const live = ocArribo.get(r.CodArticulo.trim()) ?? null;
         return {
           ...r,
-          fechaArribo: manual ?? ocArribo.get(r.CodArticulo.trim()) ?? null,
-          arriboOC: !manual && ocArribo.has(r.CodArticulo.trim()),
+          fechaArribo: live ?? manual ?? null,
+          arriboOC: live !== null,
           clienteQuiere: c?.clienteQuiere ?? null,
           extraordinario,
           extraordinarioFecha: extra?.fecha ?? null,
@@ -455,14 +464,15 @@ export async function GET(req: Request) {
         const cExact = ctrl.get(`${r.NroPedOrigen}-${r.NroRengOrigen}`);
         const cArt = ctrlPorArt.get(`${r.NroPedOrigen}-${r.CodArticulo.trim()}`);
         const c = cExact ?? cArt;
+        const manual = cExact?.fechaArribo ?? cArt?.fechaArribo ?? null;
         return {
           ...r,
-          // mismo fallback OC que Tabla 1 (por si el POST de control no
-          // persistió la fecha al responder clienteQuiere). fechaArribo mira
-          // cExact y cArt por separado — ver comentario en Tabla 1 arriba
-          // (mismo bug: objeto exacto con fechaArribo=null tapaba el fallback).
-          fechaArribo:
-            cExact?.fechaArribo ?? cArt?.fechaArribo ?? ocArribo.get(r.CodArticulo.trim()) ?? null,
+          // Mismo criterio "siempre en vivo" que Tabla 1 (2026-09-16): el
+          // estimado de OC (`ocArribo`) manda por sobre lo cargado a mano;
+          // `manual` queda de último fallback. fechaArribo mira cExact y
+          // cArt por separado — ver comentario en Tabla 1 arriba (mismo bug:
+          // objeto exacto con fechaArribo=null tapaba el fallback).
+          fechaArribo: ocArribo.get(r.CodArticulo.trim()) ?? manual ?? null,
           clienteQuiere: c?.clienteQuiere ?? null,
           vendido: c?.vendido ?? null,
           yaIngreso: ingresados.has(r.CodArticulo.trim()),

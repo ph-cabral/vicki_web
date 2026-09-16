@@ -127,6 +127,7 @@ interface Row {
   pedidos: number;
   ocTotal: number;
   fechaEntrega: string | null;
+  fechaOC: string | null; // fecha de la OC (FecMovim) más temprana — fallback de sugerido cuando es importación
   importacion: boolean;
   tipoArticulo: string | null; // "Nacional"/"Importado"/"Original"/"Fabrica" (Magnus) — fuente del filtro de origen (ver lib/compras/origenArticulo.ts)
   ocs: string[];
@@ -135,8 +136,12 @@ interface Row {
   // ver ExtraRow) y esperando que /ventas/faltantes le pregunte al cliente —
   // solo para el badge de la fila; ya está restado de `faltan`.
   extraordinarioEnRevision: number;
-  fechaArribo: string | null; // más vieja cargada entre los renglones del bucket
-  tieneArribo: boolean; // true = TODOS los renglones del bucket ya la tienen
+  // 2026-09-16 — "siempre en vivo": este valor (lo cargado a mano) ya NO es
+  // lo que se muestra por default — ver cálculo de `sugerido` más abajo, que
+  // ahora manda siempre que haya OC vigente en Magnus. `fechaArribo` queda
+  // solo como último fallback cuando el artículo se quedó sin OC pendiente.
+  fechaArribo: string | null; // más vieja cargada a mano entre los renglones del bucket
+  tieneArribo: boolean; // true = TODOS los renglones del bucket ya tienen el pase a compras registrado
   // Ingresos por remito del PERÍODO (no del día): total del artículo entre el
   // ancla del cruce y el "hasta" del rango. Entran todos los tipos de remito
   // de ingreso (59/60/61/160/590), no solo los que cuelgan de una OC.
@@ -573,19 +578,33 @@ function Tabla({
                 </td>
                 <td className="px-3 py-2">
                   {(() => {
-                    // Sugerido = Despacho + 2 días, solo mientras no haya arribo
-                    // cargado a mano. No se persiste hasta que se edite/confirme.
-                    const sugerido = !r.fechaArribo && r.fechaEntrega ? addDaysISO(r.fechaEntrega, 2) : null;
+                    // 2026-09-16 — "siempre en vivo" (antes: solo mientras no
+                    // hubiera arribo cargado a mano). El sugerido se recalcula
+                    // en CADA carga de la vista desde la OC vigente en Magnus
+                    // — Despacho+2, o FechaOC (fecha de la orden)+2 si es
+                    // importación sin Despacho confiable, mismo criterio que
+                    // /ventas/faltantes — y ahora manda por sobre lo cargado a
+                    // mano: si Magnus reprogramó la OC (ej. julio → septiembre)
+                    // la vista lo refleja solo. `r.fechaArribo` (lo cargado a
+                    // mano) queda como último fallback para cuando ya no hay
+                    // OC pendiente para ese artículo (entregada/cancelada) —
+                    // ahí no hay de dónde recalcular y se muestra lo último
+                    // confirmado.
+                    const base = r.importacion ? r.fechaOC : r.fechaEntrega;
+                    const sugerido = base ? addDaysISO(base, 2) : null;
+                    const valor = sugerido ?? r.fechaArribo ?? "";
                     return (
                       <input
                         type="date"
-                        value={r.fechaArribo ?? sugerido ?? ""}
+                        value={valor}
                         onChange={(e) => onArribo(r, e.target.value || null)}
                         title={
                           r.tieneArribo
-                            ? "Ya cargada — se oculta salvo 'Ver con arribo'"
+                            ? sugerido
+                              ? "Pase a compras ya registrado. Fecha en vivo desde la OC de Magnus (se actualiza sola si Magnus la mueve) — editá para corregir a mano."
+                              : "Pase a compras ya registrado. Sin OC vigente en Magnus: se muestra la última fecha cargada a mano."
                             : sugerido
-                              ? "Sugerido: Despacho + 2 días. No guardado — editá para confirmar o corregir por retraso."
+                              ? "Sugerido: Despacho + 2 días (imp.: fecha de OC + 2). No guardado — editá para confirmar o corregir por retraso."
                               : "Cargar fecha de arribo (aplica a todos los renglones del artículo ese día)"
                         }
                         className={`bg-[#1f1f1f] border rounded-md px-2 py-1 text-xs outline-none [color-scheme:dark] ${

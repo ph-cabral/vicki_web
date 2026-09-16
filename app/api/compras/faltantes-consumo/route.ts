@@ -73,6 +73,7 @@ interface OcRow {
   PorLlegar: number;
   Proveedor: string | null;
   FechaEntrega: string | null;
+  FechaOC: string | null; // fecha de la OC (FecMovim), más temprana — fallback para importación (ver fechaOC en Bucket)
   Importacion: boolean;
   NroOCs: string[];
 }
@@ -108,6 +109,7 @@ interface Bucket {
   descubierto: number;
   ocTotal: number;
   fechaEntrega: string | null;
+  fechaOC: string | null; // fecha de la OC (FecMovim) más temprana — fallback para importación, ver fechaEntrega
   importacion: boolean;
   tipoArticulo: string | null; // "Nacional"/"Importado"/"Fabrica" (Magnus, StkFer_Articulos.NacionalImportado) — ver clasificación Importados/Nacionales en el front
   ocs: string[];
@@ -478,6 +480,7 @@ export async function GET(req: NextRequest) {
         descubierto: 0,
         ocTotal: 0,
         fechaEntrega: null,
+        fechaOC: null,
         importacion: false,
         tipoArticulo: (it.TipoArticulo || "").trim() || null,
         ocs: [],
@@ -687,6 +690,7 @@ export async function GET(req: NextRequest) {
     const oc = ocMap.get(cod);
     const ocTotal = oc?.PorLlegar ?? 0;
     const fechaEntrega = oc?.FechaEntrega ?? null;
+    const fechaOC = oc?.FechaOC ?? null;
     const stock = stockMap.get(cod) ?? 0;
     // acumuladoBruto: lo que se MUESTRA en "faltan" — suma nuevoDelDia día a
     // día y NUNCA se resetea, ni aunque la OC/stock cubran todo (pedido
@@ -758,6 +762,7 @@ export async function GET(req: NextRequest) {
       b.resueltoPorStock = resueltoPorStock;
       if (oc) {
         b.fechaEntrega = fechaEntrega;
+        b.fechaOC = fechaOC;
         b.importacion = !!oc.Importacion;
         b.ocs = oc.NroOCs ?? [];
         if (!b.Proveedor && oc.Proveedor) b.Proveedor = oc.Proveedor;
@@ -866,6 +871,7 @@ export async function GET(req: NextRequest) {
         stock: r2(b.stock),
         ocTotal: r2(b.ocTotal),
         fechaEntrega: b.fechaEntrega,
+        fechaOC: b.fechaOC,
         importacion: b.importacion,
         tipoArticulo: b.tipoArticulo,
         ocs: b.ocs,
@@ -874,6 +880,16 @@ export async function GET(req: NextRequest) {
         // esperando que /ventas/faltantes le pregunte al cliente (ver
         // `extraordinarios` en la respuesta, aparte de `rows`).
         extraordinarioEnRevision: extraPendientePorBucket.get(keyArtDia(b.CodArticulo, b.fecha)) ?? 0,
+        // fechaArribo = lo cargado a mano en preparado.faltante_control (sin
+        // cambios de nombre/semántica acá, para no romper otros consumidores
+        // de este endpoint). 2026-09-16 — "siempre en vivo": el FRONT
+        // (app/compras/faltantes/page.tsx) dejó de usar este valor como LA
+        // fecha mostrada — ahora prioriza el sugerido recalculado de
+        // fechaEntrega/fechaOC (ver esos campos acá arriba) en cada carga, y
+        // usa este `fechaArribo` solo de último fallback cuando ya no hay OC
+        // vigente. Antes, una fecha ya cargada quedaba clavada en pantalla
+        // aunque Magnus reprogramara la OC (caso real: arribo confirmado en
+        // julio, OC movida a septiembre, la vista seguía en julio).
         fechaArribo: b.fechaArriboMin,
         tieneArribo: b.renglones > 0 && b.renglonesConArribo === b.renglones,
         // Ingresos del período por artículo (mismo valor en todos los días de
