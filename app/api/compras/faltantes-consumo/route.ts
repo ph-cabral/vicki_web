@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { esCancelado } from "@/lib/compras/faltantesMes";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -66,6 +67,7 @@ interface FaltRow {
   Fecha: string | null; // snapshot más nuevo del renglón en el rango
   PrimerDia: string | null; // primera aparición en el rango
   Vivo?: number; // 1 = sigue pendiente; 0 = histórico ya entregado/cubierto
+  EstadoPedido?: string | null; // Pedido_Estados de Magnus (deposito.py); ausente si indicadores-api es viejo
   TipoArticulo?: string | null; // "Nacional"/"Importado"/"Fabrica" (StkFer_Articulos.NacionalImportado, Magnus) o "" si no está cargado
 }
 // Lote = una OC puntual dentro del artículo (indicadores-api/compras.py,
@@ -250,7 +252,15 @@ export async function GET(req: NextRequest) {
   const fecha: string | null = faltJson.fecha ?? null;
   // Universo del cruce: solo faltantes que aparecen (PrimerDia) desde el corte.
   // Así el FIFO no arrastra faltantes viejos que la OC nueva no debería cubrir.
-  const faltRows: FaltRow[] = (faltJson.rows ?? []).filter((it: FaltRow) => {
+  // Fuera los renglones de pedidos CANCELADOS (o sin estado = pedido que ya no
+  // está en Magnus): no son demanda, y dejaban al cliente de ese pedido en la
+  // columna "Cliente" y su cantidad sumada al bucket. Mismo criterio que el
+  // recorte del mes (lib/compras/faltantesMes.ts, esCancelado). Solo se aplica
+  // si indicadores-api manda la columna EstadoPedido; sin ella no se filtra.
+  const rawRows: FaltRow[] = faltJson.rows ?? [];
+  const hayEstadoPedido = rawRows.some((it) => it && "EstadoPedido" in it);
+  const faltRows: FaltRow[] = rawRows.filter((it: FaltRow) => {
+    if (hayEstadoPedido && esCancelado(it.EstadoPedido)) return false;
     const dia = it.PrimerDia ?? it.Fecha ?? fecha;
     return !dia || dia >= faltDesde;
   });

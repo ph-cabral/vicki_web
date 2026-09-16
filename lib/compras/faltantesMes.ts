@@ -81,7 +81,7 @@ export interface FaltantesMes {
 
 const txt = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
 
-const esCancelado = (estadoPedido: string | null | undefined) => {
+export const esCancelado = (estadoPedido: string | null | undefined) => {
   const e = txt(estadoPedido).toUpperCase();
   // Sin estado = pedido que no está en Magnus: se descarta igual que un cancelado.
   if (!e) return true;
