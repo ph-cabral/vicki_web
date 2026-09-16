@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+; Vicki softphone: permite microfono en http://10.10.0.159:3001 (Chrome y Edge).
+; Ejecutar como administrador y reiniciar el navegador. Ver TELEFONIA.md.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\OverrideSecurityRestrictionsOnInsecureOrigin]
+"1"="http://10.10.0.159:3001"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\AudioCaptureAllowedUrls]
+"1"="http://10.10.0.159:3001"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\OverrideSecurityRestrictionsOnInsecureOrigin]
+"1"="http://10.10.0.159:3001"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Edge\AudioCaptureAllowedUrls]
+"1"="http://10.10.0.159:3001"

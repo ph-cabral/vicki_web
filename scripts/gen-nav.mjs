@@ -30,6 +30,7 @@ const LABELS = {
   asistencia: "Asistencia",
   legajos: "Legajos",
   relojes: "Relojes",
+  telefono: "Teléfono",
 };
 const label = (seg) =>
   LABELS[seg] ?? seg.charAt(0).toUpperCase() + seg.slice(1);

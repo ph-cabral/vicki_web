@@ -16,6 +16,7 @@
     "@prisma/client": "^5.22.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jssip": "^3.13.8",
     "lucide-react": "^0.577.0",
     "mammoth": "^1.8.0",
     "next": "15.5.0",
