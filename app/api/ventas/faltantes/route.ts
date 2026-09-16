@@ -309,30 +309,74 @@ export async function GET(req: Request) {
       return d.toISOString().slice(0, 10);
     };
 
-    // Arribo automático por OC: artículo → FechaEntrega (Despacho) + 2 días,
-    // salvo importación (sin fecha confiable) — en ese caso se estima como
-    // FechaOC (fecha en que se hizo la orden, FecMovim) + 2 días. Manual
-    // (faltante_control) pisa cualquiera de los dos casos.
-    // Bug real 2026-07-27: acá se guardaba r.FechaEntrega SIN sumar los 2 días
-    // (a diferencia del "sugerido" de /compras/faltantes), así que mientras
-    // compras no cargara/confirmara un arribo real, /ventas/faltantes mostraba
-    // literalmente la fecha de Despacho (ej. 23/07) en vez del mismo estimado
-    // de arribo que ya se ve en /compras/faltantes (Despacho+2, ej. 25/07).
-    const ocArribo = new Map<string, string>();
+    // Lotes = una OC puntual por artículo (indicadores-api/compras.py,
+    // fetch_ordenes_pendientes). A diferencia del pool agregado de antes (una
+    // sola fecha por artículo, la más temprana de CUALQUIER OC pendiente sin
+    // importar cuándo se hizo), acá se guarda cada OC por separado para poder
+    // elegir, por FALTANTE puntual, solo la que se hizo DESPUÉS de que ese
+    // faltante apareció — ver arriboParaFaltante más abajo.
+    interface OcLote {
+      FechaOC: string | null;
+      FechaEntrega: string | null;
+      Importacion?: boolean;
+    }
+    const ocLotesPorArt = new Map<string, OcLote[]>();
+    // Fallback si indicadores-api todavía no tiene "Lotes" (desfasaje de
+    // deploy entre servicios): agregado viejo, sin filtrar por fecha —
+    // mismo comportamiento que antes de este cambio, nunca peor.
+    const ocAgregadoPorArt = new Map<string, OcLote>();
     for (const r of (ocJson?.rows ?? []) as {
       CodArticulo?: string;
       FechaEntrega?: string | null;
       FechaOC?: string | null;
       Importacion?: boolean;
+      Lotes?: OcLote[];
     }[]) {
       const cod = String(r.CodArticulo ?? "").trim();
       if (!cod) continue;
-      if (r.FechaEntrega && !r.Importacion) {
-        ocArribo.set(cod, addDaysISO(r.FechaEntrega, 2));
-      } else if (r.FechaOC) {
-        ocArribo.set(cod, addDaysISO(r.FechaOC, 2));
-      }
+      if (r.Lotes) ocLotesPorArt.set(cod, r.Lotes);
+      else
+        ocAgregadoPorArt.set(cod, {
+          FechaOC: r.FechaOC ?? null,
+          FechaEntrega: r.FechaEntrega ?? null,
+          Importacion: r.Importacion,
+        });
     }
+
+    // Arribo automático por OC: de las OC pendientes del artículo hechas
+    // DESPUÉS de que este faltante puntual apareció (fechaFaltante = Fecha
+    // del renglón), toma la de entrega más temprana: Despacho + 2 días, salvo
+    // importación (sin fecha confiable) — en ese caso FechaOC (fecha en que
+    // se hizo la orden, FecMovim) + 2 días. Manual (faltante_control) pisa
+    // cuando no hay ninguna OC elegible.
+    // Caso real 2026-09-16: antes se tomaba la OC pendiente más temprana del
+    // artículo SIN importar cuándo se había hecho — una OC vieja con saldo
+    // pendiente de ANTES de este faltante (ya vencida, sin relación con él)
+    // le prestaba su fecha, y el faltante mostraba un "arribo" del pasado.
+    // Bug real 2026-07-27 (sigue aplicando): sumar los 2 días, no mostrar
+    // literal la fecha de Despacho.
+    const arriboParaFaltante = (cod: string, fechaFaltante: string | null): string | null => {
+      const lotes = ocLotesPorArt.get(cod);
+      if (!lotes?.length) {
+        // Sin Lotes para este artículo: si indicadores-api no manda ese
+        // campo todavía, usa el agregado viejo tal cual (sin filtrar).
+        const agregado = ocAgregadoPorArt.get(cod);
+        if (!agregado) return null;
+        const base = agregado.FechaEntrega && !agregado.Importacion ? agregado.FechaEntrega : agregado.FechaOC;
+        return base ? addDaysISO(base, 2) : null;
+      }
+      const elegibles = fechaFaltante
+        ? lotes.filter((l) => l.FechaOC && l.FechaOC >= fechaFaltante)
+        : lotes;
+      let mejor: string | null = null;
+      for (const l of elegibles) {
+        const base = l.FechaEntrega && !l.Importacion ? l.FechaEntrega : l.FechaOC;
+        if (!base) continue;
+        const est = addDaysISO(base, 2);
+        if (mejor === null || est < mejor) mejor = est;
+      }
+      return mejor;
+    };
 
     // Artículos con remito de ingreso x OC ya concretado (Tabla 2, requisito 3).
     const ingresados = new Set<string>(
@@ -433,14 +477,15 @@ export async function GET(req: Request) {
         // /faltantes seguía mostrando el estimado incluso después de deployar.
         const manual = cExact?.fechaArribo ?? cArt?.fechaArribo ?? null;
         // 2026-09-16 — "siempre en vivo": se invierte la prioridad de arriba.
-        // El estimado recalculado desde la OC vigente en Magnus (`ocArribo`,
-        // ver más arriba) manda siempre que exista; lo cargado a mano en
-        // /compras/faltantes queda como último fallback, para cuando ya no
-        // hay OC pendiente de ese artículo. Antes lo manual pisaba siempre al
-        // estimado y quedaba clavado aunque Magnus reprogramara la OC (caso
-        // real: arribo confirmado en julio, OC movida a septiembre en
-        // Magnus, la vista seguía mostrando julio).
-        const live = ocArribo.get(r.CodArticulo.trim()) ?? null;
+        // El estimado recalculado desde la OC vigente en Magnus
+        // (`arriboParaFaltante`, ver más arriba — ya filtrado a solo las OC
+        // hechas después de r.Fecha) manda siempre que exista; lo cargado a
+        // mano en /compras/faltantes queda como último fallback, para cuando
+        // ya no hay OC elegible para este faltante. Antes lo manual pisaba
+        // siempre al estimado y quedaba clavado aunque Magnus reprogramara la
+        // OC (caso real: arribo confirmado en julio, OC movida a septiembre
+        // en Magnus, la vista seguía mostrando julio).
+        const live = arriboParaFaltante(r.CodArticulo.trim(), r.Fecha);
         return {
           ...r,
           fechaArribo: live ?? manual ?? null,
@@ -468,11 +513,12 @@ export async function GET(req: Request) {
         return {
           ...r,
           // Mismo criterio "siempre en vivo" que Tabla 1 (2026-09-16): el
-          // estimado de OC (`ocArribo`) manda por sobre lo cargado a mano;
+          // estimado de OC (`arriboParaFaltante`, ya filtrado a solo las OC
+          // hechas después de r.Fecha) manda por sobre lo cargado a mano;
           // `manual` queda de último fallback. fechaArribo mira cExact y
           // cArt por separado — ver comentario en Tabla 1 arriba (mismo bug:
           // objeto exacto con fechaArribo=null tapaba el fallback).
-          fechaArribo: ocArribo.get(r.CodArticulo.trim()) ?? manual ?? null,
+          fechaArribo: arriboParaFaltante(r.CodArticulo.trim(), r.Fecha) ?? manual ?? null,
           clienteQuiere: c?.clienteQuiere ?? null,
           vendido: c?.vendido ?? null,
           yaIngreso: ingresados.has(r.CodArticulo.trim()),

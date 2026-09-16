@@ -68,6 +68,18 @@ interface FaltRow {
   Vivo?: number; // 1 = sigue pendiente; 0 = histórico ya entregado/cubierto
   TipoArticulo?: string | null; // "Nacional"/"Importado"/"Fabrica" (StkFer_Articulos.NacionalImportado, Magnus) o "" si no está cargado
 }
+// Lote = una OC puntual dentro del artículo (indicadores-api/compras.py,
+// fetch_ordenes_pendientes). Se usa para elegir, por cada BUCKET (artículo +
+// día del faltante), solo la OC hecha DESPUÉS de que ese faltante apareció —
+// ver fechaEntregaParaBucket más abajo. Los campos de arriba (FechaEntrega/
+// FechaOC/PorLlegar) siguen siendo el pool agregado de TODAS las OC
+// pendientes juntas, sin filtrar por fecha — se usan igual que antes para
+// ocTotal/cub/desc (la cantidad neta no distingue de qué OC viene).
+interface OcLote {
+  FechaOC: string | null;
+  FechaEntrega: string | null;
+  Importacion?: boolean;
+}
 interface OcRow {
   CodArticulo: string;
   PorLlegar: number;
@@ -76,6 +88,7 @@ interface OcRow {
   FechaOC: string | null; // fecha de la OC (FecMovim), más temprana — fallback para importación (ver fechaOC en Bucket)
   Importacion: boolean;
   NroOCs: string[];
+  Lotes?: OcLote[];
 }
 // Remitos de ingreso de mercadería del período (indicadores-api
 // /compras/ingresos), agregados por artículo. Desde 2026-09-03 entran TODOS
@@ -602,11 +615,17 @@ export async function GET(req: NextRequest) {
   //      problema de compras, desaparece de la vista. La fecha manual de
   //      "Arribo" NO interviene en ninguno de los dos casos, solo la
   //      cobertura real (OC/stock en vivo).
-  //    · Límite conocido: Magnus agrega todas las OC pendientes del artículo en
-  //      un solo total con la fecha de entrega MÁS TEMPRANA (ver
-  //      indicadores-api/compras.py:fetch_ordenes_pendientes). Si un artículo
-  //      tiene 2+ OC activas con fechas distintas, hoy se tratan como 1 solo
-  //      pool con 1 sola fecha de corte — no por-OC individual.
+  //    · ocTotal (para cub/desc/estado) sigue siendo el pool agregado de
+  //      TODAS las OC pendientes del artículo, sin filtrar por fecha — la
+  //      cantidad neta no distingue de qué OC viene. La fecha MOSTRADA
+  //      (fechaEntrega/fechaOC del bucket) es otra historia: hasta
+  //      2026-09-16 tomaba la más temprana de CUALQUIER OC pendiente del
+  //      artículo, así que una OC vieja con saldo suelto (de antes de este
+  //      faltante puntual) podía prestarle una fecha ya vencida a un
+  //      faltante que apareció después. Ahora, por bucket, se filtra a las
+  //      OC (`oc.Lotes`, indicadores-api/compras.py) hechas DESPUÉS del
+  //      PrimerDia de ese bucket y se toma la más temprana de esas — ver
+  //      mejorLoteParaFecha más abajo.
   const porArt = new Map<string, Bucket[]>();
   for (const b of buckets.values()) {
     const arr = porArt.get(b.CodArticulo) ?? [];
@@ -684,13 +703,33 @@ export async function GET(req: NextRequest) {
   // Se persisten al final: marca de agua nueva y último día cubierto.
   const cubiertosNuevos: { cod: string; fecha: string; stock: number; faltan: number }[] = [];
 
+  // Elige, para un bucket puntual (artículo + PrimerDia del faltante), la OC
+  // pendiente de ese artículo hecha DESPUÉS de esa fecha con la entrega más
+  // temprana (Despacho, salvo importación sin fecha confiable → FecMovim) —
+  // mismo criterio que arriboParaFaltante en app/api/ventas/faltantes/
+  // route.ts. Devuelve null si no hay ninguna OC elegible (el bucket cae al
+  // último fallback: fechaArribo cargada a mano, ver page.tsx).
+  const mejorLoteParaFecha = (lotes: OcLote[] | undefined, fechaBucket: string): OcLote | null => {
+    if (!lotes?.length) return null;
+    let mejor: OcLote | null = null;
+    let mejorBase: string | null = null;
+    for (const l of lotes) {
+      if (!l.FechaOC || l.FechaOC < fechaBucket) continue;
+      const base = l.FechaEntrega && !l.Importacion ? l.FechaEntrega : l.FechaOC;
+      if (!base) continue;
+      if (mejorBase === null || base < mejorBase) {
+        mejorBase = base;
+        mejor = l;
+      }
+    }
+    return mejor;
+  };
+
   const artImporte = new Map<string, number>();
   for (const [cod, arr] of porArt) {
     arr.sort((a, c) => (a.fecha < c.fecha ? -1 : a.fecha > c.fecha ? 1 : 0));
     const oc = ocMap.get(cod);
     const ocTotal = oc?.PorLlegar ?? 0;
-    const fechaEntrega = oc?.FechaEntrega ?? null;
-    const fechaOC = oc?.FechaOC ?? null;
     const stock = stockMap.get(cod) ?? 0;
     // acumuladoBruto: lo que se MUESTRA en "faltan" — suma nuevoDelDia día a
     // día y NUNCA se resetea, ni aunque la OC/stock cubran todo (pedido
@@ -761,9 +800,22 @@ export async function GET(req: NextRequest) {
       b.ocTotal = ocTotal;
       b.resueltoPorStock = resueltoPorStock;
       if (oc) {
-        b.fechaEntrega = fechaEntrega;
-        b.fechaOC = fechaOC;
-        b.importacion = !!oc.Importacion;
+        // Fecha mostrada: solo la OC hecha después de b.fecha (PrimerDia de
+        // este bucket). Si ninguna OC pendiente califica (todas son de antes
+        // de este faltante), no se muestra fecha en vivo — cae al fallback
+        // manual (fechaArribo cargada), igual que cuando no hay OC alguna.
+        // oc.Lotes === undefined (indicadores-api todavía sin este campo,
+        // desfasaje de deploy): se sigue con el agregado viejo, sin filtrar.
+        if (oc.Lotes === undefined) {
+          b.fechaEntrega = oc.FechaEntrega ?? null;
+          b.fechaOC = oc.FechaOC ?? null;
+          b.importacion = !!oc.Importacion;
+        } else {
+          const lote = mejorLoteParaFecha(oc.Lotes, b.fecha);
+          b.fechaEntrega = lote?.FechaEntrega ?? null;
+          b.fechaOC = lote?.FechaOC ?? null;
+          b.importacion = !!lote?.Importacion;
+        }
         b.ocs = oc.NroOCs ?? [];
         if (!b.Proveedor && oc.Proveedor) b.Proveedor = oc.Proveedor;
       }

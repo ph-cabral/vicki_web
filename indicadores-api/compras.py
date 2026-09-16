@@ -206,7 +206,19 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
     histórica para descartarla después era lo más caro de esta consulta.
 
     incluir_fabril=True: suma también la producción interna (vistas de fábrica).
-    Los presupuestos genéricos nunca entran."""
+    Los presupuestos genéricos nunca entran.
+
+    Cada fila trae, además del pool agregado (FechaEntrega/FechaOC/PorLlegar
+    de TODAS las OC pendientes juntas, como siempre), un array "Lotes": una
+    entrada por OC puntual (NroOC), con su propia FechaOC/FechaEntrega/
+    Pendiente/Importacion. 2026-09-16: antes de esto, un artículo con 2+ OC
+    pendientes con fechas MUY distintas (ej. una vieja, ya vencida, que
+    quedó con saldo suelto, y otra nueva hecha después de un faltante nuevo)
+    mostraba la fecha más vieja de las dos como "arribo" del faltante nuevo
+    — vencida y sin relación real con ese faltante. Los consumidores
+    (app/api/ventas/faltantes, app/api/compras/faltantes-consumo) usan
+    "Lotes" para elegir, por cada faltante puntual, solo la OC hecha DESPUÉS
+    de que ese faltante apareció."""
     corte = None
     desde = desde or OC_DESDE_DEFAULT
     if desde:
@@ -230,6 +242,7 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
         cols = [c[0] for c in cur.description]
 
         agg: dict[str, dict] = {}
+        lotes: dict[tuple[str, str], dict] = {}  # (cod, nro OC) -> lote agregado
         for row in cur.fetchall():
             d = dict(zip(cols, row))
             cod = (str(d.get("CodArticu") or "")).strip()
@@ -266,6 +279,7 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
                     "Importacion": False,
                     "TipoArticulo": tipo,
                     "NroOCs": [],
+                    "Lotes": [],
                 }
                 agg[cod] = a
             a["PorLlegar"] += pend
@@ -282,9 +296,39 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
             if nro and nro not in a["NroOCs"]:
                 a["NroOCs"].append(nro)
 
+            # Lote = esta OC puntual dentro del artículo (a diferencia de los
+            # campos de arriba, que agregan TODAS las OC pendientes juntas en
+            # un solo pool). Una OC puede tener varios renglones del mismo
+            # artículo (poco común) — se suman como Pendiente y se queda con
+            # la FechaEntrega más temprana entre ellos, igual criterio que el
+            # pool general pero acotado a esta OC.
+            lk = (cod, nro or f"__sin_nro_{cod}_{fmov_iso}")
+            lote = lotes.get(lk)
+            if not lote:
+                lote = {
+                    "NroOC": nro or None,
+                    "FechaOC": fmov_iso,
+                    "FechaEntrega": fecha,
+                    "Pendiente": 0.0,
+                    "Importacion": es_impo,
+                    "TipoArticulo": tipo,
+                    "Proveedor": prov,
+                }
+                lotes[lk] = lote
+            lote["Pendiente"] += pend
+            if fecha is not None and (lote["FechaEntrega"] is None or fecha < lote["FechaEntrega"]):
+                lote["FechaEntrega"] = fecha
+            if es_impo:
+                lote["Importacion"] = True
+
+        for (cod, _nro), lote in lotes.items():
+            lote["Pendiente"] = round(lote["Pendiente"], 2)
+            agg[cod]["Lotes"].append(lote)
+
         rows = sorted(agg.values(), key=lambda x: -x["PorLlegar"])
         for r in rows:
             r["PorLlegar"] = round(r["PorLlegar"], 2)
+            r["Lotes"].sort(key=lambda l: l["FechaOC"] or "")
         return {
             "total": len(rows),
             "rows": rows,
