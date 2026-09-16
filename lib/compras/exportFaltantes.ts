@@ -18,12 +18,26 @@ interface Row {
   importe: number;
   fechaArribo: string | null;
   estado: Estado;
-  comprar: boolean | null;
   // Ingresos por remito del período (ver /compras/faltantes): total del
   // artículo, no del día. Opcionales por compatibilidad con llamadores viejos.
   ingresado?: number;
   remitos?: { nro: string; fecha: string; cant: number }[];
   ultimoIngreso?: string | null;
+}
+
+// Porción extraordinaria de un bucket, por CLIENTE (2026-09-16) — ver
+// `extraordinarios` en GET /api/compras/faltantes-consumo.
+interface RowExtra {
+  CodArticulo: string;
+  Nombre: string;
+  Proveedor: string | null;
+  fecha: string;
+  codCliente: string;
+  clienteNombre: string | null;
+  cantidad: number;
+  stock: number;
+  importe: number;
+  comprar: boolean | null;
 }
 
 const ESTADO_LABEL: Record<Estado, string> = {
@@ -66,14 +80,14 @@ function filaFaltante(r: Row) {
   };
 }
 
-function filaExtraordinario(r: Row) {
+function filaExtraordinario(r: RowExtra) {
   return {
     "Código": r.CodArticulo,
     "Artículo": r.Nombre,
     "Día": r.fecha,
-    Faltan: r.faltan,
+    Cliente: r.clienteNombre ? `${r.codCliente} — ${r.clienteNombre}` : r.codCliente,
+    "Cantidad extraordinaria": r.cantidad,
     Stock: r.stock,
-    "Falta OC": r.descubierto,
     Proveedor: r.Proveedor || "",
     Importe: r.importe,
     Comprar: r.comprar == null ? "" : r.comprar ? "Sí" : "No",
@@ -82,13 +96,16 @@ function filaExtraordinario(r: Row) {
 
 // rows: pasar ya filtradas como estén en pantalla (rango desde/hasta, filtro
 // de estado, "ver con arribo" y, si está girada la tarjeta, las
-// extraordinarias en vez de las principales).
+// extraordinarias en vez de las principales — una fila por cliente).
 export function exportarFaltantesCompras(
-  rows: Row[],
+  rows: Row[] | RowExtra[],
   opts: { modo: "faltantes" | "extraordinarios"; desde?: string | null; hasta?: string | null },
 ): void {
   const wb = XLSX.utils.book_new();
-  const filas = rows.map(opts.modo === "extraordinarios" ? filaExtraordinario : filaFaltante);
+  const filas =
+    opts.modo === "extraordinarios"
+      ? (rows as RowExtra[]).map(filaExtraordinario)
+      : (rows as Row[]).map(filaFaltante);
   const ws = XLSX.utils.json_to_sheet(filas);
   ajustarAnchos(ws, filas);
   XLSX.utils.book_append_sheet(wb, ws, opts.modo === "extraordinarios" ? "Extraordinarios" : "Faltantes");

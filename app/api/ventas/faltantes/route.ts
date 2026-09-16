@@ -22,7 +22,9 @@ const OC_DESDE = "2026-06-26";
 //     · preparado.faltante_existencia             (¿sin existencia?)
 //     · preparado.faltante_control                (fechaArribo, clienteQuiere, vendido)
 //     · preparado.faltante_extraordinario          (flag de COMPRAS, por
-//       código de artículo — no se toca esa tabla, solo se consulta)
+//       artículo+CLIENTE desde 2026-09-16 — antes era por artículo entero y
+//       hacía calificar acá los renglones de CUALQUIER cliente del artículo,
+//       no solo el que compras marcó; no se toca esa tabla, solo se consulta)
 //     · indicadores-api /compras/ordenes-pendientes (OC "por llegar" de Magnus:
 //       si el artículo tiene OC pendiente NO importación con FechaEntrega, esa
 //       fecha vale como arribo AUTOMÁTICO; si NO hay FechaEntrega confiable
@@ -182,14 +184,16 @@ export async function GET(req: Request) {
       prisma.$queryRaw<
         {
           codArticulo: string;
+          codCliente: string;
           extraordinario: boolean;
           comprar: boolean | null;
           fecha: Date;
         }[]
       >`
-        SELECT DISTINCT ON ("codArticulo") "codArticulo", extraordinario, comprar, fecha
+        SELECT DISTINCT ON ("codArticulo", "codCliente")
+               "codArticulo", "codCliente", extraordinario, comprar, fecha
         FROM preparado.faltante_extraordinario
-        ORDER BY "codArticulo", "updatedAt" DESC
+        ORDER BY "codArticulo", "codCliente", "updatedAt" DESC
       `,
       // Remitos de ingreso x OC desde la fecha del faltante (regla Tabla 2,
       // requisito 3). Si falla (SQL Server caído), Tabla 2 queda vacía pero
@@ -339,18 +343,24 @@ export async function GET(req: Request) {
         .filter(Boolean),
     );
 
-    // Por artículo: solo mientras comprar esté sin decidir (null). Apenas
-    // compras/ventas lo resuelve (true o false), deja de calificar acá.
+    // Por (artículo, CLIENTE) — 2026-09-16: solo mientras comprar esté sin
+    // decidir (null). Apenas compras/ventas lo resuelve (true o false), deja
+    // de calificar acá. Antes esto era solo por artículo y hacía calificar
+    // los renglones de CUALQUIER cliente de ese artículo, no solo el que
+    // compras marcó como extraordinario.
     const extraMap = new Map<
       string,
       { comprar: boolean | null; fecha: string }
     >();
-    for (const r of extraRows)
+    for (const r of extraRows) {
+      const cliente = (r.codCliente ?? "").trim();
+      if (!cliente) continue; // fila legado (marca vieja por artículo entero) — sin cliente no hay con qué cruzar
       if (r.extraordinario)
-        extraMap.set(r.codArticulo, {
+        extraMap.set(`${r.codArticulo}__${cliente}`, {
           comprar: r.comprar,
           fecha: r.fecha.toISOString().slice(0, 10),
         });
+    }
 
     // Última fila WMS (faltante_wms) por nroPedOrigen+codArticulo — fallback
     // de enStock cuando el renglón "con existencia" no matchea en `rows`
@@ -406,7 +416,10 @@ export async function GET(req: Request) {
         const cExact = ctrl.get(`${r.NroPedOrigen}-${r.NroRengOrigen}`);
         const cArt = ctrlPorArt.get(`${r.NroPedOrigen}-${r.CodArticulo.trim()}`);
         const c = cExact ?? cArt;
-        const extra = extraMap.get(r.CodArticulo);
+        // Match por (artículo, CLIENTE) — 2026-09-16: solo el renglón del
+        // cliente que compras marcó como extraordinario califica acá, no
+        // cualquier renglón de ese artículo (ver comentario de extraMap).
+        const extra = extraMap.get(`${r.CodArticulo.trim()}__${String(r.Cliente ?? "").trim()}`);
         const extraordinario = !!extra && extra.comprar === null;
         // fechaArribo por separado de `c`: el match exacto por renglón puede
         // EXISTIR (ctrl se llena para TODO renglón, tenga o no arribo — hace

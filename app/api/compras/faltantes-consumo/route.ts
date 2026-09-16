@@ -94,7 +94,7 @@ interface Bucket {
   Nombre: string;
   Linea: string | number | null;
   Proveedor: string | null;
-  clientes: Map<string, { nombre: string | null; cant: number }>;
+  clientes: Map<string, { nombre: string | null; cant: number; importe: number }>;
   fecha: string; // PrimerDia (día del faltante)
   vivo: boolean; // false = histórico ya entregado/cubierto
   faltan: number; // acumulado BRUTO (ver punto 4 más abajo), nunca se resetea ni se le resta OC/stock
@@ -115,6 +115,34 @@ interface Bucket {
   stock: number; // existencia real en depósito 1 (WMS, en vivo) — ver /deposito/stock
   resueltoPorStock: boolean; // el STOCK SOLO (sin la OC) ya cubre todo el acumulado — se excluye de la respuesta (ver punto 4b), no llega al front
   yaCubierto: boolean; // en alguna corrida anterior el stock ya cubrió este día (preparado.faltante_stock_max) — se excluye para siempre
+}
+
+// Marca extraordinario/comprar por (fecha, artículo, CLIENTE) — ver
+// preparado.faltante_extraordinario (sql/compras_faltante_extraordinario.sql).
+// Reemplaza la marca vieja por artículo entero (2026-09-16): un pedido
+// extraordinario es de UN cliente puntual, no del artículo.
+interface ExtraMark {
+  codCliente: string;
+  clienteNombre: string | null;
+  cantidad: number | null; // null = todo lo pendiente del cliente en el bucket
+  comprar: boolean | null;
+}
+// Fila que se devuelve aparte (`extraordinarios`, no en `rows`): la porción
+// de un bucket (artículo+día) que un cliente puntual pidió de más, ya
+// restada del faltante "normal" que sigue su compra habitual.
+interface ExtraOut {
+  CodArticulo: string;
+  Nombre: string;
+  Linea: string | number | null;
+  Proveedor: string | null;
+  tipoArticulo: string | null;
+  fecha: string;
+  codCliente: string;
+  clienteNombre: string | null;
+  cantidad: number; // cuánto de lo pedido por ese cliente quedó marcado extraordinario
+  importe: number; // proporcional a cantidad dentro de lo que pidió ese cliente en el bucket
+  stock: number; // existencia real del artículo (contexto, no exclusivo de este cliente)
+  comprar: boolean | null;
 }
 
 const keyLine = (p: number, r: number) => `${p}-${r}`;
@@ -329,34 +357,53 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 2b) marcas extraordinario/comprar por (fecha, artículo) — best-effort: si la
-  // tabla no está creada aún (prisma/sql/faltante_extraordinario.sql sin aplicar),
-  // la vista sigue funcionando con todo en extraordinario=false.
+  // 2b) marcas extraordinario/comprar por (fecha, artículo, CLIENTE) —
+  // best-effort: si la tabla no está creada aún (sql/compras_faltante_
+  // extraordinario.sql sin aplicar), la vista sigue funcionando sin marcas.
   const keyArtDia = (cod: string, dia: string) => `${cod}__${dia}`;
-  const extraMap = new Map<string, { extraordinario: boolean; comprar: boolean | null }>();
-  // marca más nueva por artículo (fallback cuando el día del bucket "rodó" y
-  // ya no coincide con la fecha guardada — mismo criterio que /ventas/faltantes,
-  // que resuelve extraordinario solo por codArticulo).
-  const extraUltPorArt = new Map<string, { extraordinario: boolean; comprar: boolean | null }>();
+  const keyArtCliente = (cod: string, cliente: string) => `${cod}__${cliente}`;
+  // exact-match por (artículo, día, cliente): varios clientes pueden tener
+  // marca en el MISMO bucket, por eso el valor es un array.
+  const extraMap = new Map<string, ExtraMark[]>();
+  // marca más nueva por (artículo, cliente) — fallback cuando el día del
+  // bucket "rodó" y ya no coincide con la fecha guardada (mismo criterio que
+  // ya usaba la versión por artículo entero).
+  const extraUltPorArtCliente = new Map<string, ExtraMark>();
   let extraWarn = false;
   if (faltRows.length && desdeMarks && hastaMarks) {
     try {
       const extraRows = await prisma.$queryRaw<
-        { fecha: Date; codArticulo: string; extraordinario: boolean; comprar: boolean | null }[]
+        {
+          fecha: Date;
+          codArticulo: string;
+          codCliente: string;
+          clienteNombre: string | null;
+          cantidad: number | null;
+          extraordinario: boolean;
+          comprar: boolean | null;
+        }[]
       >`
-        SELECT fecha, "codArticulo", extraordinario, comprar
+        SELECT fecha, "codArticulo", "codCliente", "clienteNombre", cantidad, extraordinario, comprar
         FROM preparado.faltante_extraordinario
         WHERE fecha BETWEEN ${new Date(desdeMarks)} AND ${new Date(hastaMarks)}
         ORDER BY "updatedAt" ASC
       `;
       for (const e of extraRows) {
+        if (!e.extraordinario) continue;
         const dia = e.fecha.toISOString().slice(0, 10);
-        const val = {
-          extraordinario: !!e.extraordinario,
+        const cliente = (e.codCliente ?? "").trim();
+        if (!cliente) continue; // fila legado (marca vieja por artículo entero) — sin cliente no hay con qué cruzar
+        const val: ExtraMark = {
+          codCliente: cliente,
+          clienteNombre: e.clienteNombre,
+          cantidad: e.cantidad === null ? null : Number(e.cantidad),
           comprar: e.comprar === null ? null : !!e.comprar,
         };
-        extraMap.set(keyArtDia(e.codArticulo, dia), val);
-        extraUltPorArt.set(e.codArticulo, val); // asc → queda la más nueva
+        const kDia = keyArtDia(e.codArticulo, dia);
+        const arr = extraMap.get(kDia) ?? [];
+        arr.push(val);
+        extraMap.set(kDia, arr);
+        extraUltPorArtCliente.set(keyArtCliente(e.codArticulo, cliente), val); // asc → queda la más nueva
       }
     } catch (e) {
       extraWarn = true;
@@ -449,8 +496,16 @@ export async function GET(req: NextRequest) {
     const codCli = it.Cliente != null && it.Cliente !== "" ? String(it.Cliente) : null;
     if (codCli) {
       const prevCli = b.clientes.get(codCli);
-      if (prevCli) prevCli.cant += it.CantPend || 0;
-      else b.clientes.set(codCli, { nombre: it.ClienteNombre ?? null, cant: it.CantPend || 0 });
+      if (prevCli) {
+        prevCli.cant += it.CantPend || 0;
+        prevCli.importe += it.Importe || 0;
+      } else {
+        b.clientes.set(codCli, {
+          nombre: it.ClienteNombre ?? null,
+          cant: it.CantPend || 0,
+          importe: it.Importe || 0,
+        });
+      }
     }
     const arribo =
       arriboPorRenglon.get(keyLine(it.NroPedOrigen, it.NroRengOrigen)) ??
@@ -463,6 +518,58 @@ export async function GET(req: NextRequest) {
     if (!b.tipoArticulo && it.TipoArticulo) b.tipoArticulo = it.TipoArticulo.trim() || null;
     if ((b.Linea === null || b.Linea === "") && it.Linea != null && it.Linea !== "")
       b.Linea = it.Linea;
+  }
+
+  // 3d) Separar del bucket la cantidad marcada "extraordinaria" de cada
+  // cliente (preparado.faltante_extraordinario, ver punto 2b). Un pedido
+  // extraordinario es de UN cliente puntual que pidió mucho más de lo
+  // habitual — la compra normal del artículo debe seguir cubriendo al RESTO
+  // de los clientes, así que acá se resta esa cantidad del bucket ANTES de
+  // acumular (punto 4): "faltan"/"nuevoDelDia" del bucket quedan con la
+  // demanda normal solamente, y la porción extraordinaria sale aparte en
+  // `extraordinariosOut` (no vuelve a `rows`). Se aplica sin importar si
+  // "comprar" ya se decidió o sigue pendiente: mientras la marca exista, esa
+  // cantidad no cuenta para la reposición normal del artículo.
+  const extraordinariosOut: ExtraOut[] = [];
+  for (const b of buckets.values()) {
+    if (!b.clientes.size) continue;
+    const marks = extraMap.get(keyArtDia(b.CodArticulo, b.fecha)) ?? [];
+    // Un cliente puede tener marca exacta (mismo día) o, si el día del bucket
+    // "rodó", la más nueva que se le conoce en ese artículo.
+    const vistos = new Set(marks.map((m) => m.codCliente));
+    const candidatos: ExtraMark[] = [...marks];
+    for (const codCli of b.clientes.keys()) {
+      if (vistos.has(codCli)) continue;
+      const ult = extraUltPorArtCliente.get(keyArtCliente(b.CodArticulo, codCli));
+      if (ult) candidatos.push(ult);
+    }
+    for (const mark of candidatos) {
+      const cliEntry = b.clientes.get(mark.codCliente);
+      if (!cliEntry || cliEntry.cant <= 0) continue;
+      const qty = r2(Math.min(mark.cantidad ?? cliEntry.cant, cliEntry.cant));
+      if (qty <= 0) continue;
+      const importeProp = cliEntry.cant > 0 ? r2((cliEntry.importe * qty) / cliEntry.cant) : 0;
+      extraordinariosOut.push({
+        CodArticulo: b.CodArticulo,
+        Nombre: b.Nombre,
+        Linea: b.Linea,
+        Proveedor: b.Proveedor,
+        tipoArticulo: b.tipoArticulo,
+        fecha: b.fecha,
+        codCliente: mark.codCliente,
+        clienteNombre: mark.clienteNombre ?? cliEntry.nombre,
+        cantidad: qty,
+        importe: importeProp,
+        stock: 0, // se completa más abajo, una vez que se lee el stock real (punto 3b)
+        comprar: mark.comprar,
+      });
+      b.faltan = r2(b.faltan - qty);
+      b.nuevoDelDia = r2(b.nuevoDelDia - qty);
+      b.importe = r2(b.importe - importeProp);
+      cliEntry.cant = r2(cliEntry.cant - qty);
+      cliEntry.importe = r2(cliEntry.importe - importeProp);
+      if (cliEntry.cant <= 0) b.clientes.delete(mark.codCliente);
+    }
   }
 
   // 4) por artículo: acumular el faltante día a día y NUNCA resetearlo ni
@@ -525,6 +632,9 @@ export async function GET(req: NextRequest) {
       console.error("read stock-por-articulos", e);
     }
   }
+  // Completa el stock (contexto, no exclusivo de ningún cliente) de las
+  // porciones extraordinarias separadas en el punto 3d, ahora que ya se leyó.
+  for (const ex of extraordinariosOut) ex.stock = stockMap.get(ex.CodArticulo) ?? 0;
 
   // 3c) Memoria de cobertura por stock (preparado.faltante_stock_max): marca de
   // agua del stock por artículo + hasta qué día de faltante ya quedó cubierto.
@@ -700,6 +810,16 @@ export async function GET(req: NextRequest) {
         : c.importe - a.importe,
     );
 
+  // Cuánto de cada bucket quedó separado como extraordinario y TODAVÍA sin
+  // decidir (comprar === null, ventas/faltantes no le preguntó al cliente
+  // todavía) — solo para el badge de la fila principal (ver punto 3d).
+  const extraPendientePorBucket = new Map<string, number>();
+  for (const ex of extraordinariosOut) {
+    if (ex.comprar !== null) continue;
+    const k = keyArtDia(ex.CodArticulo, ex.fecha);
+    extraPendientePorBucket.set(k, r2((extraPendientePorBucket.get(k) ?? 0) + ex.cantidad));
+  }
+
   // 5) ordenar: artículos por importe total desc, días asc dentro del artículo.
   //    conArribo=0 (default): oculta buckets con TODOS sus renglones ya con
   //    fecha de arribo cargada (preparado.faltante_control) — ya están
@@ -728,13 +848,6 @@ export async function GET(req: NextRequest) {
       return a.fecha < c.fecha ? -1 : a.fecha > c.fecha ? 1 : 0;
     })
     .map((b) => {
-      // exact-match por (artículo, día del bucket) y, si no hay (el PrimerDia
-      // del bucket depende del rango consultado — con rango corto "rueda" y ya
-      // no coincide con la fecha con la que se guardó la marca), fallback a la
-      // marca más nueva del artículo.
-      const mark =
-        extraMap.get(keyArtDia(b.CodArticulo, b.fecha)) ??
-        extraUltPorArt.get(b.CodArticulo);
       return {
         CodArticulo: b.CodArticulo,
         Nombre: b.Nombre,
@@ -743,7 +856,7 @@ export async function GET(req: NextRequest) {
         clientes: Array.from(b.clientes, ([cod, v]) => ({ cod, nombre: v.nombre, cant: r2(v.cant) })),
         fecha: b.fecha,
         vivo: b.vivo,
-        faltan: r2(b.faltan), // acumulado BRUTO hasta este día, sin restar OC/stock (ver punto 4)
+        faltan: r2(b.faltan), // acumulado BRUTO hasta este día, YA SIN lo marcado extraordinario (punto 3d), sin restar OC/stock (ver punto 4)
         nuevoDelDia: r2(b.nuevoDelDia),
         cubierto: r2(b.cubierto),
         descubierto: r2(b.descubierto),
@@ -757,8 +870,10 @@ export async function GET(req: NextRequest) {
         tipoArticulo: b.tipoArticulo,
         ocs: b.ocs,
         estado: b.estado,
-        extraordinario: mark?.extraordinario ?? false,
-        comprar: mark?.comprar ?? null,
+        // Cuánto de este bucket ya está separado como extraordinario y
+        // esperando que /ventas/faltantes le pregunte al cliente (ver
+        // `extraordinarios` en la respuesta, aparte de `rows`).
+        extraordinarioEnRevision: extraPendientePorBucket.get(keyArtDia(b.CodArticulo, b.fecha)) ?? 0,
         fechaArribo: b.fechaArriboMin,
         tieneArribo: b.renglones > 0 && b.renglonesConArribo === b.renglones,
         // Ingresos del período por artículo (mismo valor en todos los días de
@@ -842,6 +957,9 @@ export async function GET(req: NextRequest) {
     rows: rowsOut,
     // Filas retiradas por cobertura de stock (ver 4c) — no están en `rows`.
     cubiertos: cubiertosOut,
+    // Porciones extraordinarias por cliente, ya restadas de `rows` (ver punto
+    // 3d) — pendientes (comprar=null) o decididas (comprar=true/false).
+    extraordinarios: extraordinariosOut,
     ocWarn,
     ingresoWarn,
     comprobanteWarn,

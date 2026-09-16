@@ -27,13 +27,18 @@ import { abrirPicker } from "@/components/ui/abrirPicker";
 //     lo nuevo de ese día, y NUNCA se resetea ni se le resta la OC/el stock
 //     (ver faltantes-consumo/route.ts punto 4). "En OC" tampoco se le resta
 //     nada: es el total pendiente de esa OC tal cual.
-//   · Extraordinario/Comprar (preparado.faltante_extraordinario, por artículo+día):
-//     el botón 🚩 de cada fila marca extraordinario=true (comprar queda null,
-//     pendiente) → la fila desaparece de esta tabla. La decisión de comprar o
-//     no se toma en /ventas/faltantes; recién cuando comprar deja de ser null,
-//     el botón "Extraordinario" del header (gira la tarjeta) muestra la fila en
-//     el reverso. Ahí queda hasta que la OC "por llegar" cubre el faltante del
-//     artículo (descubierto llega a 0) — sale sola, sin acción manual.
+//   · Extraordinario/Comprar (preparado.faltante_extraordinario, por
+//     artículo+día+CLIENTE — 2026-09-16): el botón 🚩 de cada fila abre un
+//     modal para elegir DE QUÉ CLIENTE es el pedido extraordinario (un
+//     cliente pidió mucho más de lo habitual) y con qué cantidad (editable,
+//     por defecto todo lo que ese cliente tiene pendiente en el bucket). Solo
+//     esa cantidad se separa — el resto del faltante del artículo (los demás
+//     clientes) sigue la compra normal, no desaparece de la tabla. La
+//     decisión de comprar o no la porción extraordinaria se toma en
+//     /ventas/faltantes; recién cuando "comprar" deja de ser null, el botón
+//     "Extraordinario" del header (gira la tarjeta) la muestra en el
+//     reverso, una fila por (bucket, cliente). Ahí queda hasta que compras la
+//     desmarca a mano (la cantidad vuelve a sumar al faltante normal).
 //
 //   Color de fila por estado del DÍA (4 reglas, 2026-07-27):
 //     · (sin fila) → el STOCK SOLO (sin la OC) cubrió el acumulado en algún
@@ -126,8 +131,10 @@ interface Row {
   tipoArticulo: string | null; // "Nacional"/"Importado"/"Original"/"Fabrica" (Magnus) — fuente del filtro de origen (ver lib/compras/origenArticulo.ts)
   ocs: string[];
   estado: Estado;
-  extraordinario: boolean;
-  comprar: boolean | null; // null = pendiente (decide ventas/faltantes)
+  // Cuánto de este bucket ya está separado como extraordinario (por cliente,
+  // ver ExtraRow) y esperando que /ventas/faltantes le pregunte al cliente —
+  // solo para el badge de la fila; ya está restado de `faltan`.
+  extraordinarioEnRevision: number;
   fechaArribo: string | null; // más vieja cargada entre los renglones del bucket
   tieneArribo: boolean; // true = TODOS los renglones del bucket ya la tienen
   // Ingresos por remito del PERÍODO (no del día): total del artículo entre el
@@ -136,6 +143,27 @@ interface Row {
   ingresado: number;
   remitos: { nro: string; fecha: string; cant: number }[];
   ultimoIngreso: string | null;
+}
+
+// Porción extraordinaria de un bucket, por CLIENTE (2026-09-16) — ver
+// `extraordinarios` en GET /api/compras/faltantes-consumo, y sql/compras_
+// faltante_extraordinario.sql. Un pedido extraordinario es de UN cliente
+// puntual que pidió mucho más de lo habitual; `cantidad` ya está restada del
+// `faltan` del bucket que aparece en `Row` — acá vive aparte, esperando (o
+// ya con) la decisión de comprar de /ventas/faltantes.
+interface ExtraRow {
+  CodArticulo: string;
+  Nombre: string;
+  Linea: string | number | null;
+  Proveedor: string | null;
+  tipoArticulo: string | null;
+  fecha: string;
+  codCliente: string;
+  clienteNombre: string | null;
+  cantidad: number;
+  importe: number;
+  stock: number;
+  comprar: boolean | null; // null = pendiente (decide ventas/faltantes)
 }
 
 const fmtNum = (n: number) =>
@@ -171,6 +199,10 @@ const DESDE_DEFAULT = "2026-06-26";
 // Clave de fila: (artículo, día) — misma granularidad que usa el backend para
 // marcar extraordinario/comprar (preparado.faltante_extraordinario).
 const rowKey = (r: Pick<Row, "CodArticulo" | "fecha">) => `${r.CodArticulo}__${r.fecha}`;
+// Clave de marca extraordinaria: (artículo, día, CLIENTE) — misma
+// granularidad que preparado.faltante_extraordinario.
+const extraKey = (r: Pick<ExtraRow, "CodArticulo" | "fecha" | "codCliente">) =>
+  `${r.CodArticulo}__${r.fecha}__${r.codCliente}`;
 
 // Clasificación de origen: única fuente en lib/compras/origenArticulo.ts,
 // compartida con /fabrica/faltantes (Nacional acá, Importado del otro lado del
@@ -265,6 +297,119 @@ function ClientesCell({ clientes }: { clientes: Row["clientes"] }) {
   );
 }
 
+// Modal que abre el botón 🚩: pregunta DE QUÉ CLIENTE es el pedido
+// extraordinario (2026-09-16) — un pedido extraordinario es de un cliente
+// puntual que pidió mucho más de lo habitual, no del artículo entero. Solo
+// se separa la cantidad de ESE cliente (editable, por defecto lo que tiene
+// pendiente en este bucket); el resto del faltante sigue la compra normal.
+function ModalMarcarExtraordinario({
+  row,
+  onClose,
+  onConfirm,
+}: {
+  row: Row;
+  onClose: () => void;
+  onConfirm: (codCliente: string, clienteNombre: string | null, cantidad: number) => void;
+}) {
+  const unico = row.clientes.length === 1 ? row.clientes[0] : null;
+  const [sel, setSel] = useState<string | null>(unico?.cod ?? null);
+  const [cant, setCant] = useState<number>(unico?.cant ?? 0);
+
+  const elegir = (c: Row["clientes"][number]) => {
+    setSel(c.cod);
+    setCant(c.cant);
+  };
+  const clienteSel = row.clientes.find((c) => c.cod === sel) ?? null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[#1A1A1A] border border-red-900/50 rounded-xl max-w-md w-full max-h-[80vh] overflow-y-auto p-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-medium text-zinc-200 flex items-center gap-2">
+            <Flag size={14} className="text-red-400" />
+            ¿De qué cliente es el pedido extraordinario?
+          </h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200 p-1">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="text-[11px] text-zinc-500 mb-3">
+          {row.CodArticulo} · {row.Nombre} — {fmtAr(row.fecha)}. Se separa solo la cantidad de
+          este cliente; el resto del faltante sigue la compra normal del artículo.
+        </p>
+        {row.clientes.length === 0 ? (
+          <p className="text-xs text-zinc-500 mb-3">
+            Este faltante no tiene cliente identificado — no se puede marcar como extraordinario.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5 mb-3">
+            {row.clientes.map((c) => (
+              <li key={c.cod}>
+                <button
+                  onClick={() => elegir(c)}
+                  className={`w-full text-left px-3 py-2 rounded-lg border text-xs flex items-center justify-between gap-2 transition-colors ${
+                    sel === c.cod
+                      ? "border-red-400 bg-red-500/10 text-red-200"
+                      : "border-zinc-700 text-zinc-300 hover:border-zinc-500"
+                  }`}
+                >
+                  <span className="truncate">
+                    {c.cod}
+                    {c.nombre ? ` — ${c.nombre}` : ""}
+                  </span>
+                  <span className="tabular-nums text-zinc-500 shrink-0">{fmtNum(c.cant)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {clienteSel && (
+          <div className="flex items-center gap-2 mb-4">
+            <label className="text-xs text-zinc-400 whitespace-nowrap">
+              Cantidad extraordinaria
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={clienteSel.cant}
+              step="any"
+              value={cant}
+              onChange={(e) => setCant(Number(e.target.value))}
+              className="bg-[#111] border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-100 w-28 outline-none focus:border-red-400 [color-scheme:dark]"
+            />
+            <span className="text-[11px] text-zinc-600">de {fmtNum(clienteSel.cant)} pedidos</span>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-300 text-xs hover:border-zinc-500"
+          >
+            Cancelar
+          </button>
+          <button
+            disabled={!clienteSel || cant <= 0}
+            onClick={() =>
+              clienteSel &&
+              onConfirm(clienteSel.cod, clienteSel.nombre, Math.min(cant, clienteSel.cant))
+            }
+            className="px-3 py-1.5 rounded-md border border-red-400 bg-red-500/15 text-red-300 text-xs font-medium hover:bg-red-500/25 disabled:opacity-40"
+          >
+            Marcar extraordinario
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // Tabla reutilizable: una sola tabla o el cuerpo de cada acordeón por proveedor.
 function Tabla({
   data,
@@ -323,10 +468,21 @@ function Tabla({
                   <button
                     onClick={() => onMark(r)}
                     disabled={!!dir}
-                    title="Marcar como pedido extraordinario (pasa al reverso)"
-                    className="btn-anim text-zinc-600 hover:text-red-400 p-1 disabled:opacity-40"
+                    title={
+                      r.extraordinarioEnRevision > 0
+                        ? `${fmtNum(r.extraordinarioEnRevision)} unid. ya separadas como extraordinarias, esperando a ventas — marcar otro cliente`
+                        : "Marcar como pedido extraordinario de un cliente puntual"
+                    }
+                    className={`btn-anim p-1 disabled:opacity-40 relative ${
+                      r.extraordinarioEnRevision > 0 ? "text-red-400" : "text-zinc-600 hover:text-red-400"
+                    }`}
                   >
                     <Flag size={14} />
+                    {r.extraordinarioEnRevision > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full text-[9px] leading-none px-1 py-0.5">
+                        !
+                      </span>
+                    )}
                   </button>
                 </td>
                 <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">
@@ -463,21 +619,24 @@ function Tabla({
   );
 }
 
-// Reverso de la tarjeta: pedidos extraordinario=true, YA decididos (comprar
-// !== null, decisión que toma ventas/faltantes) y con descubierto > 0 (la OC
-// por llegar todavía no cubre el faltante; ver backRows en el componente de
-// abajo). El toggle "Comprar" de acá permite a compras cambiar manualmente
-// esa decisión (true↔false), pero no volver a dejarla pendiente (null).
-//   · Desmarcar "Extraordinario" → vuelve a la tabla principal.
+// Reverso de la tarjeta: porciones extraordinarias POR CLIENTE (2026-09-16),
+// YA decididas (comprar !== null, decisión que toma /ventas/faltantes) — ver
+// backRows en el componente de abajo. El toggle "Comprar" de acá permite a
+// compras cambiar manualmente esa decisión (true↔false), pero no volver a
+// dejarla pendiente (null). Mientras "comprar" siga null (ventas todavía no
+// le preguntó al cliente), esa cantidad no aparece acá — ya está restada de
+// la tabla principal, y se ve como el "!" del botón 🚩 de esa fila.
+//   · Desmarcar "Extraordinario" → borra la marca de ESE cliente: la
+//     cantidad vuelve a sumar al faltante normal del artículo.
 function TablaExtraordinarios({
   data,
-  onToggle,
+  onToggleComprar,
   onUndo,
   leaving = {},
 }: {
-  data: Row[];
-  onToggle: (row: Row, patch: Partial<Pick<Row, "extraordinario" | "comprar">>) => void;
-  onUndo: (row: Row) => void;
+  data: ExtraRow[];
+  onToggleComprar: (row: ExtraRow, comprar: boolean) => void;
+  onUndo: (row: ExtraRow) => void;
   leaving?: Record<string, "left" | "right">;
 }) {
   if (data.length === 0) {
@@ -499,11 +658,10 @@ function TablaExtraordinarios({
             <th className="px-3 py-2 font-medium whitespace-nowrap">Artículo</th>
             <th className="px-3 py-2 font-medium whitespace-nowrap">Línea</th>
             <th className="px-3 py-2 font-medium whitespace-nowrap">Día</th>
-            <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Faltan</th>
-            <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Stock</th>
-            <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Falta OC</th>
-            <th className="px-3 py-2 font-medium whitespace-nowrap">Proveedor</th>
             <th className="px-3 py-2 font-medium whitespace-nowrap">Cliente</th>
+            <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Cant. extraordinaria</th>
+            <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Stock</th>
+            <th className="px-3 py-2 font-medium whitespace-nowrap">Proveedor</th>
             <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Importe</th>
             <th className="px-3 py-2 font-medium text-center whitespace-nowrap">Extraordinario</th>
             <th className="px-3 py-2 font-medium text-center whitespace-nowrap">Comprar</th>
@@ -511,10 +669,10 @@ function TablaExtraordinarios({
         </thead>
         <tbody>
           {data.map((r) => {
-            const dir = leaving[rowKey(r)];
+            const dir = leaving[extraKey(r)];
             return (
               <tr
-                key={rowKey(r)}
+                key={extraKey(r)}
                 className={`border-t border-zinc-800/50 bg-red-500/[0.06] hover:bg-red-500/[0.1] transition-colors animate-in fade-in duration-300 ${
                   dir === "right" ? "row-out-right" : dir === "left" ? "row-out-left" : ""
                 }`}
@@ -523,7 +681,11 @@ function TablaExtraordinarios({
                 <td className="px-3 py-2 text-zinc-100 whitespace-nowrap">{r.Nombre}</td>
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">{r.Linea ?? "—"}</td>
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">{fmtAr(r.fecha)}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-zinc-100">{fmtNum(r.faltan)}</td>
+                <td className="px-3 py-2 text-zinc-300 whitespace-nowrap">
+                  {r.codCliente}
+                  {r.clienteNombre ? ` — ${r.clienteNombre}` : ""}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-zinc-100">{fmtNum(r.cantidad)}</td>
                 <td
                   className={`px-3 py-2 text-right tabular-nums ${
                     r.stock > 0 ? "text-emerald-400" : "text-zinc-600"
@@ -531,19 +693,13 @@ function TablaExtraordinarios({
                 >
                   {r.stock > 0 ? fmtNum(r.stock) : "—"}
                 </td>
-                <td className="px-3 py-2 text-right tabular-nums text-red-300/90">
-                  {r.descubierto > 0 ? fmtNum(r.descubierto) : "—"}
-                </td>
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">{r.Proveedor || "—"}</td>
-                <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">
-                  <ClientesCell clientes={r.clientes} />
-                </td>
                 <td className="px-3 py-2 text-right tabular-nums text-zinc-300 whitespace-nowrap">${fmtNum(r.importe)}</td>
                 <td className="px-3 py-2 text-center">
                   <button
                     onClick={() => onUndo(r)}
                     disabled={!!dir}
-                    title="Desmarcar extraordinario (vuelve a la tabla principal)"
+                    title="Desmarcar (la cantidad vuelve a sumar al faltante normal del artículo)"
                     className="btn-anim inline-flex items-center gap-1 text-red-400 hover:text-zinc-400 px-2 py-1 rounded border border-red-400/40 disabled:opacity-40"
                   >
                     <Undo2 size={13} />
@@ -551,7 +707,7 @@ function TablaExtraordinarios({
                 </td>
                 <td className="px-3 py-2 text-center">
                   <button
-                    onClick={() => onToggle(r, { comprar: !r.comprar })}
+                    onClick={() => onToggleComprar(r, !r.comprar)}
                     title={r.comprar ? "Desmarcar comprar" : "Marcar comprar"}
                     className={`btn-anim inline-flex items-center justify-center w-6 h-6 rounded border ${
                       r.comprar
@@ -599,6 +755,9 @@ export default function ComprasFaltantesPage() {
   const [matchIdx, setMatchIdx] = useState(0);
   const [buscado, setBuscado] = useState(false); // true tras ejecutar la búsqueda (para distinguir "sin buscar" de "0 resultados")
   const provRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [extraordinarios, setExtraordinarios] = useState<ExtraRow[]>([]); // porciones por cliente (ver punto 3d del backend)
+  const [marcando, setMarcando] = useState<Row | null>(null); // bucket para el que se abrió el modal "¿de qué cliente?"
+  const [leavingExtra, setLeavingExtra] = useState<Record<string, "left" | "right">>({}); // filas del reverso saliendo (animación)
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -616,6 +775,7 @@ export default function ComprasFaltantesPage() {
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       setRows(j.rows ?? []);
       setCubiertos(j.cubiertos ?? []);
+      setExtraordinarios(j.extraordinarios ?? []);
       setFecha(j.fecha ?? null);
       setDesdeResp(j.desde ?? null);
       setHastaResp(j.hasta ?? null);
@@ -627,6 +787,7 @@ export default function ComprasFaltantesPage() {
       setError(e instanceof Error ? e.message : "Error al cargar");
       setRows([]);
       setCubiertos([]);
+      setExtraordinarios([]);
     } finally {
       setLoading(false);
     }
@@ -642,56 +803,100 @@ export default function ComprasFaltantesPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  // Marcar/desmarcar extraordinario y/o comprar. Optimista: actualiza la UI ya,
-  // y si el POST falla revierte + avisa. Clave: (CodArticulo, fecha).
-  const toggleMark = useCallback(
-    async (row: Row, patch: Partial<Pick<Row, "extraordinario" | "comprar">>) => {
-      const prev = { extraordinario: row.extraordinario, comprar: row.comprar };
-      const next = { ...prev, ...patch };
-      setRows((rs) => rs.map((r) => (rowKey(r) === rowKey(row) ? { ...r, ...next } : r)));
+  const EXIT_MS = 260;
+
+  // Botón 🚩 de una fila: abre el modal para elegir DE QUÉ CLIENTE es el
+  // pedido extraordinario (2026-09-16) — ya no marca el artículo entero.
+  const marcarExtraordinario = useCallback((row: Row) => setMarcando(row), []);
+
+  // Confirmación del modal: guarda la marca por (fecha, artículo, cliente) y
+  // recarga — el faltante del bucket cambia server-side (se le resta esta
+  // cantidad), así que no conviene simularlo optimista acá.
+  const confirmarExtraordinario = useCallback(
+    async (codCliente: string, clienteNombre: string | null, cantidad: number) => {
+      const row = marcando;
+      setMarcando(null);
+      if (!row) return;
       try {
         const res = await fetch("/api/compras/faltantes-extraordinario", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fecha: row.fecha, codArticulo: row.CodArticulo, ...next }),
+          body: JSON.stringify({
+            fecha: row.fecha,
+            codArticulo: row.CodArticulo,
+            codCliente,
+            clienteNombre,
+            cantidad,
+            comprar: null,
+          }),
         });
         if (!res.ok) throw new Error();
+        await load();
       } catch {
-        setRows((rs) => rs.map((r) => (rowKey(r) === rowKey(row) ? { ...r, ...prev } : r)));
-        setError("No se pudo guardar la marca de extraordinario/comprar");
+        setError("No se pudo marcar el pedido extraordinario");
       }
     },
-    [],
+    [marcando, load],
   );
-  // Anima la fila hacia el costado indicado y recién al terminar ejecuta el
-  // cambio real (toggleMark) — así la fila ya está afuera cuando desaparece.
-  const EXIT_MS = 260;
-  const animarYQuitar = useCallback(
-    (row: Row, dir: "left" | "right", patch: Partial<Pick<Row, "extraordinario" | "comprar">>) => {
-      const k = rowKey(row);
-      setLeaving((m) => ({ ...m, [k]: dir }));
-      window.setTimeout(() => {
-        toggleMark(row, patch);
-        setLeaving((m) => {
+
+  // Reverso: cambia "comprar" de una marca ya decidida (compras puede
+  // overridear lo que decidió ventas). Optimista.
+  const toggleComprarExtra = useCallback(async (row: ExtraRow, comprar: boolean) => {
+    const prev = row.comprar;
+    setExtraordinarios((rs) =>
+      rs.map((r) => (extraKey(r) === extraKey(row) ? { ...r, comprar } : r)),
+    );
+    try {
+      const res = await fetch("/api/compras/faltantes-extraordinario", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fecha: row.fecha,
+          codArticulo: row.CodArticulo,
+          codCliente: row.codCliente,
+          clienteNombre: row.clienteNombre,
+          cantidad: row.cantidad,
+          comprar,
+        }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setExtraordinarios((rs) =>
+        rs.map((r) => (extraKey(r) === extraKey(row) ? { ...r, comprar: prev } : r)),
+      );
+      setError("No se pudo guardar la decisión de comprar");
+    }
+  }, []);
+
+  // Desmarcar (reverso): borra la marca de ese cliente — la cantidad vuelve a
+  // sumar al faltante normal del artículo en la próxima lectura.
+  const desmarcarExtraordinario = useCallback(
+    (row: ExtraRow) => {
+      const k = extraKey(row);
+      setLeavingExtra((m) => ({ ...m, [k]: "left" }));
+      window.setTimeout(async () => {
+        setExtraordinarios((rs) => rs.filter((r) => extraKey(r) !== k));
+        setLeavingExtra((m) => {
           const n = { ...m };
           delete n[k];
           return n;
         });
+        try {
+          const res = await fetch(
+            `/api/compras/faltantes-extraordinario?fecha=${encodeURIComponent(row.fecha)}` +
+              `&codArticulo=${encodeURIComponent(row.CodArticulo)}` +
+              `&codCliente=${encodeURIComponent(row.codCliente)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) throw new Error();
+        } catch {
+          setError("No se pudo desmarcar");
+        } finally {
+          await load();
+        }
       }, EXIT_MS);
     },
-    [toggleMark],
-  );
-  // Botón por fila: marca extraordinario y deja "comprar" pendiente (null).
-  // La decisión de comprar o no la toma ventas/faltantes; recién ahí, cuando
-  // deja de ser null, la fila aparece en el reverso.
-  const marcarExtraordinario = useCallback(
-    (row: Row) => animarYQuitar(row, "right", { extraordinario: true, comprar: null }),
-    [animarYQuitar],
-  );
-  // Reverso: desmarcar extraordinario (vuelve a la tabla principal).
-  const desmarcarExtraordinario = useCallback(
-    (row: Row) => animarYQuitar(row, "left", { extraordinario: false }),
-    [animarYQuitar],
+    [load],
   );
 
   // Carga/borra la fecha de arribo del bucket (artículo+día). El fan-out por
@@ -789,20 +994,26 @@ export default function ComprasFaltantesPage() {
   // tipo cargado — eso se trabaja en /fabrica/faltantes) ni los de tipo
   // Original. Un artículo de tipo Nacional comprado a EVER WEAR sí entra acá.
   const pasaOrigen = useCallback((r: Row) => origenDe(r) === origen, [origen]);
+  const pasaOrigenExtra = useCallback(
+    (r: ExtraRow) => origenArticulo(r) === origen,
+    [origen],
+  );
 
-  // Tabla principal: nunca muestra lo marcado extraordinario.
-  const frontRows = useMemo(() => rows.filter((r) => !r.extraordinario), [rows]);
-  // Reverso de la tarjeta: extraordinario, ya decidido (comprar !== null) Y
-  // todavía con descubierto > 0 (la OC "por llegar" aún no cubre el faltante
-  // del artículo). Apenas la OC lo cubre (descubierto llega a 0 o queda a
-  // favor), sale sola de acá — no hace falta desmarcar nada a mano.
+  // Tabla principal: el backend (faltantes-consumo, punto 3d) ya le restó a
+  // cada bucket lo marcado extraordinario de cada cliente — acá se muestra
+  // tal cual viene, sin filtrar nada más.
+  const frontRows = rows;
+  // Reverso de la tarjeta: porciones extraordinarias YA DECIDIDAS por
+  // /ventas/faltantes (comprar !== null). Mientras sigue null, esa cantidad
+  // ya está afuera de la tabla principal pero todavía no aparece acá —
+  // compras la ve como el "!" del botón 🚩 de esa fila.
   const backRows = useMemo(
     () =>
-      rows
-        .filter((r) => r.extraordinario && r.comprar !== null && r.descubierto > 0)
-        .filter(pasaOrigen)
+      extraordinarios
+        .filter((r) => r.comprar !== null)
+        .filter(pasaOrigenExtra)
         .sort((a, b) => b.importe - a.importe),
-    [rows, pasaOrigen],
+    [extraordinarios, pasaOrigenExtra],
   );
 
   // 1 fila por artículo: las filas "vivo" son buckets día a día del MISMO
@@ -1450,14 +1661,22 @@ export default function ComprasFaltantesPage() {
             >
               <TablaExtraordinarios
                 data={backRows}
-                onToggle={toggleMark}
+                onToggleComprar={toggleComprarExtra}
                 onUndo={desmarcarExtraordinario}
-                leaving={leaving}
+                leaving={leavingExtra}
               />
             </div>
           </div>
         </div>
       </main>
+
+      {marcando && (
+        <ModalMarcarExtraordinario
+          row={marcando}
+          onClose={() => setMarcando(null)}
+          onConfirm={confirmarExtraordinario}
+        />
+      )}
     </div>
   );
 }

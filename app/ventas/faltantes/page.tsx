@@ -188,9 +188,10 @@ export default function VentasFaltantesPage() {
   const [vendedorSel, setVendedorSel] = useState("");
   const [leaving, setLeaving] = useState<Record<string, "left" | "right">>({}); // filas saliendo (animación)
 
-  // Anima las filas (una o varias, ej. extraordinario = todo el artículo) hacia
-  // el costado y recién al terminar ejecuta el cambio real — la fila ya está
-  // afuera cuando desaparece del array, sin salto de layout.
+  // Anima las filas (una o varias, ej. extraordinario = todos los renglones
+  // de ESE cliente en ese artículo) hacia el costado y recién al terminar
+  // ejecuta el cambio real — la fila ya está afuera cuando desaparece del
+  // array, sin salto de layout.
   const EXIT_MS = 260;
   const withExit = useCallback((keys: string[], dir: "left" | "right", fn: () => void) => {
     setLeaving((m) => {
@@ -259,26 +260,22 @@ export default function VentasFaltantesPage() {
   // sea la respuesta. Optimista: si falla el guardado, se vuelve a traer todo.
   //
   // Si el renglón es extraordinario, esta misma respuesta decide también
-  // "comprar" en preparado.faltante_extraordinario (a nivel artículo+día, no
-  // por renglón) → saca de acá, ya mismo, a TODOS los renglones de ese mismo
-  // artículo (no solo el clickeado), porque la decisión es a nivel artículo.
+  // "comprar" en preparado.faltante_extraordinario (a nivel artículo+día+
+  // CLIENTE desde 2026-09-16) → saca de acá, ya mismo, a los demás renglones
+  // de ESE MISMO cliente en ese artículo (no todo el artículo: eso mezclaría
+  // pedidos de otros clientes que no tienen nada que ver con esta marca).
+  const mismoExtra = useCallback(
+    (r: Item, it: Item) =>
+      it.extraordinario &&
+      r.CodArticulo === it.CodArticulo &&
+      String(r.Cliente ?? "") === String(it.Cliente ?? ""),
+    [],
+  );
   const decidir = useCallback(
     (it: Item, quiere: boolean) => {
-      const keys = items
-        .filter((r) =>
-          it.extraordinario && r.CodArticulo === it.CodArticulo
-            ? true
-            : keyOf(r) === keyOf(it),
-        )
-        .map(keyOf);
+      const keys = items.filter((r) => mismoExtra(r, it) || keyOf(r) === keyOf(it)).map(keyOf);
       withExit(keys, quiere ? "right" : "left", () => {
-        setItems((rs) =>
-          rs.filter((r) =>
-            it.extraordinario && r.CodArticulo === it.CodArticulo
-              ? false
-              : keyOf(r) !== keyOf(it),
-          ),
-        );
+        setItems((rs) => rs.filter((r) => !mismoExtra(r, it) && keyOf(r) !== keyOf(it)));
         const calls = [
           fetch("/api/deposito/faltantes/control", {
             method: "POST",
@@ -293,7 +290,7 @@ export default function VentasFaltantesPage() {
             }),
           }),
         ];
-        if (it.extraordinario && it.extraordinarioFecha) {
+        if (it.extraordinario && it.extraordinarioFecha && it.Cliente != null && it.Cliente !== "") {
           calls.push(
             fetch("/api/compras/faltantes-extraordinario", {
               method: "POST",
@@ -301,7 +298,8 @@ export default function VentasFaltantesPage() {
               body: JSON.stringify({
                 fecha: it.extraordinarioFecha,
                 codArticulo: it.CodArticulo,
-                extraordinario: true,
+                codCliente: String(it.Cliente),
+                clienteNombre: it.ClienteNombre,
                 comprar: quiere,
               }),
             }),
@@ -317,7 +315,7 @@ export default function VentasFaltantesPage() {
           });
       });
     },
-    [items, fecha, load, withExit],
+    [items, fecha, load, withExit, mismoExtra],
   );
 
   // Tabla 2: guarda "vendido" en preparado.faltante_control (mismo endpoint,
