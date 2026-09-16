@@ -51,7 +51,7 @@ services:
   # Puente WebRTC <-> Issabel para /sorteo/telefono (ver TELEFONIA.md).
   # network_mode host: el audio (RTP/ICE) tiene que salir con la IP real del
   # server; detrás del NAT de Docker los navegadores no reciben audio.
-  # Puertos en el host: 8088/tcp (WebSocket), 5070/udp (SIP a Issabel),
+  # Puertos en el host: 8189/tcp (WebSocket; 8088 ya lo usa otro contenedor), 5070/udp (SIP a Issabel),
   # 20000-20999/udp (audio).
   telefonia-gw:
     build: ./telefonia-gw

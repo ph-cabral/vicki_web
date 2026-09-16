@@ -6,7 +6,7 @@ auriculares con micrófono de la PC.
 ## Arquitectura
 
 ```
-Navegador (JsSIP, WebRTC)  --ws://10.10.0.159:8088/ws + DTLS-SRTP-->  telefonia-gw (Asterisk 20, Docker)
+Navegador (JsSIP, WebRTC)  --ws://10.10.0.159:8189/ws + DTLS-SRTP-->  telefonia-gw (Asterisk 20, Docker)
 telefonia-gw  --SIP/UDP 5070 <-> 5060, RTP común-->  Issabel 10.10.0.248 (Asterisk 11)
 ```
 
@@ -67,14 +67,21 @@ Restos de la prueba directa (sin efecto, se pueden dejar o limpiar): `http_custo
    ```
 2. **.env**:
    ```bash
-   ISSABEL_WS_URL=ws://10.10.0.159:8088/ws
+   ISSABEL_WS_URL=ws://10.10.0.159:8189/ws
    ISSABEL_SIP_DOMAIN=10.10.0.159
    TELEFONIA_SECRET=<node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
    # opcionales (default): ISSABEL_HOST=10.10.0.248  ISSABEL_PORT=5060
    ```
 3. **Deploy** normal (`./deploy.sh` levanta también `telefonia-gw`).
 4. **Tabla** (una vez): `psql "$DATABASE_URL" -f sql/telefonia_usuario_extension.sql`.
-5. Puertos libres en el host: **8088/tcp**, **5070/udp**, **20000-20999/udp**.
+5. Puertos: **8189/tcp** (8088 ya lo usa otro contenedor), **5070/udp**, **20000-20999/udp**.
+   El contenedor usa `network_mode: host`, así que **ufw sí lo filtra** (a diferencia de los puertos
+   publicados por Docker):
+   ```bash
+   sudo ufw allow from 10.10.0.0/24 to any port 8189 proto tcp comment 'Vicki telefonia WS'
+   sudo ufw allow from 10.10.0.0/24 to any port 20000:20999 proto udp comment 'Vicki telefonia RTP'
+   sudo ufw allow from 10.10.0.248 to any port 5070 proto udp comment 'Vicki telefonia SIP Issabel'
+   ```
 
 Verificar el puente:
 ```bash
@@ -113,7 +120,7 @@ origen seguro:
 |---|---|
 | "No tenés una extensión asignada" | Sin extensión en Administración › Telefonía, o `ISSABEL_WS_URL` vacío |
 | "Micrófono bloqueado…" / permisos grises | Falta el flag o la política del punto 4 |
-| "Conectando…" fijo | Contenedor `vicki_telefonia` caído o 8088 ocupado/filtrado |
+| "Conectando…" fijo | Contenedor `vicki_telefonia` caído o 8189 ocupado/filtrado |
 | "Clave de la extensión incorrecta" | Secret de Vicki ≠ `usuarios.txt` |
 | Registra pero no llama / "No disponible" | `pjsip show registrations` no está Registered: secret de `usuarios.txt` ≠ Issabel |
 | "Bad Media Description" | Se está apuntando directo a Issabel (`ISSABEL_WS_URL` con .248) en vez del puente |
