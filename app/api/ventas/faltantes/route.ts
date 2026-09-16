@@ -568,6 +568,39 @@ export async function GET(req: Request) {
       });
     }
 
+    // Últimos códigos sin nombre real (ni faltante_wms.clienteNombre ni el
+    // fallback de `rowsTodos` los resolvió, así que arriba quedó el CÓDIGO
+    // pisando el nombre). En vez de una consulta a Magnus por cada fila —
+    // acá puede haber varias decenas — se junta la lista de códigos ÚNICOS
+    // sin resolver y se pide UNA sola vez en batch (IN (...)) a
+    // indicadores-api. Best-effort: si Magnus no responde, quedan con el
+    // código como hasta ahora, no se corta el resto de la respuesta.
+    const codigosSinNombre = [
+      ...new Set(
+        enStockDeWms
+          .filter((r) => r.Cliente != null && r.ClienteNombre === r.Cliente)
+          .map((r) => String(r.Cliente)),
+      ),
+    ];
+    if (codigosSinNombre.length > 0) {
+      try {
+        const r = await fetch(
+          `${API_URL}/clientes/nombres?codigos=${codigosSinNombre.join(",")}`,
+          { cache: "no-store", signal: AbortSignal.timeout(10000) },
+        );
+        if (r.ok) {
+          const { nombres } = (await r.json()) as { nombres: Record<string, string> };
+          for (const row of enStockDeWms) {
+            const cod = row.Cliente != null ? String(row.Cliente) : "";
+            const nom = nombres[cod];
+            if (nom && row.ClienteNombre === row.Cliente) row.ClienteNombre = nom;
+          }
+        }
+      } catch {
+        // sin nombre esta vuelta — se sigue viendo el código, como antes.
+      }
+    }
+
     const enStock = [...enStockDeRows, ...enStockDeWms];
 
     return NextResponse.json({

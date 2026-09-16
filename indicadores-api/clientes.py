@@ -82,6 +82,41 @@ ORDER BY c.Cliente_Nombre
 """
 
 
+def fetch_clientes_por_codigos(codigos: list[int]) -> dict[int, str]:
+    """Nombre de cliente para una LISTA de códigos, en una sola consulta
+    (IN batch) — para /clientes/nombres, que usa /api/ventas/faltantes
+    (Next.js) para resolver de una vez los nombres que faltan en
+    preparado.faltante_wms (filas viejas persistidas antes de que esa tabla
+    guardara `clienteNombre`, o sin match). Se llama UNA vez por request con
+    todos los códigos sin nombre juntos, nunca uno por fila.
+    Devuelve {codigo: nombre}; un código sin match en Magnus no aparece en
+    el dict (el caller decide el fallback)."""
+    codigos_i = sorted({int(c) for c in codigos if c is not None})
+    if not codigos_i:
+        return {}
+    placeholders = ",".join("?" for _ in codigos_i)
+    sql = f"""
+SELECT c.CodCliente AS numero, LTRIM(RTRIM(c.Cliente_Nombre)) AS nombre
+FROM MAGNUS_SITD.dbo.Clientes c
+WHERE c.CodCliente IN ({placeholders})
+"""
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(sql, codigos_i)
+        cols = [d[0] for d in cur.description]
+        out: dict[int, str] = {}
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            nombre = d.get("nombre")
+            if nombre:
+                out[int(d["numero"])] = str(nombre).strip()
+        return out
+    finally:
+        conn.close()
+
+
 def fetch_vendedor_fijo_cliente(cod_cliente: int, vendedor: int) -> bool:
     """Compat: quedó como alias de cartera.cliente_es_de_vendedor. Antes
     devolvía UN código de vendedor (el "Vendedor por Defecto"), pero eso ya

@@ -63,7 +63,7 @@ from finanza import (
     insert_ajuste_manual,
     fetch_ajuste_manual_list,
 )
-from clientes import fetch_cliente, fetch_clientes_search
+from clientes import fetch_cliente, fetch_clientes_search, fetch_clientes_por_codigos
 from cartera import fetch_cartera_codigos
 from vendedores import codigos_de, invalidar_cache as invalidar_cache_vendedores
 from mesa_control import (
@@ -893,6 +893,24 @@ def clientes_get(numero: int):
     if not cli:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     return cli
+
+
+@app.get("/clientes/nombres")
+def clientes_nombres(
+    codigos: str = Query(..., min_length=1, description="Códigos de cliente separados por coma"),
+):
+    """Nombre de VARIOS clientes en un solo round-trip a Magnus (IN batch).
+    Usado por /api/ventas/faltantes (Next.js) para resolver, de una sola vez,
+    el nombre real de los clientes cuyo faltante viene de
+    preparado.faltante_wms sin `clienteNombre` persistido (filas viejas) —
+    antes ahí se mostraba el código de cliente en vez del nombre. Solo
+    lectura, Magnus. Códigos sin match no aparecen en la respuesta."""
+    try:
+        ids = [int(c) for c in codigos.split(",") if c.strip().lstrip("-").isdigit()]
+        nombres = fetch_clientes_por_codigos(ids)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+    return {"nombres": {str(k): v for k, v in nombres.items()}}
 
 
 @app.get("/clientes")
