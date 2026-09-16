@@ -1,0 +1,4 @@
+# Copiar como telefonia-gw/datos/usuarios.txt EN EL SERVER (no va a git).
+# Una línea por extensión del softphone: <extension> <secret de esa extensión en Issabel>
+# Después de editarlo:  docker exec vicki_telefonia /entrypoint.sh recargar
+1140 SECRET_DE_LA_1140

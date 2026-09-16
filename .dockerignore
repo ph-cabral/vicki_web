@@ -42,3 +42,7 @@ workers
 *.md
 *.log
 _tmp_*
+
+# puente de telefonía: tiene su propio Dockerfile y datos/usuarios.txt con
+# claves SIP, que no tienen que terminar dentro de la imagen de la app
+telefonia-gw

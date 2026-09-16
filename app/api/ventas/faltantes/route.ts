@@ -355,6 +355,10 @@ export async function GET(req: Request) {
     // le prestaba su fecha, y el faltante mostraba un "arribo" del pasado.
     // Bug real 2026-07-27 (sigue aplicando): sumar los 2 días, no mostrar
     // literal la fecha de Despacho.
+    // Hoy en Córdoba (yyyy-mm-dd), para distinguir entregas vencidas.
+    const hoyISO = new Date().toLocaleDateString("sv-SE", {
+      timeZone: "America/Argentina/Buenos_Aires",
+    });
     const arriboParaFaltante = (cod: string, fechaFaltante: string | null): string | null => {
       const lotes = ocLotesPorArt.get(cod);
       if (!lotes?.length) {
@@ -368,14 +372,23 @@ export async function GET(req: Request) {
       const elegibles = fechaFaltante
         ? lotes.filter((l) => l.FechaOC && l.FechaOC >= fechaFaltante)
         : lotes;
+      // 2026-09-16: se prefiere la entrega más temprana que TODAVÍA NO
+      // VENCIÓ (estimado >= hoy). Una OC con entrega pactada ya pasada y sin
+      // recibir no dice cuándo llega; si hay otra OC elegible con fecha a
+      // futuro, esa es la que vale. Si todas están vencidas, se muestra la
+      // más temprana igual (comportamiento anterior).
+      // Caso real: faltante 23/07, OC del 10/08 con entrega 01/09 (vencida,
+      // pendiente) tapaba la OC del 19/08 con entrega 22/09.
       let mejor: string | null = null;
+      let mejorFuturo: string | null = null;
       for (const l of elegibles) {
         const base = l.FechaEntrega && !l.Importacion ? l.FechaEntrega : l.FechaOC;
         if (!base) continue;
         const est = addDaysISO(base, 2);
         if (mejor === null || est < mejor) mejor = est;
+        if (est >= hoyISO && (mejorFuturo === null || est < mejorFuturo)) mejorFuturo = est;
       }
-      return mejor;
+      return mejorFuturo ?? mejor;
     };
 
     // Artículos con remito de ingreso x OC ya concretado (Tabla 2, requisito 3).

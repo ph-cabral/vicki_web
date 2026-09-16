@@ -1,167 +1,120 @@
 # Telefonía — softphone web con Issabel
 
-Teléfono dentro de Vicki para puestos sin teléfono IP. El navegador se registra en
-Issabel como una extensión (WebRTC sobre WebSocket, librería **JsSIP**) y el audio
-va por los auriculares con micrófono de la PC.
+Teléfono dentro de Vicki para puestos sin teléfono IP, en la vista **/sorteo/telefono**. Audio por
+auriculares con micrófono de la PC.
 
-- Vista **/sorteo/telefono** (módulo sorteo). Entra quien tenga el módulo sorteo y esa vista habilitada
-  en Permisos; sin extensión asignada muestra "No tenés una extensión asignada".
-- Llamar (internos y externos, según las rutas salientes de la extensión), atender/rechazar,
-  silenciar, espera, transferencia directa, teclado DTMF, recientes (por navegador) y
-  notificación de escritorio si la pestaña está en segundo plano.
-- La llamada vive mientras esa pestaña esté en /sorteo/telefono: salir de la vista, F5 o cerrar la pestaña la corta.
-  El puesto deja esa pestaña abierta.
-- Con Vicki abierta en varias pestañas, sólo **una** queda registrada (Web Locks); al cerrarla, toma otra.
-- Si la pestaña de Vicki está cerrada, esa extensión **no recibe llamadas** (conviene un "sígueme"
-  o buzón en Issabel para esos casos).
+## Arquitectura
+
+```
+Navegador (JsSIP, WebRTC)  --ws://10.10.0.159:8088/ws + DTLS-SRTP-->  telefonia-gw (Asterisk 20, Docker)
+telefonia-gw  --SIP/UDP 5070 <-> 5060, RTP común-->  Issabel 10.10.0.248 (Asterisk 11)
+```
+
+**Por qué el puente:** Issabel corre **Asterisk 11.25**, que no soporta `rtcp-mux`; Chrome lo exige
+desde 2017 → registrar directo contra Issabel funciona pero la llamada falla con
+*"Bad Media Description"*. El puente (`telefonia-gw/`) atiende WebRTC y **se registra en Issabel como
+cada extensión** (mismo número y secret), así que para Issabel es un interno SIP común: rutas
+salientes, permisos, colas, grupos y caller ID funcionan sin tocar nada.
+
+Probado de punta a punta (Chromium real → puente → Asterisk con chan_sip): llamada saliente y
+entrante con audio en los dos sentidos.
+
+- Llamar, atender/rechazar, silenciar, espera, transferencia directa, DTMF (RFC 4733), recientes
+  (por navegador), notificación si la pestaña está en segundo plano.
+- La llamada vive mientras la pestaña esté en /sorteo/telefono (salir, F5 o cerrar la corta).
+- Varias pestañas: sólo una queda registrada (Web Locks).
+- Sin la pestaña abierta, el puente contesta "no disponible" y Issabel sigue su curso (buzón, etc.).
 
 ## Piezas
 
 | Qué | Dónde |
 |---|---|
+| Vista | `app/sorteo/telefono/page.tsx` → `components/telefonia/Softphone.tsx` (`modo="pagina"`) |
 | Tabla usuario ↔ extensión | `sql/telefonia_usuario_extension.sql`, `model usuario_extension` |
-| Cifrado de la clave SIP (AES-256-GCM) | `lib/telefonia/cifrado.ts` |
-| Config de la central (env) | `lib/telefonia/config.ts` |
-| Credenciales del usuario logueado | `GET /api/telefonia/credenciales` (204 = sin extensión) |
-| ABM de extensiones (ADMIN) | `/admin/telefonia` + `app/api/admin/telefonia` |
-| Softphone | `components/telefonia/Softphone.tsx` (`modo="pagina"`), vista `app/sorteo/telefono/page.tsx`. El modo `"flotante"` (botón global montado en `app/layout.tsx`) existe pero no está montado |
-| Política de navegador (prueba en 1 PC) | `scripts/telefonia_origen_seguro.reg` |
-
-La clave SIP nunca vuelve al admin; sólo viaja al navegador del propio usuario (la necesita
-para registrarse).
+| Clave SIP cifrada (AES-256-GCM) | `lib/telefonia/cifrado.ts` |
+| Config (env) | `lib/telefonia/config.ts` |
+| Credenciales del logueado | `GET /api/telefonia/credenciales` (204 = sin extensión) |
+| ABM (ADMIN) | `/admin/telefonia` + `app/api/admin/telefonia` |
+| Puente WebRTC↔SIP | `telefonia-gw/` (Dockerfile, `conf/`, `entrypoint.sh`), servicio `telefonia-gw` en `docker-compose.prod.yml` |
+| Política de navegador | `scripts/telefonia_origen_seguro.reg` |
 
 ---
 
-## 1. Issabel (una sola vez) — Issabel 10.10.0.248
+## 1. Issabel
 
-Todo se hizo desde la web (**PBX › Tools › Asterisk File Editor** y la pantalla de la extensión),
-sin SSH/root. Botón **Reload Asterisk** del editor para aplicar.
+La extensión queda como **SIP común** (igual que las de los Fanvil). Nada de WebRTC en Issabel.
 
-### 1.1 WebSocket de Asterisk (puerto 8088)
-
-`http_additional.conf` lo regenera Issabel con `enabled=no`. El encendido queda en
-**http_custom.conf**:
-
-```ini
-[general](+)
-enabled=yes
-```
-
-Verificación: `http://10.10.0.248:8088/httpstatus` muestra "Asterisk HTTP Status".
-
-### 1.2 Certificado para DTLS (el audio WebRTC siempre va cifrado)
-
-Autofirmado (DTLS no valida contra CA). Se generó en otra máquina Linux y se pegó (clave + cert en
-un solo archivo) con **New File** del editor, que fuerza extensión `.conf` → **`/etc/asterisk/webrtc.conf`**:
-
-```bash
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /tmp/w.key -out /tmp/w.crt \
-  -subj "/CN=issabel-webrtc" && cat /tmp/w.key /tmp/w.crt && rm /tmp/w.key /tmp/w.crt
-```
-
-### 1.3 Extensiones WebRTC (hoy: 1140)
-
-Pantalla de la extensión (PBX › Extensions), Device Options:
+Extensión (PBX › Extensions) → Device Options, valores normales:
 
 | Campo | Valor |
 |---|---|
-| transport | All - WS Primary |
-| avpf / icesupport / dtlsenable / encryption | Yes |
-| dtlsverify | No |
-| dtlssetup | Incoming and Outgoing |
-| dtlscertfile / dtlsprivatekey | `/etc/asterisk/webrtc.conf` |
-| dtmfmode | RFC 2833 |
+| transport | UDP Only |
+| avpf / icesupport / dtlsenable / encryption | No |
+| dtlscertfile / dtlsprivatekey | vacío |
 | nat | Yes |
-| disallow / allow | `all` / `ulaw&alaw` |
+| dtmfmode | RFC 2833 |
 
-Y `rtcp_mux` (no está en la pantalla) en **sip_custom_post.conf**, un bloque por extensión:
+Restos de la prueba directa (sin efecto, se pueden dejar o limpiar): `http_custom.conf`
+(`enabled=yes`), `webrtc.conf` (certificado) y el bloque `[1140](+) rtcp_mux=yes` de
+`sip_custom_post.conf` — **este último conviene borrarlo** (Asterisk 11 no conoce la opción).
 
-```ini
-[1140](+)
-rtcp_mux=yes
+## 2. Server de Vicki (10.10.0.159)
+
+1. **Extensiones del puente** — `telefonia-gw/datos/usuarios.txt` (no está en git; ver
+   `telefonia-gw/usuarios.ejemplo.txt`):
+   ```
+   1140 <secret de la 1140 en Issabel>
+   ```
+2. **.env**:
+   ```bash
+   ISSABEL_WS_URL=ws://10.10.0.159:8088/ws
+   ISSABEL_SIP_DOMAIN=10.10.0.159
+   TELEFONIA_SECRET=<node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
+   # opcionales (default): ISSABEL_HOST=10.10.0.248  ISSABEL_PORT=5060
+   ```
+3. **Deploy** normal (`./deploy.sh` levanta también `telefonia-gw`).
+4. **Tabla** (una vez): `psql "$DATABASE_URL" -f sql/telefonia_usuario_extension.sql`.
+5. Puertos libres en el host: **8088/tcp**, **5070/udp**, **20000-20999/udp**.
+
+Verificar el puente:
+```bash
+docker exec vicki_telefonia asterisk -rx "pjsip show registrations"   # issabel-1140 ... Registered
+docker exec vicki_telefonia asterisk -rx "pjsip show contacts"        # 1140 aparece cuando el navegador está conectado
 ```
 
-> OJO: una extensión así ya **no** sirve para un teléfono IP común.
-
-### 1.4 Firewall
-
-Desde la red de las PCs tiene que llegarse a la central por **8088/tcp** (WebSocket) y
-**10000-20000/udp** (audio). Si el módulo Firewall de Issabel está activo, abrir esos puertos
-para la LAN.
-
----
-
-## 2. Navegadores (GPO) — permiso de micrófono en http
-
-Chrome y Edge **no dan micrófono** a sitios `http://` que no sean localhost. Vicki se sirve en
-`http://10.10.0.159:3001`, así que hay que declararlo como origen seguro por política. Sin esto el
-softphone muestra *"Micrófono bloqueado por el navegador"* y no se registra.
-
-Políticas (Chrome y Edge usan el mismo nombre):
-
-| Política | Valor |
-|---|---|
-| `OverrideSecurityRestrictionsOnInsecureOrigin` | `http://10.10.0.159:3001` |
-| `AudioCaptureAllowedUrls` (evita el cartel de permiso) | `http://10.10.0.159:3001` |
-
-Rutas de registro (lista: valor `1`, `2`, … tipo REG_SZ):
-
-```
-HKLM\SOFTWARE\Policies\Google\Chrome\OverrideSecurityRestrictionsOnInsecureOrigin
-HKLM\SOFTWARE\Policies\Google\Chrome\AudioCaptureAllowedUrls
-HKLM\SOFTWARE\Policies\Microsoft\Edge\OverrideSecurityRestrictionsOnInsecureOrigin
-HKLM\SOFTWARE\Policies\Microsoft\Edge\AudioCaptureAllowedUrls
-```
-
-**Prueba en una PC:** doble click en `scripts/telefonia_origen_seguro.reg` (como administrador),
-cerrar el navegador por completo y verificar en `chrome://policy` / `edge://policy`.
-
-**Para todas las PCs por GPO** (Administración de directivas de grupo, en el DC):
-
-1. Crear una GPO (p.ej. *Navegador - Vicki telefonía*) y vincularla a la OU de las PCs.
-2. Editar › Configuración del equipo › Preferencias › Configuración de Windows › **Registro** ›
-   Nuevo › Elemento del Registro. Uno por cada línea de la tabla de arriba:
-   Acción *Actualizar*, Subárbol `HKEY_LOCAL_MACHINE`, la ruta, Nombre `1`, Tipo `REG_SZ`,
-   Valor `http://10.10.0.159:3001`.
-3. En una PC: `gpupdate /force`, reabrir el navegador y revisar `chrome://policy`.
-
-(Alternativa: importar las plantillas ADMX de Chrome/Edge y usar *Configuración del equipo ›
-Plantillas administrativas*; el resultado es el mismo.)
-
-Si Vicki pasa a HTTPS con dominio, esto deja de hacer falta, pero la URL del WebSocket tiene que
-pasar a `wss://<host>:8089/ws` con certificado válido (el navegador bloquea `ws://` desde una
-página https).
-
----
+Sumar / quitar una extensión: editar `usuarios.txt` y
+`docker exec vicki_telefonia /entrypoint.sh recargar` (sin reiniciar).
 
 ## 3. Vicki
 
-1. **SQL** en Postgres:
-   ```bash
-   psql "$DATABASE_URL" -f sql/telefonia_usuario_extension.sql
-   ```
-2. **.env del server** (no está en git):
-   ```bash
-   ISSABEL_WS_URL=ws://<ip-issabel>:8088/ws
-   ISSABEL_SIP_DOMAIN=<ip-issabel>
-   # llave fija para cifrar las claves SIP (si falta usa AUTH_SECRET; cambiarla obliga a recargarlas)
-   TELEFONIA_SECRET=<node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
-   ```
-   `docker-compose.prod.yml` ya pasa todo el `.env` al contenedor (`env_file`).
-3. **Deploy** normal (push a main). Se agregó la dependencia `jssip` (package.json + lock).
-4. En **Administración › Telefonía**: a cada persona, número de extensión + su *secret*.
-5. Habilitar la vista **Sorteo › Teléfono** al sector de la persona en Administración › Permisos
-   (los ADMIN ya la ven; el permiso nuevo toma efecto al volver a iniciar sesión).
-6. La persona entra a /sorteo/telefono: punto verde = registrado.
+1. **Administración › Telefonía**: persona → extensión + mismo secret que en `usuarios.txt`.
+2. **Administración › Permisos**: habilitar *Sorteo › Teléfono* al sector (toma efecto al re-loguear).
+
+## 4. Navegadores — micrófono en http
+
+Chrome/Edge no dan micrófono a `http://` (salvo localhost). Declarar `http://10.10.0.159:3001` como
+origen seguro:
+
+- **Prueba en una PC:** `chrome://flags/#unsafely-treat-insecure-origin-as-secure` → agregar
+  `http://10.10.0.159:3001` → Enabled → Relaunch (Edge: `edge://flags/...`).
+- **Por PC:** `scripts/telefonia_origen_seguro.reg` (como admin, reiniciar navegador, ver `chrome://policy`).
+- **Todas por GPO:** Configuración del equipo › Preferencias › Configuración de Windows › Registro,
+  un elemento por cada valor (HKLM, REG_SZ, nombre `1`, valor `http://10.10.0.159:3001`):
+  ```
+  SOFTWARE\Policies\Google\Chrome\OverrideSecurityRestrictionsOnInsecureOrigin
+  SOFTWARE\Policies\Google\Chrome\AudioCaptureAllowedUrls
+  SOFTWARE\Policies\Microsoft\Edge\OverrideSecurityRestrictionsOnInsecureOrigin
+  SOFTWARE\Policies\Microsoft\Edge\AudioCaptureAllowedUrls
+  ```
 
 ## Diagnóstico
 
-| Síntoma en el teléfono | Causa probable |
+| Síntoma | Causa probable |
 |---|---|
-| "No tenés una extensión asignada" | Sin extensión en Administración › Telefonía, o `ISSABEL_WS_URL` vacío en el .env |
-| Punto rojo "Micrófono bloqueado…" | Falta la política del punto 2 en esa PC |
-| Punto amarillo "Conectando…" fijo | No llega a `ws://<ip>:8088/ws` (http.conf / firewall) |
-| "Clave de la extensión incorrecta" | *secret* distinto al de Issabel |
-| Registra pero no hay audio / corta a los 30 s | Faltan parámetros del 1.3 (avpf, dtls, rtcp_mux, icesupport) o UDP 10000-20000 cerrado |
-| "Activo en otra pestaña de Vicki" | Hay otra pestaña con Vicki; esa es la que suena |
-| En Asterisk: `asterisk -rx "sip show peers"` | La extensión tiene que figurar con IP de la PC y `OK` |
+| "No tenés una extensión asignada" | Sin extensión en Administración › Telefonía, o `ISSABEL_WS_URL` vacío |
+| "Micrófono bloqueado…" / permisos grises | Falta el flag o la política del punto 4 |
+| "Conectando…" fijo | Contenedor `vicki_telefonia` caído o 8088 ocupado/filtrado |
+| "Clave de la extensión incorrecta" | Secret de Vicki ≠ `usuarios.txt` |
+| Registra pero no llama / "No disponible" | `pjsip show registrations` no está Registered: secret de `usuarios.txt` ≠ Issabel |
+| "Bad Media Description" | Se está apuntando directo a Issabel (`ISSABEL_WS_URL` con .248) en vez del puente |
+| Conecta pero sin audio | UDP 20000-20999 filtrado en el server |

@@ -48,6 +48,24 @@ services:
     restart: unless-stopped
     networks:
       - ai-net
+  # Puente WebRTC <-> Issabel para /sorteo/telefono (ver TELEFONIA.md).
+  # network_mode host: el audio (RTP/ICE) tiene que salir con la IP real del
+  # server; detrás del NAT de Docker los navegadores no reciben audio.
+  # Puertos en el host: 8088/tcp (WebSocket), 5070/udp (SIP a Issabel),
+  # 20000-20999/udp (audio).
+  telefonia-gw:
+    build: ./telefonia-gw
+    container_name: vicki_telefonia
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      ISSABEL_HOST: ${ISSABEL_HOST:-10.10.0.248}
+      ISSABEL_PORT: ${ISSABEL_PORT:-5060}
+      TZ: ${TZ:-America/Argentina/Buenos_Aires}
+    volumes:
+      # usuarios.txt: "<extension> <secret>" por línea (no está en git)
+      - ./telefonia-gw/datos:/etc/vicki-gw:ro
+
 networks:
   ai-net:
     external: true

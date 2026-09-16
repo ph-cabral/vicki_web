@@ -81,3 +81,6 @@ sql/
 # python (indicadores-api)
 __pycache__/
 *.pyc
+
+# puente de telefonía: claves SIP de las extensiones (sólo en el server)
+telefonia-gw/datos/

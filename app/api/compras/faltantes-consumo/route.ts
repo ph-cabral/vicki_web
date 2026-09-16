@@ -711,8 +711,21 @@ export async function GET(req: NextRequest) {
   // último fallback: fechaArribo cargada a mano, ver page.tsx).
   const mejorLoteParaFecha = (lotes: OcLote[] | undefined, fechaBucket: string): OcLote | null => {
     if (!lotes?.length) return null;
+    // 2026-09-16: se prefiere la entrega más temprana NO vencida (base + 2
+    // días >= hoy); si todas están vencidas, la más temprana igual. Mismo
+    // criterio que arriboParaFaltante en app/api/ventas/faltantes/route.ts.
+    const hoyISO = new Date().toLocaleDateString("sv-SE", {
+      timeZone: "America/Argentina/Buenos_Aires",
+    });
+    const mas2 = (iso: string) => {
+      const d = new Date(`${iso}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + 2);
+      return d.toISOString().slice(0, 10);
+    };
     let mejor: OcLote | null = null;
     let mejorBase: string | null = null;
+    let futuro: OcLote | null = null;
+    let futuroBase: string | null = null;
     for (const l of lotes) {
       if (!l.FechaOC || l.FechaOC < fechaBucket) continue;
       const base = l.FechaEntrega && !l.Importacion ? l.FechaEntrega : l.FechaOC;
@@ -721,8 +734,12 @@ export async function GET(req: NextRequest) {
         mejorBase = base;
         mejor = l;
       }
+      if (mas2(base) >= hoyISO && (futuroBase === null || base < futuroBase)) {
+        futuroBase = base;
+        futuro = l;
+      }
     }
-    return mejor;
+    return futuro ?? mejor;
   };
 
   const artImporte = new Map<string, number>();
