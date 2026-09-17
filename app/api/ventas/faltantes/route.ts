@@ -257,13 +257,49 @@ export async function GET(req: Request) {
     const existLatest = new Map<string, boolean | null>();
     for (const r of existRows)
       existLatest.set(`${r.nroPedOrigen}-${(r.codArticulo ?? "").trim()}`, r.existencia);
+
+    // Descarta marcas ya resueltas: si el pedido de venta (VenFer_PedidoReng)
+    // termino cumpliendo el articulo -total o de mas- por otra via (otro
+    // remito/OT sobre el mismo renglon), la marca de faltante_existencia queda
+    // vieja pero nunca se invalida sola (ver
+    // faltantes-sobrecumplimiento-vigente). Caso real 2026-09-17: pedido
+    // 754472 / ASA4002, pedido 40, cumplido 50 — seguia figurando acá.
+    // Best-effort: si el endpoint falla, se sigue mostrando como antes.
+    const resuelto = new Set<string>();
+    const pedidosMarcados = [
+      ...new Set(existRows.map((r) => r.nroPedOrigen)),
+    ];
+    if (pedidosMarcados.length) {
+      try {
+        const rCumplido = await fetch(
+          `${API_URL}/deposito/pedidos-cumplido-real?pedidos=${pedidosMarcados.join(",")}`,
+          { cache: "no-store", signal: AbortSignal.timeout(20000) },
+        );
+        if (rCumplido.ok) {
+          const j = await rCumplido.json();
+          for (const row of (j?.rows ?? []) as {
+            NroMovVenta: number;
+            CodArticulo: string;
+            CantidadPedida: number;
+            CantidadCumplida: number;
+          }[]) {
+            if (row.CantidadPedida > 0 && row.CantidadCumplida >= row.CantidadPedida) {
+              resuelto.add(`${row.NroMovVenta}-${row.CodArticulo}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("GET /api/ventas/faltantes — cumplido-real", e);
+      }
+    }
+
     const sin = new Set<string>();
-    for (const [k, ex] of existLatest) if (ex === false) sin.add(k);
+    for (const [k, ex] of existLatest) if (ex === false && !resuelto.has(k)) sin.add(k);
     // existencia=true: fue error de preparado (SÍ había en depósito). No pasa
     // por compras — se muestra como "arribado" automático (fechaArribo
     // sintético "EN_STOCK") directo en Tabla 1 / Ingresados.
     const con = new Set<string>();
-    for (const [k, ex] of existLatest) if (ex === true) con.add(k);
+    for (const [k, ex] of existLatest) if (ex === true && !resuelto.has(k)) con.add(k);
 
     type Ctrl = {
       fechaArribo: string | null;

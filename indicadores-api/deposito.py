@@ -1010,6 +1010,7 @@ LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nive
 LEFT JOIN EVERWEAR.dbo.[Stk_TiposArticulos]    t  ON t.CodigoTipo     = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[Com_Proveedores]       pr ON pr.CodProveed    = s.CodProveedHabitual
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoRengPreparacion] prep ON prep.NroMovVenta = p.NroPedOrigen AND prep.NroRenglon = p.NroRengOrigen
+LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoReng]     vpr ON vpr.NroMovVenta = p.NroPedOrigen AND vpr.NroRenglon = p.NroRengOrigen
 LEFT JOIN EVERWEAR.dbo.[Gen_Usuarios]          gp ON gp.Numero       = prep.CodPreparador
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoCabecera] cab ON cab.NroMovVenta = p.NroPedOrigen
 LEFT JOIN MAGNUS_SITD.dbo.[Ped_Usu_Arma]       uv ON cab.Vendedor    = uv.Usu_Arma_Codigo
@@ -1021,6 +1022,13 @@ WHERE p.FecRegistracion = (
     FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
     WHERE FecRegistracion < DATEDIFF(day, '1800-12-28', CAST(GETDATE() AS date))
 )
+  -- Filtro agregado 2026-09-17: si el renglon REAL de venta (VenFer_PedidoReng)
+  -- ya quedo cumplido o sobre-cumplido (CantidadCumplida >= CantidadPedida),
+  -- Ven_PedRenPendientes puede seguir arrastrando la fila vieja (caso real:
+  -- pedido 754472 / ASA4002, pedido 40, cumplido 50, seguia figurando como
+  -- faltante en ventas/compras). Sin match en VenFer_PedidoReng se conserva
+  -- el comportamiento anterior (no se descarta a ciegas).
+  AND (vpr.CantidadCumplida IS NULL OR vpr.CantidadCumplida < vpr.CantidadPedida)
 ORDER BY u.ubicacion, p.NroPedOrigen, p.NroRengOrigen
 """
 
@@ -1096,6 +1104,7 @@ LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nive
 LEFT JOIN EVERWEAR.dbo.[Stk_TiposArticulos]    t  ON t.CodigoTipo     = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[Com_Proveedores]       pr ON pr.CodProveed    = s.CodProveedHabitual
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoRengPreparacion] prep ON prep.NroMovVenta = b.NroPedOrigen AND prep.NroRenglon = b.NroRengOrigen
+LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoReng]     vpr ON vpr.NroMovVenta = b.NroPedOrigen AND vpr.NroRenglon = b.NroRengOrigen
 LEFT JOIN EVERWEAR.dbo.[Gen_Usuarios]          gp ON gp.Numero       = prep.CodPreparador
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoCabecera] cab ON cab.NroMovVenta = b.NroPedOrigen
 LEFT JOIN MAGNUS_SITD.dbo.[Ped_Usu_Arma]       uv ON cab.Vendedor    = uv.Usu_Arma_Codigo
@@ -1110,6 +1119,13 @@ WHERE b.rn = 1
       FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
       WHERE FecRegistracion BETWEEN ? AND ?
   )
+  -- Filtro agregado 2026-09-17: si el renglon REAL de venta (VenFer_PedidoReng)
+  -- ya quedo cumplido o sobre-cumplido (CantidadCumplida >= CantidadPedida),
+  -- Ven_PedRenPendientes puede seguir arrastrando la fila vieja (caso real:
+  -- pedido 754472 / ASA4002, pedido 40, cumplido 50, seguia figurando como
+  -- faltante en ventas/compras). Sin match en VenFer_PedidoReng se conserva
+  -- el comportamiento anterior (no se descarta a ciegas).
+  AND (vpr.CantidadCumplida IS NULL OR vpr.CantidadCumplida < vpr.CantidadPedida)
 ORDER BY PrimerDia, u.ubicacion, b.NroPedOrigen, b.NroRengOrigen
 """
 
@@ -1189,6 +1205,7 @@ LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nive
 LEFT JOIN EVERWEAR.dbo.[Stk_TiposArticulos]    t  ON t.CodigoTipo     = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[Com_Proveedores]       pr ON pr.CodProveed    = s.CodProveedHabitual
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoRengPreparacion] prep ON prep.NroMovVenta = b.NroPedOrigen AND prep.NroRenglon = b.NroRengOrigen
+LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoReng]     vpr ON vpr.NroMovVenta = b.NroPedOrigen AND vpr.NroRenglon = b.NroRengOrigen
 LEFT JOIN EVERWEAR.dbo.[Gen_Usuarios]          gp ON gp.Numero       = prep.CodPreparador
 LEFT JOIN EVERWEAR.dbo.[VenFer_PedidoCabecera] cab ON cab.NroMovVenta = b.NroPedOrigen
 LEFT JOIN MAGNUS_SITD.dbo.[Ped_Usu_Arma]       uv ON cab.Vendedor    = uv.Usu_Arma_Codigo
@@ -1196,6 +1213,13 @@ LEFT JOIN MAGNUS_SITD.dbo.[Vendedores]         vend ON vend.VendedorCodigo = cab
 LEFT JOIN MAGNUS_SITD.dbo.[Pedido_Estados]     pest ON pest.Ped_Estado    = cab.EstadoPedido
 LEFT JOIN MAGNUS_SITD.dbo.[Clientes]           cli ON cli.CodCliente = b.CodCliente
 WHERE b.rn = 1
+  -- Filtro agregado 2026-09-17: si el renglon REAL de venta (VenFer_PedidoReng)
+  -- ya quedo cumplido o sobre-cumplido (CantidadCumplida >= CantidadPedida),
+  -- Ven_PedRenPendientes puede seguir arrastrando la fila vieja (caso real:
+  -- pedido 754472 / ASA4002, pedido 40, cumplido 50, seguia figurando como
+  -- faltante en ventas/compras). Sin match en VenFer_PedidoReng se conserva
+  -- el comportamiento anterior (no se descarta a ciegas).
+  AND (vpr.CantidadCumplida IS NULL OR vpr.CantidadCumplida < vpr.CantidadPedida)
 ORDER BY PrimerDia, u.ubicacion, b.NroPedOrigen, b.NroRengOrigen
 """
 
@@ -1460,6 +1484,47 @@ def _info_pedidos(pedidos):
         return out
     finally:
         conn.close()
+
+
+def fetch_pedidos_cumplido_real(pedidos):
+    """Mapa (NroMovVenta, CodArticulo trim) -> (CantidadPedida, CantidadCumplida)
+    agregado REAL de VenFer_PedidoReng (renglon de venta), para poder descartar
+    faltantes/diferencias que el pedido termino cubriendo -total o de mas- por
+    otra via (otro remito/OT sobre el mismo renglon) aunque la fuente original
+    del faltante (Ven_PedRenPendientes o el pick de una OT puntual) no se haya
+    enterado. Usado por /ventas/faltantes y /compras/faltantes-consumo para no
+    seguir mostrando como vigente algo que Magnus ya muestra cumplido.
+    Caso real 2026-09-17: pedido 754472 / ASA4002, pedido 40, cumplido 50 via
+    otro comprobante -- seguia figurando como faltante en ventas y compras.
+    Chunked como _info_pedidos (misma conexion EVERWEAR, IN-list por
+    NroMovVenta -- barato: a lo sumo un puñado de renglones por pedido)."""
+    out = {}
+    pedidos = sorted({int(p) for p in pedidos if p is not None})
+    if not pedidos:
+        return out
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        CH = 1000
+        for i in range(0, len(pedidos), CH):
+            chunk = pedidos[i:i + CH]
+            ph = ",".join("?" for _ in chunk)
+            cur.execute(f"""
+                SELECT NroMovVenta, LTRIM(RTRIM(CodArticu)) AS CodArticulo,
+                       SUM(CantidadPedida)   AS Pedida,
+                       SUM(CantidadCumplida) AS Cumplida
+                FROM EVERWEAR.dbo.VenFer_PedidoReng
+                WHERE NroMovVenta IN ({ph})
+                GROUP BY NroMovVenta, LTRIM(RTRIM(CodArticu))
+            """, chunk)
+            for nro, cod, pedida, cumplida in cur.fetchall():
+                out[(int(nro), cod)] = (float(pedida or 0), float(cumplida or 0))
+        return out
+    finally:
+        conn.close()
+
+
 
 
 def fetch_faltantes_ot(desde=None, hasta=None):

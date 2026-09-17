@@ -8,7 +8,7 @@ from utils import construir_timestamps, calcular_tiempos, COLUMNAS_TIEMPO
 from deposito import (
     fetch_wms, fetch_tiempo, fetch_ingresados, fetch_pedidos_hora, fetch_faltantes,
     fetch_faltantes_fechas, fetch_vivo, fetch_faltantes_ot, fetch_faltantes_ot_diag,
-    fetch_ot_diferencias,
+    fetch_ot_diferencias, fetch_pedidos_cumplido_real,
     fetch_wms_estados, fetch_wms_estados_diag,
     fetch_articulo_ubicaciones, fetch_articulos_multi_ubicacion,
     fetch_stock_deposito1, fetch_stock_por_articulos, fetch_stock_export,
@@ -330,6 +330,30 @@ def deposito_faltantes(
       cubiertos a mitad del rango; cada fila trae 'Vivo' (1 vivo / 0 histórico)."""
     try:
         return fetch_faltantes(desde, hasta, historico)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/pedidos-cumplido-real")
+def deposito_pedidos_cumplido_real(pedidos: str = Query(..., description="NroMovVenta separados por coma")):
+    """Cantidad PEDIDA/CUMPLIDA real (VenFer_PedidoReng, agregado por articulo) de
+    la lista de pedidos dada. Usado por /ventas/faltantes y
+    /compras/faltantes-consumo para descartar faltantes/marcas de existencia que
+    el pedido ya termino cubriendo -total o de mas- aunque la fuente original del
+    faltante (Ven_PedRenPendientes / OT de picking) no se haya enterado.
+    Devuelve {"rows": [{"NroMovVenta", "CodArticulo", "CantidadPedida", "CantidadCumplida"}]}."""
+    try:
+        ids = [p.strip() for p in pedidos.split(",") if p.strip()]
+        mapa = fetch_pedidos_cumplido_real(ids)
+        rows = [
+            {
+                "NroMovVenta": nro,
+                "CodArticulo": cod,
+                "CantidadPedida": pedida,
+                "CantidadCumplida": cumplida,
+            }
+            for (nro, cod), (pedida, cumplida) in mapa.items()
+        ]
+        return {"rows": rows}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

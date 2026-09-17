@@ -336,6 +336,38 @@ export async function GET(req: NextRequest) {
     for (const m of marks)
       latest.set(keyArt(m.nroPedOrigen, m.codArticulo ?? ""), m.existencia);
     for (const [k, ex] of latest) if (ex === false) sinExistencia.add(k);
+
+    // Descarta marcas "sin existencia" ya resueltas: si el pedido de venta
+    // (VenFer_PedidoReng) termino cumpliendo el articulo -total o de mas- por
+    // otra via (otro remito/OT sobre el mismo renglon), la marca queda vieja
+    // pero nunca se invalida sola (ver faltantes-sobrecumplimiento-vigente).
+    // Caso real 2026-09-17: pedido 754472 / ASA4002, pedido 40, cumplido 50,
+    // seguia figurando como faltante acá y en /ventas/faltantes. Best-effort:
+    // si el endpoint falla, se sigue mostrando como antes (no se corta nada).
+    const pedidosMarcados = [...new Set(marks.map((m) => m.nroPedOrigen))];
+    if (pedidosMarcados.length && sinExistencia.size) {
+      try {
+        const rCumplido = await fetch(
+          `${API_URL}/deposito/pedidos-cumplido-real?pedidos=${pedidosMarcados.join(",")}`,
+          { cache: "no-store", signal: AbortSignal.timeout(20000) },
+        );
+        if (rCumplido.ok) {
+          const j = await rCumplido.json();
+          for (const row of (j?.rows ?? []) as {
+            NroMovVenta: number;
+            CodArticulo: string;
+            CantidadPedida: number;
+            CantidadCumplida: number;
+          }[]) {
+            if (row.CantidadPedida > 0 && row.CantidadCumplida >= row.CantidadPedida) {
+              sinExistencia.delete(keyArt(row.NroMovVenta, row.CodArticulo));
+            }
+          }
+        }
+      } catch (e) {
+        console.error("GET /api/compras/faltantes-consumo — cumplido-real", e);
+      }
+    }
   }
 
   // 2c) fechaArribo por renglón (preparado.faltante_control), para poder
