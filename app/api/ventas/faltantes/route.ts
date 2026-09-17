@@ -155,7 +155,7 @@ export async function GET(req: Request) {
       // rolling del renglón (no necesariamente "hoy") — se toma la más nueva
       // por renglón, igual patrón que ctrlRows más abajo.
       prisma.faltante_existencia.findMany({
-        where: { fecha: { lte: new Date(hoy) } },
+        where: { fecha: { lte: new Date(hoy) }, oculto: false },
         select: { nroPedOrigen: true, codArticulo: true, existencia: true, fecha: true },
         orderBy: { fecha: "asc" },
       }),

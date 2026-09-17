@@ -328,7 +328,7 @@ export async function GET(req: NextRequest) {
   if (faltRows.length && desdeMarks && hastaMarks) {
     // new Date('YYYY-MM-DD') = medianoche UTC, igual que se guardan las marcas (@db.Date)
     const marks = await prisma.faltante_existencia.findMany({
-      where: { fecha: { gte: new Date(desdeMarks), lte: new Date(hastaMarks) } },
+      where: { fecha: { gte: new Date(desdeMarks), lte: new Date(hastaMarks) }, oculto: false },
       select: { nroPedOrigen: true, codArticulo: true, existencia: true, fecha: true },
       orderBy: { fecha: "asc" },
     });

@@ -565,6 +565,9 @@ model faltante_existencia {
   existencia     Boolean?
   malFacturado   Boolean? @map("mal_facturado")
   cantidad       Float?
+  // true = archivado: no aparece en /compras/faltantes ni /ventas/faltantes
+  // (depósito lo sigue viendo). Se usa para limpiar faltantes viejos sin borrarlos.
+  oculto         Boolean  @default(false)
   creado_en      DateTime @default(now())
   actualizado_en DateTime @updatedAt
 

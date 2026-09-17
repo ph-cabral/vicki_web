@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, PackageCheck,
   Check, X, Trash2, Copy, Users, Clock,
@@ -188,6 +188,15 @@ export default function VentasFaltantesPage() {
   const [vendedorSel, setVendedorSel] = useState("");
   const [leaving, setLeaving] = useState<Record<string, "left" | "right">>({}); // filas saliendo (animación)
 
+  // Renglones con un guardado en vuelo. Un load() que ya estaba en camino
+  // (auto-refresh de 1 min, refrescar, cambio de vendedor) puede volver con la
+  // foto ANTERIOR al POST y resucitar la fila recién descartada; mientras la
+  // clave esté acá, load() la filtra. Se suelta al confirmar el guardado (o
+  // al fallar, antes de recargar, para que la fila vuelva de verdad).
+  const enVuelo = useRef<Set<string>>(new Set());
+  const retener = (keys: string[]) => keys.forEach((k) => enVuelo.current.add(k));
+  const soltar = (keys: string[]) => keys.forEach((k) => enVuelo.current.delete(k));
+
   // Anima las filas (una o varias, ej. extraordinario = todos los renglones
   // de ESE cliente en ese artículo) hacia el costado y recién al terminar
   // ejecuta el cambio real — la fila ya está afuera cuando desaparece del
@@ -231,8 +240,10 @@ export default function VentasFaltantesPage() {
       const res = await fetch(`/api/ventas/faltantes${qs}`, { cache: "no-store" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      setItems(j.rows ?? []);
-      setListos(j.listos ?? []);
+      const vivo = (r: { NroPedOrigen: number; NroRengOrigen: number }) =>
+        !enVuelo.current.has(keyOf(r));
+      setItems(((j.rows ?? []) as Item[]).filter(vivo));
+      setListos(((j.listos ?? []) as ItemListo[]).filter(vivo));
       setFecha(j.fecha ?? null);
       setEsAdmin(j.isAdmin !== false);
       setSinVendedor(!!j.sinVendedor);
@@ -275,9 +286,10 @@ export default function VentasFaltantesPage() {
     (it: Item, quiere: boolean) => {
       const keys = items.filter((r) => mismoExtra(r, it) || keyOf(r) === keyOf(it)).map(keyOf);
       withExit(keys, quiere ? "right" : "left", () => {
+        retener(keys);
         setItems((rs) => rs.filter((r) => !mismoExtra(r, it) && keyOf(r) !== keyOf(it)));
         const calls = [
-          fetch("/api/deposito/faltantes/control", {
+          fetch("/api/ventas/faltantes/control", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -292,7 +304,7 @@ export default function VentasFaltantesPage() {
         ];
         if (it.extraordinario && it.extraordinarioFecha && it.Cliente != null && it.Cliente !== "") {
           calls.push(
-            fetch("/api/compras/faltantes-extraordinario", {
+            fetch("/api/ventas/faltantes/extraordinario", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -308,8 +320,10 @@ export default function VentasFaltantesPage() {
         Promise.all(calls)
           .then((rs) => {
             if (rs.some((r) => !r.ok)) throw new Error();
+            soltar(keys);
           })
           .catch(() => {
+            soltar(keys);
             setError("No se pudo guardar la decisión");
             load();
           });
@@ -327,8 +341,9 @@ export default function VentasFaltantesPage() {
   const decidirVendidoTabla1 = useCallback(
     (it: Item, vendido: boolean) => {
       withExit([keyOf(it)], vendido ? "right" : "left", () => {
+        retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
-        fetch("/api/deposito/faltantes/control", {
+        fetch("/api/ventas/faltantes/control", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -343,8 +358,10 @@ export default function VentasFaltantesPage() {
         })
           .then((r) => {
             if (!r.ok) throw new Error();
+            soltar([keyOf(it)]);
           })
           .catch(() => {
+            soltar([keyOf(it)]);
             setError("No se pudo guardar la venta");
             load();
           });
@@ -356,8 +373,9 @@ export default function VentasFaltantesPage() {
   const decidirVendido = useCallback(
     (it: ItemListo, vendido: boolean) => {
       withExit([keyOf(it)], vendido ? "right" : "left", () => {
+        retener([keyOf(it)]);
         setListos((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
-        fetch("/api/deposito/faltantes/control", {
+        fetch("/api/ventas/faltantes/control", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -372,8 +390,10 @@ export default function VentasFaltantesPage() {
         })
           .then((r) => {
             if (!r.ok) throw new Error();
+            soltar([keyOf(it)]);
           })
           .catch(() => {
+            soltar([keyOf(it)]);
             setError("No se pudo guardar la venta");
             load();
           });
@@ -388,8 +408,9 @@ export default function VentasFaltantesPage() {
   const marcarIrrelevante = useCallback(
     (it: Item) => {
       withExit([keyOf(it)], "left", () => {
+        retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
-        fetch("/api/deposito/faltantes/control", {
+        fetch("/api/ventas/faltantes/control", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -404,8 +425,10 @@ export default function VentasFaltantesPage() {
         })
           .then((r) => {
             if (!r.ok) throw new Error();
+            soltar([keyOf(it)]);
           })
           .catch(() => {
+            soltar([keyOf(it)]);
             setError("No se pudo marcar como irrelevante");
             load();
           });
@@ -420,8 +443,9 @@ export default function VentasFaltantesPage() {
   const marcarDuplicado = useCallback(
     (it: Item) => {
       withExit([keyOf(it)], "left", () => {
+        retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
-        fetch("/api/deposito/faltantes/control", {
+        fetch("/api/ventas/faltantes/control", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -436,8 +460,10 @@ export default function VentasFaltantesPage() {
         })
           .then((r) => {
             if (!r.ok) throw new Error();
+            soltar([keyOf(it)]);
           })
           .catch(() => {
+            soltar([keyOf(it)]);
             setError("No se pudo marcar como duplicado");
             load();
           });
