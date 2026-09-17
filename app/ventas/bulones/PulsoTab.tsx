@@ -40,9 +40,14 @@ import {
 //
 // OBJETIVO — sólo en el eje VENDEDOR y en $ (el objetivo comercial se fija en
 // pesos, no en unidades). Se guarda un valor POR MES (ver
-// lib/ventas/objetivos.ts): el objetivo del período es la suma de los meses del
-// rango, así cargar "6 meses" y después corregir uno solo es la misma
-// operación. La columna aparece únicamente si hay algo cargado.
+// lib/ventas/objetivos.ts), pero en el RANKING se muestra y se compara
+// SIEMPRE contra el MES DE CALENDARIO EN CURSO (mesActual()), sin importar
+// qué período esté eligiendo el selector de arriba: así se puede repasar un
+// mes cerrado y seguir viendo si el objetivo de HOY se viene cumpliendo. La
+// columna "OBJETIVO/MES" y el cumplimiento (que reemplaza a la barra de
+// PARTICIPACIÓN) aparecen únicamente si algún vendedor tiene algo cargado
+// para el mes en curso. El modal de carga sigue siendo por el rango que el
+// usuario elija ahí — sirve para cargar meses futuros o pasados.
 // ──────────────────────────────────────────────────────────────────────────────
 
 /** Línea de venta de esta pestaña. Cuando se sumen otras, esto pasa a ser un selector. */
@@ -57,6 +62,10 @@ interface TopItem {
   etiqueta: string;
   unidades: number;
   monto: number;
+  /** Mes de CALENDARIO en curso (no el período elegido arriba) — sólo se usan
+   * para el objetivo y el cumplimiento, que siempre se miden contra HOY. */
+  unidadesMes: number;
+  montoMes: number;
 }
 
 const MESES_ES = [
@@ -107,7 +116,6 @@ export default function PulsoTab() {
   // la métrica se fuerza y el toggle queda deshabilitado.
   const modo: Modo = vista === "clientes" ? "pesos" : metrica;
 
-  const meses = useMemo(() => mesesEntre(desde, hasta), [desde, hasta]);
   const obj = useObjetivosVentas(LINEA);
 
   const cargar = useCallback(async () => {
@@ -136,6 +144,8 @@ export default function PulsoTab() {
               String(i.patron ?? i.numero ?? i.codigo ?? "(sin nombre)"),
             unidades: Number(i.unidades ?? 0),
             monto: Number(i.monto ?? 0),
+            unidadesMes: Number(i.unidadesMes ?? 0),
+            montoMes: Number(i.montoMes ?? 0),
           };
         }),
       );
@@ -160,13 +170,18 @@ export default function PulsoTab() {
   const maxValor = positivos.length ? Math.max(...positivos) : 0;
   const total = positivos.reduce((acc, v) => acc + v, 0);
 
-  // La columna de objetivo sólo tiene sentido por vendedor y en $. Y sólo se
-  // muestra si hay algo cargado para el período: si no, es una columna de
-  // guiones.
+  // El objetivo y el cumplimiento se miden SIEMPRE contra el mes de
+  // calendario en curso, no contra el período elegido en el selector de
+  // arriba. La columna sólo tiene sentido por vendedor y en $, y sólo se
+  // muestra si hay algo cargado para el mes en curso: si no, es una columna
+  // de guiones.
+  const mesActualYm = mesActual();
   const conObjetivo =
     vista === "vendedores" &&
     modo === "pesos" &&
-    items.some((i) => i.codigo != null && objetivoDelRango(obj.objetivos, i.codigo, meses) != null);
+    items.some(
+      (i) => i.codigo != null && objetivoDelRango(obj.objetivos, i.codigo, [mesActualYm]) != null,
+    );
 
   const periodoLabel = desde === hasta ? nombreMes(desde) : `${nombreMes(desde)} → ${nombreMes(hasta)}`;
 
@@ -352,19 +367,19 @@ export default function PulsoTab() {
                     <th className="px-3 py-2 text-left font-medium">
                       {vista === "vendedores" ? "VENDEDOR" : vista === "patrones" ? "PATRÓN" : "CLIENTE"}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
-                      {modo === "pesos" ? "VENDIDO" : "UNIDADES"}
-                    </th>
                     {conObjetivo && (
-                      <>
-                        <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
-                          OBJETIVO
-                        </th>
-                        <th className="px-3 py-2 text-right font-medium whitespace-nowrap">CUMPL.</th>
-                      </>
+                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
+                        OBJETIVO/MES
+                      </th>
                     )}
+                    <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
+                      <span className="block">{modo === "pesos" ? "VENDIDO" : "UNIDADES"}</span>
+                      <span className="block text-[10px] font-normal normal-case text-zinc-500">
+                        Total: {modo === "pesos" ? fmtMoney(total) : fmtNum(total)}
+                      </span>
+                    </th>
                     <th className={`px-3 py-2 text-left font-medium ${conObjetivo ? "w-[26%]" : "w-[38%]"}`}>
-                      PARTICIPACIÓN
+                      {conObjetivo ? "CUMPL. MES" : "PARTICIPACIÓN"}
                     </th>
                   </tr>
                 </thead>
@@ -380,18 +395,22 @@ export default function PulsoTab() {
                     // porcentaje a todos los demás.
                     const anchoBarra = v > 0 && maxValor > 0 ? Math.max((v / maxValor) * 100, 1.5) : 0;
                     const share = v > 0 && total > 0 ? (v / total) * 100 : 0;
-                    const objetivo = conObjetivo
-                      ? objetivoDelRango(obj.objetivos, i.codigo ?? "", meses)
+                    // Objetivo y cumplimiento del MES EN CURSO — no del
+                    // período que se esté mirando en el ranking de arriba.
+                    const objetivoMes = conObjetivo
+                      ? objetivoDelRango(obj.objetivos, i.codigo ?? "", [mesActualYm])
                       : null;
-                    const cumpl = objetivo && objetivo > 0 ? (v / objetivo) * 100 : null;
+                    const cumplMes =
+                      objetivoMes && objetivoMes > 0 ? (i.montoMes / objetivoMes) * 100 : null;
                     const colorCumpl =
-                      cumpl == null
+                      cumplMes == null
                         ? "text-zinc-600"
-                        : cumpl >= 100
+                        : cumplMes >= 100
                           ? "text-emerald-400"
-                          : cumpl >= 80
+                          : cumplMes >= 80
                             ? "text-yellow-400"
                             : "text-red-400";
+                    const anchoCumplBarra = cumplMes != null ? Math.min(Math.max(cumplMes, 1.5), 100) : 0;
                     return (
                       <tr key={`${i.clave}-${idx}`} className="border-t border-zinc-900 hover:bg-zinc-900/50">
                         <td className={`px-2 py-2 font-bold ${idx === 0 ? "text-yellow-400" : "text-zinc-600"}`}>
@@ -400,6 +419,14 @@ export default function PulsoTab() {
                         <td className="px-3 py-2 font-semibold text-zinc-100 truncate max-w-0" title={i.etiqueta}>
                           {i.etiqueta}
                         </td>
+                        {conObjetivo && (
+                          <td
+                            className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-400"
+                            title="Objetivo cargado para el mes de calendario en curso"
+                          >
+                            {objetivoMes == null ? "—" : fmtMoney(objetivoMes)}
+                          </td>
+                        )}
                         <td
                           className={
                             "px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 " +
@@ -413,35 +440,47 @@ export default function PulsoTab() {
                         >
                           {modo === "pesos" ? fmtMoney(v) : fmtNum(v)}
                         </td>
-                        {conObjetivo && (
-                          <>
-                            <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-400">
-                              {objetivo == null ? "—" : fmtMoney(objetivo)}
-                            </td>
-                            <td
-                              className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${colorCumpl}`}
+                        <td className="px-3 py-2">
+                          {conObjetivo ? (
+                            <span
+                              className="flex items-center gap-3"
                               title={
-                                objetivo == null
-                                  ? "Este vendedor no tiene objetivo cargado en el período"
-                                  : `Objetivo del período (${meses.length} ${meses.length === 1 ? "mes" : "meses"})`
+                                objetivoMes == null
+                                  ? "Este vendedor no tiene objetivo cargado para el mes en curso"
+                                  : `Vendido en el mes en curso: ${fmtMoney(i.montoMes)}`
                               }
                             >
-                              {cumpl == null ? "—" : `${cumpl.toFixed(0)}%`}
-                            </td>
-                          </>
-                        )}
-                        <td className="px-3 py-2">
-                          <span className="flex items-center gap-3">
-                            <span className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
-                              <span
-                                className="block h-full rounded-full bg-yellow-400"
-                                style={{ width: `${anchoBarra}%` }}
-                              />
+                              <span className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+                                <span
+                                  className={`block h-full rounded-full ${
+                                    cumplMes == null
+                                      ? "bg-zinc-700"
+                                      : cumplMes >= 100
+                                        ? "bg-emerald-400"
+                                        : cumplMes >= 80
+                                          ? "bg-yellow-400"
+                                          : "bg-red-400"
+                                  }`}
+                                  style={{ width: `${anchoCumplBarra}%` }}
+                                />
+                              </span>
+                              <span className={`w-14 text-right text-xs font-semibold ${colorCumpl}`}>
+                                {cumplMes == null ? "—" : `${cumplMes.toFixed(0)}%`}
+                              </span>
                             </span>
-                            <span className="w-14 text-right text-xs font-semibold text-zinc-400">
-                              {share.toFixed(1)}%
+                          ) : (
+                            <span className="flex items-center gap-3">
+                              <span className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
+                                <span
+                                  className="block h-full rounded-full bg-yellow-400"
+                                  style={{ width: `${anchoBarra}%` }}
+                                />
+                              </span>
+                              <span className="w-14 text-right text-xs font-semibold text-zinc-400">
+                                {share.toFixed(1)}%
+                              </span>
                             </span>
-                          </span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -452,19 +491,19 @@ export default function PulsoTab() {
                     <tr className="border-t-2 border-zinc-700 bg-zinc-900/60 text-zinc-300">
                       <td className="px-2 py-2" />
                       <td className="px-3 py-2 font-semibold uppercase text-xs tracking-wide">Total</td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 font-semibold text-zinc-100">
+                        {fmtMoney(totalObjetivoMes(obj.objetivos, items, mesActualYm))}
+                      </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-100 font-semibold">
                         {fmtMoney(total)}
                       </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900">
-                        {fmtMoney(totalObjetivo(obj.objetivos, items, meses))}
-                      </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap font-semibold text-zinc-100">
                         {(() => {
-                          const to = totalObjetivo(obj.objetivos, items, meses);
-                          return to > 0 ? `${((total / to) * 100).toFixed(0)}%` : "—";
+                          const tom = totalObjetivoMes(obj.objetivos, items, mesActualYm);
+                          const vm = totalMontoMes(items);
+                          return tom > 0 ? `${((vm / tom) * 100).toFixed(0)}%` : "—";
                         })()}
                       </td>
-                      <td className="px-3 py-2" />
                     </tr>
                   </tfoot>
                 )}
@@ -476,8 +515,9 @@ export default function PulsoTab() {
 
       {conObjetivo && (
         <p className="text-[11px] text-zinc-600">
-          El objetivo es la suma de los meses del período ({meses.length}{" "}
-          {meses.length === 1 ? "mes" : "meses"}). Los vendedores sin objetivo cargado quedan con “—”.
+          El objetivo y el cumplimiento son siempre del mes de calendario en curso (
+          {nombreMes(mesActualYm)}), no del período elegido arriba. Los vendedores sin objetivo
+          cargado para este mes quedan con “—”.
         </p>
       )}
 
@@ -498,12 +538,22 @@ export default function PulsoTab() {
   );
 }
 
-/** Suma de los objetivos del período de los vendedores que están en el ranking. */
-function totalObjetivo(objetivos: ObjetivosLinea, items: TopItem[], meses: string[]) {
+/** Suma de los objetivos del MES EN CURSO de los vendedores que están en el ranking. */
+function totalObjetivoMes(objetivos: ObjetivosLinea, items: TopItem[], mesActualYm: string) {
   let t = 0;
   for (const i of items) {
     if (i.codigo == null) continue;
-    t += objetivoDelRango(objetivos, i.codigo, meses) ?? 0;
+    t += objetivoDelRango(objetivos, i.codigo, [mesActualYm]) ?? 0;
+  }
+  return t;
+}
+
+/** Suma de lo vendido en el mes en curso por los vendedores del ranking. */
+function totalMontoMes(items: TopItem[]) {
+  let t = 0;
+  for (const i of items) {
+    if (i.codigo == null) continue;
+    t += i.montoMes;
   }
   return t;
 }
@@ -516,6 +566,20 @@ function totalObjetivo(objetivos: ObjetivosLinea, items: TopItem[], meses: strin
 // solo sin romper el resto.
 //
 // Todo entra EN MILES: 1.500 = $1.500.000. La API multiplica x1.000 al escribir.
+/** Primer vendedor de la lista sin objetivo cargado en los meses dados
+ * (excluyendo, opcionalmente, uno puntual — el que se acaba de guardar). */
+function primerVendedorSinObjetivo(
+  vendedores: { codigo: number; nombre: string }[],
+  objetivos: ObjetivosLinea,
+  meses: string[],
+  excluir?: number | null,
+): number | null {
+  const candidato = vendedores.find(
+    (v) => v.codigo !== excluir && objetivoDelRango(objetivos, v.codigo, meses) == null,
+  );
+  return candidato?.codigo ?? null;
+}
+
 function ObjetivoModal({
   vendedores,
   objetivos,
@@ -540,7 +604,13 @@ function ObjetivoModal({
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onCerrar: () => void;
 }) {
-  const [vendedor, setVendedor] = useState<number | null>(vendedores[0]?.codigo ?? null);
+  const [vendedor, setVendedor] = useState<number | null>(() =>
+    primerVendedorSinObjetivo(
+      vendedores,
+      objetivos,
+      mesesEntre(desdeInicial, hastaInicial >= desdeInicial ? hastaInicial : desdeInicial),
+    ) ?? vendedores[0]?.codigo ?? null,
+  );
   const [desde, setDesde] = useState(desdeInicial);
   const [hasta, setHasta] = useState(hastaInicial >= desdeInicial ? hastaInicial : desdeInicial);
   const [porMes, setPorMes] = useState("");
@@ -605,8 +675,16 @@ function ObjetivoModal({
       meses.map((m) => ({ mes: m, objetivoMiles: (valores[m] ?? "").replace(",", ".") })),
     );
     setGuardando(false);
-    if (r.ok) onCerrar();
-    else setError(r.error);
+    if (!r.ok) {
+      setError(r.error);
+      return;
+    }
+    // Al guardar, salta directo al próximo vendedor sin objetivo cargado (si
+    // queda alguno) para poder recorrer toda la lista sin reabrir el modal.
+    // Si ya todos tienen objetivo en este período, se cierra.
+    const siguiente = primerVendedorSinObjetivo(vendedores, objetivos, meses, vendedor);
+    if (siguiente != null) setVendedor(siguiente);
+    else onCerrar();
   };
 
   const borrar = async () => {
@@ -648,7 +726,7 @@ function ObjetivoModal({
               {vendedores.map((v) => (
                 <option key={v.codigo} value={v.codigo}>
                   {v.nombre}
-                  {objetivos[String(v.codigo)] ? " · con objetivo" : ""}
+                  {objetivoDelRango(objetivos, v.codigo, meses) != null ? " · con objetivo" : ""}
                 </option>
               ))}
             </select>

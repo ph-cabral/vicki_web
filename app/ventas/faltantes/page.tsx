@@ -2,7 +2,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, PackageCheck,
-  Check, X, Trash2, Copy, Users, Clock,
+  Check, X, Trash2, Copy, Users, Clock, Pin, PinOff,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -188,6 +188,41 @@ export default function VentasFaltantesPage() {
   const [vendedorSel, setVendedorSel] = useState("");
   const [leaving, setLeaving] = useState<Record<string, "left" | "right">>({}); // filas saliendo (animación)
 
+  // Fijar cliente ("clip"): mientras se van marcando eliminar/duplicado en un
+  // cliente, el grupo bajaría de lugar en el instante (la lista se reordena
+  // por importe, que va bajando a medida que se sacan renglones) obligando a
+  // buscarlo de nuevo con scroll para seguir marcando el resto. Al fijarlo se
+  // congela la CLAVE de orden (el importe que tenía en ese momento), así el
+  // grupo no se mueve aunque su importe real baje. Se guarda por g.key
+  // (Cliente+Pedido), sobrevive a los refresh (misma clave) y se suelta con
+  // el mismo botón: ahí sí vuelve a ordenarse por su importe actual, como
+  // el resto. Si el cliente termina sin renglones, desaparece de la lista
+  // (y con él el botón) sin que haga falta limpiar nada a mano; la entrada
+  // vieja se poda cuando ya no hay ningún renglón con esa clave (ver abajo).
+  const [pinnedImporte, setPinnedImporte] = useState<Record<string, number>>({});
+  const togglePin = useCallback((key: string, importeActual: number) => {
+    setPinnedImporte((m) => {
+      if (key in m) {
+        const { [key]: _quitado, ...resto } = m;
+        return resto;
+      }
+      return { ...m, [key]: importeActual };
+    });
+  }, []);
+  // Orden a aplicar sobre un `agrupar()` ya armado: los grupos fijados usan
+  // el importe congelado como clave de orden en vez del importe en vivo.
+  const conFijados = useCallback(
+    <G extends { key: string; importe: number },>(grupos: G[]): G[] => {
+      if (Object.keys(pinnedImporte).length === 0) return grupos;
+      return [...grupos].sort((a, b) => {
+        const ka = pinnedImporte[a.key] ?? a.importe;
+        const kb = pinnedImporte[b.key] ?? b.importe;
+        return kb - ka;
+      });
+    },
+    [pinnedImporte],
+  );
+
   // Renglones con un guardado en vuelo. Un load() que ya estaba en camino
   // (auto-refresh de 1 min, refrescar, cambio de vendedor) puede volver con la
   // foto ANTERIOR al POST y resucitar la fila recién descartada; mientras la
@@ -265,6 +300,21 @@ export default function VentasFaltantesPage() {
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);
   }, [load]);
+
+  // Poda pines de clientes que ya no tienen ningún renglón en `items` (se
+  // terminó de trabajar todo lo suyo y el grupo desapareció de la lista).
+  useEffect(() => {
+    const activas = new Set(items.map(grupoKeyOf));
+    setPinnedImporte((m) => {
+      let cambio = false;
+      const next: Record<string, number> = {};
+      for (const k of Object.keys(m)) {
+        if (activas.has(k)) next[k] = m[k];
+        else cambio = true;
+      }
+      return cambio ? next : m;
+    });
+  }, [items]);
 
   // Guarda clienteQuiere en preparado.faltante_control (mismo endpoint que ya
   // usa /deposito/faltantes/control) y retira la fila de esta tabla, sea cual
@@ -477,11 +527,20 @@ export default function VentasFaltantesPage() {
     () => items.filter((it) => !it.extraordinario && it.fechaArribo !== "EN_STOCK"),
     [items],
   );
-  const gruposExtra = useMemo(() => agrupar(extraordinarios), [extraordinarios]);
-  const gruposNormales = useMemo(() => agrupar(normales), [normales]);
+  const gruposExtra = useMemo(
+    () => conFijados(agrupar(extraordinarios)),
+    [extraordinarios, conFijados],
+  );
+  const gruposNormales = useMemo(
+    () => conFijados(agrupar(normales)),
+    [normales, conFijados],
+  );
   const gruposListos = useMemo(() => agruparListos(listos), [listos]);
   const conArribo = useMemo(() => items.filter((it) => it.fechaArribo), [items]);
-  const gruposConArribo = useMemo(() => agrupar(conArribo), [conArribo]);
+  const gruposConArribo = useMemo(
+    () => conFijados(agrupar(conArribo)),
+    [conArribo, conFijados],
+  );
 
   // Totales POR CARA (antes era un solo total en el header, lejos de la tabla
   // que estabas mirando). Cada título lleva la cantidad de renglones y el
@@ -699,6 +758,8 @@ export default function VentasFaltantesPage() {
                               onIrrelevante={marcarIrrelevante}
                               onDuplicado={marcarDuplicado}
                               leaving={leaving}
+                              pinned={g.key in pinnedImporte}
+                              onTogglePin={() => togglePin(g.key, g.importe)}
                             />
                           ))}
                         </section>
@@ -715,6 +776,8 @@ export default function VentasFaltantesPage() {
                               onIrrelevante={marcarIrrelevante}
                               onDuplicado={marcarDuplicado}
                               leaving={leaving}
+                              pinned={g.key in pinnedImporte}
+                              onTogglePin={() => togglePin(g.key, g.importe)}
                             />
                           ))}
                         </section>
@@ -751,6 +814,8 @@ export default function VentasFaltantesPage() {
                           onIrrelevante={marcarIrrelevante}
                           onDuplicado={marcarDuplicado}
                           leaving={leaving}
+                          pinned={g.key in pinnedImporte}
+                          onTogglePin={() => togglePin(g.key, g.importe)}
                         />
                       ))}
                     </section>
@@ -790,6 +855,7 @@ export default function VentasFaltantesPage() {
 
 function GrupoCard({
   g, extra, vendidoMode, mostrarVendedor, onDecidir, onIrrelevante, onDuplicado, leaving = {},
+  pinned, onTogglePin,
 }: {
   g: Grupo;
   extra?: boolean;
@@ -800,16 +866,36 @@ function GrupoCard({
   onIrrelevante?: (it: Item) => void;
   onDuplicado?: (it: Item) => void;
   leaving?: Record<string, "left" | "right">;
+  /** Fijar el cliente en su lugar mientras se lo trabaja (ver `conFijados`). */
+  pinned?: boolean;
+  onTogglePin?: () => void;
 }) {
   return (
     <div
       className={`rounded-xl border overflow-hidden ${
         extra ? "border-red-900/50 bg-red-500/[0.05]" : "border-zinc-800 bg-[#161616]"
-      }`}
+      } ${pinned ? "ring-1 ring-yellow-400/60" : ""}`}
     >
       <div className={`flex items-center gap-4 px-4 py-3 border-b ${
         extra ? "bg-red-500/[0.08] border-red-900/40" : "bg-[#1A1A1A] border-zinc-800"
       }`}>
+        {onTogglePin && (
+          <button
+            onClick={onTogglePin}
+            title={
+              pinned
+                ? "Soltar cliente — vuelve a ordenarse por importe"
+                : "Fijar cliente en su lugar mientras lo trabajás"
+            }
+            className={`btn-anim shrink-0 p-1.5 rounded-md border transition-colors ${
+              pinned
+                ? "border-yellow-400/60 text-yellow-400 bg-yellow-400/10 hover:bg-yellow-400/20"
+                : "border-zinc-700 text-zinc-500 hover:text-yellow-400 hover:border-yellow-400/40"
+            }`}
+          >
+            {pinned ? <Pin size={15} className="fill-current" /> : <PinOff size={15} />}
+          </button>
+        )}
         {/* Encabezado: cliente y, solo para admin, el vendedor del pedido. El
             N° de factura/pedido y la cantidad de artículos no se muestran. */}
         <div
