@@ -1017,14 +1017,18 @@ model deposito_objetivo {
 // multiplica al escribir). DDL a mano en sql/ventas_objetivo.sql; acá sólo el
 // modelo para Prisma (`npx prisma generate` después de correr el SQL).
 model ventas_objetivo {
-  id        Int      @id @default(autoincrement())
-  linea     String   @db.VarChar(30)
-  vendedor  Int
-  mes       String   @db.Char(7)
-  objetivo  BigInt
-  creadoPor Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  linea            String   @db.VarChar(30)
+  vendedor         Int
+  mes              String   @db.Char(7)
+  // Objetivo en $ y objetivo en UNIDADES son independientes (2026-09-17):
+  // una fila puede tener uno solo, los dos, o (transitoriamente, nunca en
+  // reposo) ninguno — el CHECK de la base exige al menos uno de los dos.
+  objetivo         BigInt?
+  objetivoUnidades BigInt?
+  creadoPor        Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   // La UNIQUE arranca por (linea, vendedor); la lectura de la pantalla es por
   // línea + rango de meses para TODOS los vendedores de una vez, y esa la

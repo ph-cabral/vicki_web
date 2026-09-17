@@ -222,6 +222,23 @@ export default function VentasFaltantesPage() {
     },
     [pinnedImporte],
   );
+  // Fija automáticamente el clip de un grupo (si no estaba ya fijado) al
+  // ejecutar cualquier acción sobre uno de sus artículos (decidir, vendido,
+  // irrelevante, duplicado) — mismo criterio que el botón manual, para no
+  // depender de que el usuario lo haya tocado antes de empezar a marcar.
+  const autoPinGrupo = useCallback(
+    (it: { Cliente: number | string | null; NroPedOrigen: number }, snapshot: { Cliente: number | string | null; NroPedOrigen: number; Importe: number }[]) => {
+      const k = grupoKeyOf(it);
+      setPinnedImporte((m) => {
+        if (k in m) return m;
+        const importeActual = snapshot
+          .filter((r) => grupoKeyOf(r) === k)
+          .reduce((a, r) => a + (r.Importe || 0), 0);
+        return { ...m, [k]: importeActual };
+      });
+    },
+    [],
+  );
 
   // Renglones con un guardado en vuelo. Un load() que ya estaba en camino
   // (auto-refresh de 1 min, refrescar, cambio de vendedor) puede volver con la
@@ -334,6 +351,7 @@ export default function VentasFaltantesPage() {
   );
   const decidir = useCallback(
     (it: Item, quiere: boolean) => {
+      autoPinGrupo(it, items);
       const keys = items.filter((r) => mismoExtra(r, it) || keyOf(r) === keyOf(it)).map(keyOf);
       withExit(keys, quiere ? "right" : "left", () => {
         retener(keys);
@@ -379,7 +397,7 @@ export default function VentasFaltantesPage() {
           });
       });
     },
-    [items, fecha, load, withExit, mismoExtra],
+    [items, fecha, load, withExit, mismoExtra, autoPinGrupo],
   );
 
   // Tabla 2: guarda "vendido" en preparado.faltante_control (mismo endpoint,
@@ -390,6 +408,7 @@ export default function VentasFaltantesPage() {
   // para que el renglón deje de calificar en Tabla 1 al recargar.
   const decidirVendidoTabla1 = useCallback(
     (it: Item, vendido: boolean) => {
+      autoPinGrupo(it, items);
       withExit([keyOf(it)], vendido ? "right" : "left", () => {
         retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
@@ -417,7 +436,7 @@ export default function VentasFaltantesPage() {
           });
       });
     },
-    [fecha, load, withExit],
+    [items, fecha, load, withExit, autoPinGrupo],
   );
 
   const decidirVendido = useCallback(
@@ -457,6 +476,7 @@ export default function VentasFaltantesPage() {
   // lo-quiere/no-lo-quiere. Guarda irrelevante=true y retira la fila.
   const marcarIrrelevante = useCallback(
     (it: Item) => {
+      autoPinGrupo(it, items);
       withExit([keyOf(it)], "left", () => {
         retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
@@ -484,7 +504,7 @@ export default function VentasFaltantesPage() {
           });
       });
     },
-    [fecha, load, withExit],
+    [items, fecha, load, withExit, autoPinGrupo],
   );
 
   // Botón "Duplicado" (Tabla 1, ambas secciones): la factura se duplicó, este
@@ -492,6 +512,7 @@ export default function VentasFaltantesPage() {
   // sin pasar por clienteQuiere (mismo patrón que marcarIrrelevante).
   const marcarDuplicado = useCallback(
     (it: Item) => {
+      autoPinGrupo(it, items);
       withExit([keyOf(it)], "left", () => {
         retener([keyOf(it)]);
         setItems((rs) => rs.filter((r) => keyOf(r) !== keyOf(it)));
@@ -519,7 +540,7 @@ export default function VentasFaltantesPage() {
           });
       });
     },
-    [fecha, load, withExit],
+    [items, fecha, load, withExit, autoPinGrupo],
   );
 
   const extraordinarios = useMemo(() => items.filter((it) => it.extraordinario), [items]);

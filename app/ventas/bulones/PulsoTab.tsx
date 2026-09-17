@@ -13,11 +13,13 @@ import {
 } from "lucide-react";
 import { abrirPicker } from "@/components/ui/abrirPicker";
 import {
-  aMiles,
+  aTexto,
   mesesEntre,
   objetivoDelRango,
+  tieneObjetivo,
   useObjetivosVentas,
   type ObjetivosLinea,
+  type TipoObjetivo,
 } from "@/lib/ventas/objetivos";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -38,16 +40,22 @@ import {
 // la vista normal (/api/ventas/bulones/top-*): es venta facturada, con el
 // mismo criterio de venta neta.
 //
-// OBJETIVO — sólo en el eje VENDEDOR y en $ (el objetivo comercial se fija en
-// pesos, no en unidades). Se guarda un valor POR MES (ver
-// lib/ventas/objetivos.ts), pero en el RANKING se muestra y se compara
+// OBJETIVO — sólo en el eje VENDEDOR. Desde 2026-09-17 un vendedor puede
+// tener cargado el objetivo del mes en $, en UNIDADES, los dos o ninguno
+// (son independientes, ver lib/ventas/objetivos.ts). Por fila se elige QUÉ
+// tipo mostrar:
+//   · si sólo tiene un tipo cargado, ese — sin importar si arriba se está
+//     viendo el ranking en $ o en Unidades;
+//   · si tiene los dos, el que coincide con la vista elegida arriba ($ o
+//     Unidades).
+// La columna entera ("OBJETIVO/MES" + "CUMPL. MES") aparece si AL MENOS UN
+// vendedor del ranking tiene algún tipo cargado. Se guarda un valor POR MES
+// (ver lib/ventas/objetivos.ts), pero en el RANKING se muestra y se compara
 // SIEMPRE contra el MES DE CALENDARIO EN CURSO (mesActual()), sin importar
 // qué período esté eligiendo el selector de arriba: así se puede repasar un
-// mes cerrado y seguir viendo si el objetivo de HOY se viene cumpliendo. La
-// columna "OBJETIVO/MES" y el cumplimiento (que reemplaza a la barra de
-// PARTICIPACIÓN) aparecen únicamente si algún vendedor tiene algo cargado
-// para el mes en curso. El modal de carga sigue siendo por el rango que el
-// usuario elija ahí — sirve para cargar meses futuros o pasados.
+// mes cerrado y seguir viendo si el objetivo de HOY se viene cumpliendo. El
+// modal de carga sigue siendo por el rango que el usuario elija ahí — sirve
+// para cargar meses futuros o pasados.
 // ──────────────────────────────────────────────────────────────────────────────
 
 /** Línea de venta de esta pestaña. Cuando se sumen otras, esto pasa a ser un selector. */
@@ -83,6 +91,10 @@ const fmtMoney = (n: number | null | undefined) =>
     ? "—"
     : `$ ${n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/** Formatea un objetivo/valor según su tipo: $ con fmtMoney, unidades con fmtNum + sufijo "ud." */
+const fmtSegunTipo = (n: number | null | undefined, tipo: TipoObjetivo) =>
+  tipo === "pesos" ? fmtMoney(n) : n == null ? "—" : `${fmtNum(n)} ud.`;
+
 const mesActual = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -99,6 +111,29 @@ const nombreMes = (ym: string) => {
   const m = Number(ym.slice(5, 7)) - 1;
   return `${MESES_ES[m] ?? ym} ${ym.slice(0, 4)}`;
 };
+
+/**
+ * Qué tipo de objetivo mostrar para un vendedor: si tiene los dos cargados
+ * para el mes en curso, el que coincide con la vista ($/Unidades) elegida
+ * arriba; si sólo tiene uno, ese, sin importar la vista.
+ */
+function tipoAMostrar(
+  objetivos: ObjetivosLinea,
+  codigo: number | null,
+  mesActualYm: string,
+  modo: Modo,
+): TipoObjetivo | null {
+  if (codigo == null) return null;
+  const pesos = objetivoDelRango(objetivos, codigo, [mesActualYm], "pesos") != null;
+  const unidades = objetivoDelRango(objetivos, codigo, [mesActualYm], "unidades") != null;
+  if (pesos && unidades) return modo;
+  if (pesos) return "pesos";
+  if (unidades) return "unidades";
+  return null;
+}
+
+/** Valor vendido en el mes en curso, en la unidad del tipo dado. */
+const valorMesSegunTipo = (i: TopItem, tipo: TipoObjetivo) => (tipo === "pesos" ? i.montoMes : i.unidadesMes);
 
 export default function PulsoTab() {
   const [desde, setDesde] = useState(mesActual);
@@ -172,16 +207,25 @@ export default function PulsoTab() {
 
   // El objetivo y el cumplimiento se miden SIEMPRE contra el mes de
   // calendario en curso, no contra el período elegido en el selector de
-  // arriba. La columna sólo tiene sentido por vendedor y en $, y sólo se
-  // muestra si hay algo cargado para el mes en curso: si no, es una columna
-  // de guiones.
+  // arriba. La columna sólo tiene sentido por vendedor y sólo se muestra si
+  // ALGUIEN tiene algo cargado (en $ o en unidades) para el mes en curso: si
+  // no, es una columna de guiones.
   const mesActualYm = mesActual();
   const conObjetivo =
     vista === "vendedores" &&
-    modo === "pesos" &&
-    items.some(
-      (i) => i.codigo != null && objetivoDelRango(obj.objetivos, i.codigo, [mesActualYm]) != null,
-    );
+    items.some((i) => i.codigo != null && tieneObjetivo(obj.objetivos, i.codigo, [mesActualYm]));
+
+  // Tipos efectivamente mostrados en ESTE ranking (puede ser uno solo, o los
+  // dos si hay vendedores con distinto tipo cargado). El total del pie sólo
+  // se puede sumar cuando todos comparten el mismo tipo.
+  const tiposEnRanking = new Set<TipoObjetivo>();
+  if (conObjetivo) {
+    for (const i of items) {
+      const t = tipoAMostrar(obj.objetivos, i.codigo, mesActualYm, modo);
+      if (t) tiposEnRanking.add(t);
+    }
+  }
+  const tipoUnico = tiposEnRanking.size === 1 ? [...tiposEnRanking][0] : null;
 
   const periodoLabel = desde === hasta ? nombreMes(desde) : `${nombreMes(desde)} → ${nombreMes(hasta)}`;
 
@@ -397,11 +441,15 @@ export default function PulsoTab() {
                     const share = v > 0 && total > 0 ? (v / total) * 100 : 0;
                     // Objetivo y cumplimiento del MES EN CURSO — no del
                     // período que se esté mirando en el ranking de arriba.
-                    const objetivoMes = conObjetivo
-                      ? objetivoDelRango(obj.objetivos, i.codigo ?? "", [mesActualYm])
-                      : null;
+                    // El TIPO ($ o unidades) se decide por fila: ver
+                    // tipoAMostrar más arriba.
+                    const tipo = conObjetivo ? tipoAMostrar(obj.objetivos, i.codigo, mesActualYm, modo) : null;
+                    const objetivoMes =
+                      tipo != null ? objetivoDelRango(obj.objetivos, i.codigo ?? "", [mesActualYm], tipo) : null;
                     const cumplMes =
-                      objetivoMes && objetivoMes > 0 ? (i.montoMes / objetivoMes) * 100 : null;
+                      tipo != null && objetivoMes && objetivoMes > 0
+                        ? (valorMesSegunTipo(i, tipo) / objetivoMes) * 100
+                        : null;
                     const colorCumpl =
                       cumplMes == null
                         ? "text-zinc-600"
@@ -424,7 +472,7 @@ export default function PulsoTab() {
                             className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-400"
                             title="Objetivo cargado para el mes de calendario en curso"
                           >
-                            {objetivoMes == null ? "—" : fmtMoney(objetivoMes)}
+                            {tipo == null ? "—" : fmtSegunTipo(objetivoMes, tipo)}
                           </td>
                         )}
                         <td
@@ -445,9 +493,9 @@ export default function PulsoTab() {
                             <span
                               className="flex items-center gap-3"
                               title={
-                                objetivoMes == null
+                                tipo == null
                                   ? "Este vendedor no tiene objetivo cargado para el mes en curso"
-                                  : `Vendido en el mes en curso: ${fmtMoney(i.montoMes)}`
+                                  : `Vendido en el mes en curso: ${fmtSegunTipo(valorMesSegunTipo(i, tipo), tipo)}`
                               }
                             >
                               <span className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
@@ -491,16 +539,33 @@ export default function PulsoTab() {
                     <tr className="border-t-2 border-zinc-700 bg-zinc-900/60 text-zinc-300">
                       <td className="px-2 py-2" />
                       <td className="px-3 py-2 font-semibold uppercase text-xs tracking-wide">Total</td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 font-semibold text-zinc-100">
-                        {fmtMoney(totalObjetivoMes(obj.objetivos, items, mesActualYm))}
+                      <td
+                        className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 font-semibold text-zinc-100"
+                        title={
+                          tipoUnico == null
+                            ? "Hay vendedores con objetivo en $ y otros en unidades: sin total combinado"
+                            : undefined
+                        }
+                      >
+                        {tipoUnico == null
+                          ? "—"
+                          : fmtSegunTipo(totalObjetivoMes(obj.objetivos, items, mesActualYm, tipoUnico), tipoUnico)}
                       </td>
                       <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-100 font-semibold">
-                        {fmtMoney(total)}
+                        {modo === "pesos" ? fmtMoney(total) : fmtNum(total)}
                       </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap font-semibold text-zinc-100">
+                      <td
+                        className="px-3 py-2 text-right whitespace-nowrap font-semibold text-zinc-100"
+                        title={
+                          tipoUnico == null
+                            ? "Hay vendedores con objetivo en $ y otros en unidades: sin total combinado"
+                            : undefined
+                        }
+                      >
                         {(() => {
-                          const tom = totalObjetivoMes(obj.objetivos, items, mesActualYm);
-                          const vm = totalMontoMes(items);
+                          if (tipoUnico == null) return "—";
+                          const tom = totalObjetivoMes(obj.objetivos, items, mesActualYm, tipoUnico);
+                          const vm = totalValorMes(items, tipoUnico);
                           return tom > 0 ? `${((vm / tom) * 100).toFixed(0)}%` : "—";
                         })()}
                       </td>
@@ -516,8 +581,10 @@ export default function PulsoTab() {
       {conObjetivo && (
         <p className="text-[11px] text-zinc-600">
           El objetivo y el cumplimiento son siempre del mes de calendario en curso (
-          {nombreMes(mesActualYm)}), no del período elegido arriba. Los vendedores sin objetivo
-          cargado para este mes quedan con “—”.
+          {nombreMes(mesActualYm)}), no del período elegido arriba. Cada vendedor se mide en el tipo
+          de objetivo que tiene cargado ($ o unidades); si tiene los dos, se muestra el que coincide
+          con la vista elegida arriba. Los vendedores sin objetivo cargado para este mes quedan con
+          “—”.
         </p>
       )}
 
@@ -538,22 +605,22 @@ export default function PulsoTab() {
   );
 }
 
-/** Suma de los objetivos del MES EN CURSO de los vendedores que están en el ranking. */
-function totalObjetivoMes(objetivos: ObjetivosLinea, items: TopItem[], mesActualYm: string) {
+/** Suma de los objetivos del MES EN CURSO (de un solo tipo) de los vendedores del ranking. */
+function totalObjetivoMes(objetivos: ObjetivosLinea, items: TopItem[], mesActualYm: string, tipo: TipoObjetivo) {
   let t = 0;
   for (const i of items) {
     if (i.codigo == null) continue;
-    t += objetivoDelRango(objetivos, i.codigo, [mesActualYm]) ?? 0;
+    t += objetivoDelRango(objetivos, i.codigo, [mesActualYm], tipo) ?? 0;
   }
   return t;
 }
 
-/** Suma de lo vendido en el mes en curso por los vendedores del ranking. */
-function totalMontoMes(items: TopItem[]) {
+/** Suma de lo vendido en el mes en curso por los vendedores del ranking, en la unidad del tipo dado. */
+function totalValorMes(items: TopItem[], tipo: TipoObjetivo) {
   let t = 0;
   for (const i of items) {
     if (i.codigo == null) continue;
-    t += i.montoMes;
+    t += valorMesSegunTipo(i, tipo);
   }
   return t;
 }
@@ -565,17 +632,22 @@ function totalMontoMes(items: TopItem[]) {
 // completa la otra — y abajo el detalle mes a mes, que es donde se corrige uno
 // solo sin romper el resto.
 //
-// Todo entra EN MILES: 1.500 = $1.500.000. La API multiplica x1.000 al escribir.
-/** Primer vendedor de la lista sin objetivo cargado en los meses dados
- * (excluyendo, opcionalmente, uno puntual — el que se acaba de guardar). */
+// El objetivo en $ y en unidades son independientes: el modal tiene un
+// selector "$ | Unidades" arriba, y todo el formulario (mensual, total,
+// detalle) opera sobre EL TIPO ELEGIDO — el otro tipo, si el vendedor lo
+// tiene cargado, no se toca al guardar. $ entra EN MILES (1.500 =
+// $1.500.000, la API multiplica x1.000); unidades entra sin escala.
+/** Primer vendedor de la lista sin este TIPO de objetivo cargado en los meses
+ * dados (excluyendo, opcionalmente, uno puntual — el que se acaba de guardar). */
 function primerVendedorSinObjetivo(
   vendedores: { codigo: number; nombre: string }[],
   objetivos: ObjetivosLinea,
   meses: string[],
+  tipo: TipoObjetivo,
   excluir?: number | null,
 ): number | null {
   const candidato = vendedores.find(
-    (v) => v.codigo !== excluir && objetivoDelRango(objetivos, v.codigo, meses) == null,
+    (v) => v.codigo !== excluir && objetivoDelRango(objetivos, v.codigo, meses, tipo) == null,
   );
   return candidato?.codigo ?? null;
 }
@@ -595,20 +667,24 @@ function ObjetivoModal({
   hastaInicial: string;
   onGuardar: (
     vendedor: number,
-    meses: { mes: string; objetivoMiles: string }[],
+    tipo: TipoObjetivo,
+    meses: { mes: string; valor: string }[],
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onBorrarRango: (
     vendedor: number,
+    tipo: TipoObjetivo,
     desde: string,
     hasta: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onCerrar: () => void;
 }) {
+  const [tipo, setTipo] = useState<TipoObjetivo>("pesos");
   const [vendedor, setVendedor] = useState<number | null>(() =>
     primerVendedorSinObjetivo(
       vendedores,
       objetivos,
       mesesEntre(desdeInicial, hastaInicial >= desdeInicial ? hastaInicial : desdeInicial),
+      "pesos",
     ) ?? vendedores[0]?.codigo ?? null,
   );
   const [desde, setDesde] = useState(desdeInicial);
@@ -621,17 +697,17 @@ function ObjetivoModal({
 
   const meses = useMemo(() => mesesEntre(desde, hasta), [desde, hasta]);
 
-  // Al abrir, al cambiar de vendedor y al mover el rango: precargar lo que ya
-  // esté guardado para esos meses.
+  // Al abrir, al cambiar de vendedor, de tipo o al mover el rango: precargar
+  // lo que ya esté guardado para esos meses EN ESE TIPO.
   useEffect(() => {
     if (vendedor == null) return;
     const guardados = objetivos[String(vendedor)] ?? {};
     const next: Record<string, string> = {};
-    for (const m of meses) next[m] = aMiles(guardados[m]);
+    for (const m of meses) next[m] = aTexto(guardados[m]?.[tipo], tipo);
     setValores(next);
     setError(null);
-    sincronizarCabecera(next, meses, setPorMes, setTotalRango);
-  }, [vendedor, meses, objetivos]);
+    sincronizarCabecera(next, meses, tipo, setPorMes, setTotalRango);
+  }, [vendedor, tipo, meses, objetivos]);
 
   const cargados = meses.filter((m) => (valores[m] ?? "") !== "").length;
 
@@ -642,7 +718,7 @@ function ObjetivoModal({
     for (const m of meses) next[m] = v;
     setValores(next);
     const n = Number(v.replace(",", "."));
-    setTotalRango(v === "" ? "" : Number.isFinite(n) ? String(redondear(n * meses.length)) : "");
+    setTotalRango(v === "" ? "" : Number.isFinite(n) ? String(redondear(n * meses.length, tipo)) : "");
   };
 
   /** Escribir el total lo reparte en partes iguales entre los meses del rango. */
@@ -654,7 +730,7 @@ function ObjetivoModal({
       setValores(Object.fromEntries(meses.map((m) => [m, ""])));
       return;
     }
-    const mensual = redondear(n / meses.length);
+    const mensual = redondear(n / meses.length, tipo);
     setPorMes(String(mensual));
     setValores(Object.fromEntries(meses.map((m) => [m, String(mensual)])));
   };
@@ -663,7 +739,7 @@ function ObjetivoModal({
   const cambiarMes = (mes: string, v: string) => {
     const next = { ...valores, [mes]: v };
     setValores(next);
-    sincronizarCabecera(next, meses, setPorMes, setTotalRango);
+    sincronizarCabecera(next, meses, tipo, setPorMes, setTotalRango);
   };
 
   const guardar = async () => {
@@ -672,17 +748,18 @@ function ObjetivoModal({
     setError(null);
     const r = await onGuardar(
       vendedor,
-      meses.map((m) => ({ mes: m, objetivoMiles: (valores[m] ?? "").replace(",", ".") })),
+      tipo,
+      meses.map((m) => ({ mes: m, valor: (valores[m] ?? "").replace(",", ".") })),
     );
     setGuardando(false);
     if (!r.ok) {
       setError(r.error);
       return;
     }
-    // Al guardar, salta directo al próximo vendedor sin objetivo cargado (si
-    // queda alguno) para poder recorrer toda la lista sin reabrir el modal.
-    // Si ya todos tienen objetivo en este período, se cierra.
-    const siguiente = primerVendedorSinObjetivo(vendedores, objetivos, meses, vendedor);
+    // Al guardar, salta directo al próximo vendedor sin ESTE TIPO de
+    // objetivo cargado (si queda alguno) para poder recorrer toda la lista
+    // sin reabrir el modal. Si ya todos lo tienen en este período, se cierra.
+    const siguiente = primerVendedorSinObjetivo(vendedores, objetivos, meses, tipo, vendedor);
     if (siguiente != null) setVendedor(siguiente);
     else onCerrar();
   };
@@ -691,7 +768,7 @@ function ObjetivoModal({
     if (vendedor == null) return;
     setGuardando(true);
     setError(null);
-    const r = await onBorrarRango(vendedor, desde, hasta);
+    const r = await onBorrarRango(vendedor, tipo, desde, hasta);
     setGuardando(false);
     if (r.ok) onCerrar();
     else setError(r.error);
@@ -707,10 +784,36 @@ function ObjetivoModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b border-zinc-800 px-5 py-4">
-          <h3 className="text-sm font-semibold text-zinc-100">Objetivos de venta · bulonería</h3>
-          <p className="mt-1 text-[11px] text-zinc-500">
-            Se cargan <strong className="text-zinc-400">en miles</strong>: 1.500 = $ 1.500.000. Se guarda
-            un valor por mes, así se puede corregir un mes suelto sin tocar los demás.
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-zinc-100">Objetivos de venta · bulonería</h3>
+            <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-xs divide-x divide-zinc-700 shrink-0">
+              {(["pesos", "unidades"] as TipoObjetivo[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTipo(t)}
+                  className={`px-2.5 py-1.5 font-semibold transition-colors ${
+                    tipo === t ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
+                  }`}
+                >
+                  {t === "pesos" ? "$" : "Unidades"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="mt-2 text-[11px] text-zinc-500">
+            {tipo === "pesos" ? (
+              <>
+                Se cargan <strong className="text-zinc-400">en miles</strong>: 1.500 = $ 1.500.000.
+              </>
+            ) : (
+              <>
+                Se cargan <strong className="text-zinc-400">en unidades</strong> (ej.: 500 = 500
+                unidades vendidas).
+              </>
+            )}{" "}
+            Se guarda un valor por mes, así se puede corregir un mes suelto sin tocar los demás. El
+            objetivo en $ y en unidades son independientes: cargar uno no borra el otro.
           </p>
         </div>
 
@@ -723,12 +826,18 @@ function ObjetivoModal({
               className="mt-1.5 w-full rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 cursor-pointer"
             >
               {vendedores.length === 0 && <option value="">(sin vendedores en el período)</option>}
-              {vendedores.map((v) => (
-                <option key={v.codigo} value={v.codigo}>
-                  {v.nombre}
-                  {objetivoDelRango(objetivos, v.codigo, meses) != null ? " · con objetivo" : ""}
-                </option>
-              ))}
+              {vendedores.map((v) => {
+                const tienePesos = objetivoDelRango(objetivos, v.codigo, meses, "pesos") != null;
+                const tieneUnidades = objetivoDelRango(objetivos, v.codigo, meses, "unidades") != null;
+                const tag =
+                  tienePesos && tieneUnidades ? " · $ y ud." : tienePesos ? " · $" : tieneUnidades ? " · ud." : "";
+                return (
+                  <option key={v.codigo} value={v.codigo}>
+                    {v.nombre}
+                    {tag}
+                  </option>
+                );
+              })}
             </select>
             <span className="mt-1 block text-[11px] text-zinc-600">
               La lista sale del ranking del período elegido.
@@ -766,13 +875,13 @@ function ObjetivoModal({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <CampoMiles
+            <CampoValor
               label="Por mes"
               valor={porMes}
               setValor={cambiarPorMes}
               ayuda={`× ${meses.length} ${meses.length === 1 ? "mes" : "meses"}`}
             />
-            <CampoMiles
+            <CampoValor
               label="Total del período"
               valor={totalRango}
               setValor={cambiarTotal}
@@ -782,7 +891,9 @@ function ObjetivoModal({
 
           <div>
             <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-zinc-300">Detalle por mes (miles)</span>
+              <span className="text-xs font-medium text-zinc-300">
+                Detalle por mes ({tipo === "pesos" ? "miles" : "unidades"})
+              </span>
               <span className="text-[11px] text-zinc-600">
                 {cargados} de {meses.length} con valor
               </span>
@@ -802,7 +913,8 @@ function ObjetivoModal({
               ))}
             </div>
             <p className="mt-1.5 text-[11px] text-zinc-600">
-              Un mes vacío se borra al guardar.
+              Un mes vacío borra sólo este tipo ({tipo === "pesos" ? "$" : "unidades"}) al guardar; si
+              el vendedor tiene el otro tipo cargado, no se toca.
             </p>
           </div>
 
@@ -821,7 +933,7 @@ function ObjetivoModal({
               disabled={guardando || vendedor == null}
               className="text-xs text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-40"
             >
-              Quitar objetivos del período
+              Quitar objetivo en {tipo === "pesos" ? "$" : "unidades"} del período
             </button>
           ) : (
             <span />
@@ -850,7 +962,7 @@ function ObjetivoModal({
   );
 }
 
-function CampoMiles({
+function CampoValor({
   label,
   valor,
   setValor,
@@ -876,8 +988,8 @@ function CampoMiles({
   );
 }
 
-/** Dos decimales: en miles alcanza para llegar al peso. */
-const redondear = (n: number) => Math.round(n * 100) / 100;
+/** $ se carga en miles (dos decimales alcanzan para llegar al peso); unidades se carga como entero. */
+const redondear = (n: number, tipo: TipoObjetivo) => (tipo === "pesos" ? Math.round(n * 100) / 100 : Math.round(n));
 
 /**
  * Vuelve a armar el mensual y el total a partir del detalle: el mensual sólo
@@ -887,6 +999,7 @@ const redondear = (n: number) => Math.round(n * 100) / 100;
 function sincronizarCabecera(
   valores: Record<string, string>,
   meses: string[],
+  tipo: TipoObjetivo,
   setPorMes: (v: string) => void,
   setTotal: (v: string) => void,
 ) {
@@ -896,5 +1009,5 @@ function sincronizarCabecera(
     vals.length > 0 && vals.every((v) => v === vals[0]) && vals[0] !== "" && Number.isFinite(Number(vals[0]));
   setPorMes(todosIguales ? vals[0] : "");
   const suma = nums.reduce<number>((acc, n) => acc + (n != null && Number.isFinite(n) ? n : 0), 0);
-  setTotal(suma > 0 ? String(redondear(suma)) : "");
+  setTotal(suma > 0 ? String(redondear(suma, tipo)) : "");
 }
