@@ -20,6 +20,11 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //   Sin material  → falta stock pero el pulmón está vacío: no se puede trabajar.
 //   Cubiertos     → ya llegan al objetivo de meses; están para poder mirarlos.
 //
+// Además de las tres solapas, la API separa aparte los artículos que se
+// acaban de cerrar y el WMS todavía no confirmó (`pendientes`, ver route.ts):
+// se muestran en una tabla propia debajo, así no vuelven a "Para embolsar" ni
+// se pueden re-tomar mientras se espera que el stock se actualice.
+//
 // QUIÉN embolsa se pide EN CADA TOMA, no una vez al entrar: esta pantalla queda
 // abierta en una PC compartida y por ella pasan muchas personas en el día. Al
 // tocar "Tomar" se abre un cartel que pide el usuario de MAGNUS (número o
@@ -63,6 +68,14 @@ type Registro = {
   enIngreso: number | null;
 };
 
+/** Fila de `pendientes`: un artículo recién cerrado, fuera de las 3 solapas
+ * hasta que el WMS confirme el movimiento o venzan los días de gracia. */
+type Pendiente = Fila & {
+  cantidadEmbolsada: number;
+  ultimoCierre: string;
+  venceEl: string;
+};
+
 type Candidato = { numero: number; nombre: string };
 
 type Solapa = "trabajar" | "sinMaterial" | "cubiertos";
@@ -93,10 +106,27 @@ function transcurrido(desdeIso: string, hasta: number) {
 const hora = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 
+const fechaHora = (iso: string) =>
+  new Date(iso).toLocaleString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+/** "hoy" / "mañana" / "en 3 días" contra el vencimiento del período de gracia. */
+function faltaPara(iso: string, ahora: number) {
+  const dias = Math.ceil((new Date(iso).getTime() - ahora) / 86400000);
+  if (dias <= 0) return "hoy";
+  if (dias === 1) return "mañana";
+  return `en ${dias} días`;
+}
+
 export default function DepositoEmbolsadoPage() {
   const [rows, setRows] = useState<Fila[]>([]);
   const [enCurso, setEnCurso] = useState<Registro[]>([]);
   const [hechosHoy, setHechosHoy] = useState<Registro[]>([]);
+  const [pendientes, setPendientes] = useState<Pendiente[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
@@ -132,6 +162,7 @@ export default function DepositoEmbolsadoPage() {
       setRows(j.rows ?? []);
       setEnCurso(j.enCurso ?? []);
       setHechosHoy(j.hechosHoy ?? []);
+      setPendientes(j.pendientes ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar");
     } finally {
@@ -470,6 +501,49 @@ export default function DepositoEmbolsadoPage() {
             </table>
           </div>
         </Panel>
+
+        {pendientes.length > 0 && (
+          <div className="mt-6">
+            <div className="text-sm text-cyan-400 mb-2">
+              Recién embolsado · esperando que el WMS confirme el movimiento (
+              {pendientes.length})
+            </div>
+            <Panel bodyClass="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-xs text-zinc-500 border-b border-zinc-800">
+                    <tr>
+                      <th className="text-left font-medium px-3 py-2">Artículo</th>
+                      <th className="text-right font-medium px-3 py-2">Embolsado</th>
+                      <th className="text-left font-medium px-3 py-2">Último cierre</th>
+                      <th className="text-left font-medium px-3 py-2">Vuelve a la lista</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendientes.map((r) => (
+                      <tr key={r.codArticulo} className="border-b border-zinc-900 bg-cyan-400/5">
+                        <td className="px-3 py-3">
+                          <div className="font-mono text-zinc-300">{r.codArticulo}</div>
+                          <div className="text-zinc-400 text-[13px]">
+                            {r.nombre}
+                            {r.empaque && <span className="text-zinc-500"> · {r.empaque}</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums text-zinc-100">
+                          {fmtNum(r.cantidadEmbolsada)}
+                        </td>
+                        <td className="px-3 py-3 text-zinc-400">{fechaHora(r.ultimoCierre)}</td>
+                        <td className="px-3 py-3 text-cyan-400">
+                          {faltaPara(r.venceEl, ahora)} si el WMS no lo confirma antes
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          </div>
+        )}
 
         {hechosHoy.length > 0 && (
           <div className="mt-6">

@@ -4,13 +4,30 @@
 // carga la vista con un solo viaje:
 //
 //   GET    [?meses_venta=6&meses_cobertura=4]
-//          -> { rows, enCurso, hechosHoy, ... }
-//          `rows`      = recomendación en vivo (proxy → FastAPI, que la calcula
-//                        contra Magnus + WMS; ver indicadores-api/embolsado.py)
-//          `enCurso`   = ítems tomados y todavía sin cerrar (Postgres)
-//          `hechosHoy` = lo terminado desde las 00:00 de hoy (Postgres)
+//          -> { rows, pendientes, enCurso, hechosHoy, ... }
+//          `rows`       = recomendación en vivo (proxy → FastAPI, que la calcula
+//                         contra Magnus + WMS; ver indicadores-api/embolsado.py),
+//                         YA SIN los artículos recién cerrados (ver `pendientes`)
+//          `pendientes` = artículos cerrados en los últimos 3 días que
+//                         `rows` sacó de la lista de trabajo porque el WMS
+//                         todavía no confirmó el movimiento; se calcula acá
+//                         cruzando `rows` con los cierres recientes de
+//                         Postgres, no en el FastAPI (que es sólo lectura de
+//                         Magnus/WMS)
+//          `enCurso`    = ítems tomados y todavía sin cerrar (Postgres)
+//          `hechosHoy`  = lo terminado desde las 00:00 de hoy (Postgres)
 //   POST   { codArticulo, usuario, ... }  -> valida el usuario y toma el ítem
 //   PATCH  { id, cantidad }               -> lo cierra (fin + cantidad)
+//
+// RECIÉN EMBOLSADO. Sin esto, un artículo se queda en "Para embolsar" todo lo
+// que tarde el WMS en reflejar el movimiento físico (puede ser días: ver
+// claude/deposito_embolsado.md), y como la pantalla la usan varios
+// preparadores sin coordinarse, terminan re-embolsando lo mismo. Por eso todo
+// artículo con un cierre en los últimos `VENTANA_PENDIENTE_DIAS` días se saca
+// de `rows` y pasa a `pendientes` — hasta que el propio WMS confirme el
+// movimiento (con tolerancia `CONFIRMACION_TOLERANCIA`) o venzan los días de
+// gracia, lo que pase primero. Ninguno de los dos cambia el cálculo de
+// cobertura: sólo deciden en qué lista aparece.
 //
 // QUIÉN embolsa. La pantalla la comparten varias personas desde una sola PC:
 // la sesión de la app no dice quién está parado ahí, así que cada vez que
@@ -38,6 +55,18 @@ const API_URL = process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001"
 export const dynamic = "force-dynamic";
 
 const MAX_CANTIDAD = 1_000_000; // techo defensivo contra el dedazo al cargar
+
+// "Recién embolsado": un artículo que se acaba de cerrar se saca de la lista
+// de trabajo por unos días, para que dos preparadores que no se cruzan no
+// sigan tomando lo mismo mientras el movimiento físico todavía no se reflejó
+// en el WMS (ver claude/deposito_embolsado.md, "Por qué un artículo recién
+// embolsado sigue apareciendo para embolsar"). Sale antes si el propio WMS ya
+// confirma el movimiento (bajó lo que había en el pulmón, o subió el stock ya
+// embolsado, lo esperado); si nunca confirma, a los 3 días vuelve solo a la
+// lista — no tiene sentido esconder un faltante real para siempre.
+const VENTANA_PENDIENTE_DIAS = 3;
+const VENTANA_PENDIENTE_MS = VENTANA_PENDIENTE_DIAS * 24 * 60 * 60 * 1000;
+const CONFIRMACION_TOLERANCIA = 0.8; // 80% de lo embolsado alcanza para confirmar
 
 type Registro = {
   id: number;
@@ -67,6 +96,15 @@ const SELECT_REGISTRO = {
   enIngreso: true,
 } as const;
 
+/** Fila de `cerradosRecientes`: sólo lo necesario para el chequeo de confirmación. */
+type Cierre = {
+  codArticulo: string;
+  cantidad: number | null;
+  fin: Date | null;
+  enIngreso: number | null;
+  stockSinIngreso: number | null;
+};
+
 /** Medianoche de hoy en hora local del server (el corte que ve el operario). */
 function inicioDelDia(): Date {
   const d = new Date();
@@ -90,9 +128,9 @@ export async function GET(req: NextRequest) {
     incluir_cubiertos: sp.get("incluir_cubiertos") ?? "true",
   });
 
-  // Recomendación y registros en paralelo: son dos bases distintas y ninguna
+  // Recomendación y registros en paralelo: son bases distintas y ninguna
   // depende de la otra.
-  const [reco, enCurso, hechosHoy] = await Promise.all([
+  const [reco, enCurso, hechosHoy, cerradosRecientes] = await Promise.all([
     fetch(`${API_URL}/deposito/embolsado?${params}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(60000),
@@ -118,6 +156,11 @@ export async function GET(req: NextRequest) {
       select: SELECT_REGISTRO,
       orderBy: { inicio: "desc" },
     }),
+    prisma.deposito_embolsado.findMany({
+      where: { fin: { not: null, gte: new Date(Date.now() - VENTANA_PENDIENTE_MS) } },
+      select: { codArticulo: true, cantidad: true, fin: true, enIngreso: true, stockSinIngreso: true },
+      orderBy: { fin: "asc" },
+    }),
   ]);
 
   if (reco?.error) {
@@ -127,7 +170,48 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ ...reco, enCurso, hechosHoy });
+  // Un artículo recién cerrado se saca de `rows` y pasa a `pendientes` hasta
+  // que el WMS confirme el movimiento o venzan los 3 días de gracia (ver
+  // constantes arriba). `cierres` agrupa por artículo, ordenado por `fin` asc:
+  // el primero de cada grupo es la foto más vieja dentro de la ventana (contra
+  // la que se mide el delta) y el último marca cuándo vence la supresión.
+  const cierres = new Map<string, Cierre[]>();
+  for (const c of cerradosRecientes as Cierre[]) {
+    const cod = c.codArticulo.trim();
+    const arr = cierres.get(cod);
+    if (arr) arr.push(c);
+    else cierres.set(cod, [c]);
+  }
+
+  const rows: unknown[] = [];
+  const pendientes: unknown[] = [];
+  for (const r of (reco.rows ?? []) as Record<string, any>[]) {
+    const grupo = cierres.get(String(r.codArticulo).trim());
+    if (!grupo?.length) {
+      rows.push(r);
+      continue;
+    }
+    const foto = grupo[0];
+    const ultimoCierre = grupo[grupo.length - 1].fin as Date;
+    const venceEl = new Date(ultimoCierre.getTime() + VENTANA_PENDIENTE_MS);
+    const cantidadEmbolsada = grupo.reduce((a, c) => a + (c.cantidad ?? 0), 0);
+
+    // Dos señales, cualquiera alcanza: bajó lo que había en el pulmón de
+    // ingreso, o subió el stock ya embolsado, al menos lo que se cargó acá.
+    const deltaIngreso = foto.enIngreso != null ? foto.enIngreso - Number(r.enIngreso) : null;
+    const deltaStock = foto.stockSinIngreso != null ? Number(r.stockSinIngreso) - foto.stockSinIngreso : null;
+    const confirmado =
+      (deltaIngreso != null && deltaIngreso >= cantidadEmbolsada * CONFIRMACION_TOLERANCIA) ||
+      (deltaStock != null && deltaStock >= cantidadEmbolsada * CONFIRMACION_TOLERANCIA);
+
+    if (confirmado || Date.now() > venceEl.getTime()) {
+      rows.push(r); // el WMS ya lo reflejó, o pasaron los 3 días: vuelve al flujo normal
+    } else {
+      pendientes.push({ ...r, cantidadEmbolsada, ultimoCierre, venceEl });
+    }
+  }
+
+  return NextResponse.json({ ...reco, rows, pendientes, enCurso, hechosHoy });
 }
 
 /** Resuelve el usuario tipeado contra Gen_Usuarios (Magnus). */
