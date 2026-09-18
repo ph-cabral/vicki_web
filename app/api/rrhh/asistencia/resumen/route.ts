@@ -75,8 +75,15 @@ export async function GET(req: NextRequest) {
       dias AS (
         SELECT generate_series($1::date, $2::date, interval '1 day')::date AS fecha
       ),
+      -- Legajo sin employeeNo (no pasa por el reloj de asistencia — hoy 14 de
+      -- 87 activos) recibe una clave sintética 'L<id>': nunca puede pisar un
+      -- employeeNo real (el reloj sólo manda IDs numéricos) y es estable
+      -- mientras no se le cargue employeeNo. MISMA fórmula que
+      -- /api/rrhh/asistencia/empleados — así lo que se guarda desde el botón
+      -- "Nuevo estado"/"Nueva novedad" para esa gente aparece acá en vez de
+      -- quedar huérfano en estado_diario/novedad_diaria (2026-09-18).
       act AS (
-        SELECT l."employeeNo" AS employee_no,
+        SELECT COALESCE(l."employeeNo", 'L' || l.id::text) AS employee_no,
                NULLIF(TRIM(l.nombre), '') AS employee_name,
                COALESCE(ar.nombre, l.sector) AS departamento,
                COALESCE(s.nombre, l.sector) AS sector,
@@ -85,8 +92,8 @@ export async function GET(req: NextRequest) {
         LEFT JOIN everwear.sector s ON s.id = l."sectorId"
         LEFT JOIN everwear.area   ar ON ar.id = s."areaId"
         LEFT JOIN everwear.lugar  lu ON lu.id = l."lugarId"
-        WHERE l.estado = 'ACTIVO' AND l."employeeNo" IS NOT NULL
-        ${employee_no ? `AND l."employeeNo" = $3` : ""}
+        WHERE l.estado = 'ACTIVO'
+        ${employee_no ? `AND COALESCE(l."employeeNo", 'L' || l.id::text) = $3` : ""}
       ),
       -- Cuántos legajos activos comparten la misma clave "sin ceros a la
       -- izquierda" (ej. "40" y "00000040" comparten clave "40" pero son

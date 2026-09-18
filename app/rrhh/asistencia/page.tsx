@@ -795,6 +795,7 @@ export default function AsistenciaPage() {
   const [loading, setLoading] = useState(false);
   const [empleado, setEmpleado] = useState("");
   const [estado, setEstado] = useState<string>("all");
+  const [novedad, setNovedad] = useState<string>("all");
   const [area, setArea] = useState<string>("all");
   const [sector, setSector] = useState<string>("all");
 
@@ -929,11 +930,12 @@ export default function AsistenciaPage() {
     return rows.filter((r) => {
       if (q && !(r.employee_name ?? "").toLowerCase().includes(q)) return false;
       if (estado !== "all" && effEstado(r) !== estado) return false;
+      if (novedad !== "all" && (r.novedad ?? "") !== novedad) return false;
       if (area !== "all" && (r.departamento ?? "") !== area) return false;
       if (sector !== "all" && (r.sector ?? "") !== sector) return false;
       return true;
     });
-  }, [rows, empleadoDef, estado, area, sector]);
+  }, [rows, empleadoDef, estado, novedad, area, sector]);
 
   return (
     // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
@@ -960,30 +962,6 @@ export default function AsistenciaPage() {
           </button>
           <FeriadosButton onSaved={fetchData} />
           <EmailsButton />
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <RegistroButton
-              trigger="top"
-              tipo="estado"
-              opciones={estadosOp}
-              numLabel="días"
-              placeholder="Estado"
-              toneOf={estadoTone}
-              isAdmin={isAdmin}
-              onSaved={fetchData}
-              onOpcionesChanged={loadOpciones}
-            />
-            <RegistroButton
-              trigger="top"
-              tipo="novedad"
-              opciones={novedadesOp}
-              numLabel="horas"
-              placeholder="Novedad"
-              toneOf={() => "bg-violet-500/15 text-violet-300 border-violet-500/30"}
-              isAdmin={isAdmin}
-              onSaved={fetchData}
-              onOpcionesChanged={loadOpciones}
-            />
-          </div>
         </div>
         {empleadosPorArea.length > 0 && (
           <div className="flex flex-col items-center gap-2 rounded-[2rem] border border-zinc-800 bg-[#171717] px-6 py-3">
@@ -1099,8 +1077,48 @@ export default function AsistenciaPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                <div className="mt-1.5">
+                  <RegistroButton
+                    trigger="top"
+                    tipo="estado"
+                    opciones={estadosOp}
+                    numLabel="días"
+                    placeholder="Estado"
+                    toneOf={estadoTone}
+                    isAdmin={isAdmin}
+                    onSaved={fetchData}
+                    onOpcionesChanged={loadOpciones}
+                  />
+                </div>
               </TableHead>
-              <TableHead />
+              <TableHead>
+                <Select value={novedad} onValueChange={setNovedad}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Novedad" />
+                  </SelectTrigger>
+                  <SelectContent className="dark">
+                    <SelectItem value="all">Todas las novedades</SelectItem>
+                    {novedadesOp.map((n) => (
+                      <SelectItem key={n.id} value={n.nombre}>
+                        {n.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mt-1.5 flex justify-end">
+                  <RegistroButton
+                    trigger="top"
+                    tipo="novedad"
+                    opciones={novedadesOp}
+                    numLabel="horas"
+                    placeholder="Novedad"
+                    toneOf={() => "bg-violet-500/15 text-violet-300 border-violet-500/30"}
+                    isAdmin={isAdmin}
+                    onSaved={fetchData}
+                    onOpcionesChanged={loadOpciones}
+                  />
+                </div>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
