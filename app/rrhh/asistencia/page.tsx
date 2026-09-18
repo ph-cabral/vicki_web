@@ -960,6 +960,30 @@ export default function AsistenciaPage() {
           </button>
           <FeriadosButton onSaved={fetchData} />
           <EmailsButton />
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <RegistroButton
+              trigger="top"
+              tipo="estado"
+              opciones={estadosOp}
+              numLabel="días"
+              placeholder="Estado"
+              toneOf={estadoTone}
+              isAdmin={isAdmin}
+              onSaved={fetchData}
+              onOpcionesChanged={loadOpciones}
+            />
+            <RegistroButton
+              trigger="top"
+              tipo="novedad"
+              opciones={novedadesOp}
+              numLabel="horas"
+              placeholder="Novedad"
+              toneOf={() => "bg-violet-500/15 text-violet-300 border-violet-500/30"}
+              isAdmin={isAdmin}
+              onSaved={fetchData}
+              onOpcionesChanged={loadOpciones}
+            />
+          </div>
         </div>
         {empleadosPorArea.length > 0 && (
           <div className="flex flex-col items-center gap-2 rounded-[2rem] border border-zinc-800 bg-[#171717] px-6 py-3">
@@ -994,71 +1018,10 @@ export default function AsistenciaPage() {
         />
       )}
 
-      <div className="sticky top-0 z-40 -mx-6 px-6 py-3 mb-4 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 grid grid-cols-1 md:grid-cols-6 gap-3">
-        <Input
-          placeholder="Empleado…"
-          value={empleado}
-          onChange={(e) => setEmpleado(e.target.value)}
-        />
-        <Select value={estado} onValueChange={setEstado}>
-          <SelectTrigger>
-            <SelectValue placeholder="Estado" />
-          </SelectTrigger>
-          <SelectContent className="dark">
-            <SelectItem value="all">Todos los estados</SelectItem>
-            {estadosOp.map((s) => (
-              <SelectItem key={s.id} value={s.nombre}>
-                {s.nombre}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={sector} onValueChange={setSector}>
-          <SelectTrigger>
-            <SelectValue placeholder="Sector" />
-          </SelectTrigger>
-          <SelectContent className="dark">
-            <SelectItem value="all">Todos los sectores</SelectItem>
-            {sectores.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Select value={area} onValueChange={setArea}>
-          <SelectTrigger>
-            <SelectValue placeholder="Área" />
-          </SelectTrigger>
-          <SelectContent className="dark">
-            <SelectItem value="all">Todas las áreas</SelectItem>
-            {areas.map((a) => (
-              <SelectItem key={a} value={a}>
-                {a}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <div className="md:col-span-2">
-          <DateRangeField
-            desde={desde}
-            hasta={hasta}
-            onChange={(d, h) => {
-              setDesde(d);
-              setHasta(h);
-            }}
-            variant="light"
-            className="w-full"
-          />
-        </div>
-      </div>
-
       <div className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
         <Table>
           <TableHeader>
-            <TableRow className="bg-[#1f1f1f] hover:bg-[#1f1f1f] [&>th]:text-[10px] [&>th]:font-semibold [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-zinc-500 [&>th]:border-b [&>th]:border-zinc-800">
+            <TableRow className="bg-[#1f1f1f] hover:bg-[#1f1f1f] [&>th]:sticky [&>th]:top-0 [&>th]:z-30 [&>th]:bg-[#1f1f1f] [&>th]:text-[10px] [&>th]:font-semibold [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-zinc-500 [&>th]:border-b [&>th]:border-zinc-800">
               <TableHead>Empleado</TableHead>
               <TableHead>Fecha</TableHead>
               <TableHead>Ingreso/Egreso</TableHead>
@@ -1066,6 +1029,78 @@ export default function AsistenciaPage() {
               <TableHead>RRHH</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead className="text-right">Novedad</TableHead>
+            </TableRow>
+            {/* Fila de filtros: cada uno arriba de SU columna (misma tabla,
+                mismos anchos que el cuerpo) — antes era una barra aparte con
+                grid propio que no alineaba con las columnas reales. */}
+            <TableRow className="hover:bg-transparent [&>th]:sticky [&>th]:top-10 [&>th]:z-20 [&>th]:bg-[#111111]/95 [&>th]:backdrop-blur [&>th]:border-b [&>th]:border-zinc-800 [&>th]:py-2 [&>th]:align-top [&>th]:whitespace-normal [&>th]:font-normal">
+              <TableHead>
+                <Input
+                  placeholder="Buscar empleado…"
+                  value={empleado}
+                  onChange={(e) => setEmpleado(e.target.value)}
+                  className="h-8 text-xs"
+                />
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                  <Select value={sector} onValueChange={setSector}>
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Sector" />
+                    </SelectTrigger>
+                    <SelectContent className="dark">
+                      <SelectItem value="all">Todos los sectores</SelectItem>
+                      {sectores.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={area} onValueChange={setArea}>
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Área" />
+                    </SelectTrigger>
+                    <SelectContent className="dark">
+                      <SelectItem value="all">Todas las áreas</SelectItem>
+                      {areas.map((a) => (
+                        <SelectItem key={a} value={a}>
+                          {a}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </TableHead>
+              <TableHead>
+                <DateRangeField
+                  desde={desde}
+                  hasta={hasta}
+                  onChange={(d, h) => {
+                    setDesde(d);
+                    setHasta(h);
+                  }}
+                  variant="light"
+                  className="w-full"
+                />
+              </TableHead>
+              <TableHead />
+              <TableHead />
+              <TableHead />
+              <TableHead>
+                <Select value={estado} onValueChange={setEstado}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Estado" />
+                  </SelectTrigger>
+                  <SelectContent className="dark">
+                    <SelectItem value="all">Todos los estados</SelectItem>
+                    {estadosOp.map((s) => (
+                      <SelectItem key={s.id} value={s.nombre}>
+                        {s.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>

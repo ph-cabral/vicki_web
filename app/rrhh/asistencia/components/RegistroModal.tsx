@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CalendarDays, Plus, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { abrirPicker } from "@/components/ui/abrirPicker";
 import { cn } from "@/lib/utils";
 
 export type Opcion = {
@@ -41,11 +42,18 @@ const CAL_MESES = [
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const toISO = (y: number, m: number, d: number) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
 
+// Fecha de hoy en horario local, YYYY-MM-DD (mismo criterio que la página).
+const todayLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type Step = "bricks" | "numero" | "rango" | "calendario";
+type Step = "empleado" | "bricks" | "numero" | "rango" | "calendario";
 
 type EmailRegistrado = { id: number; email: string; nombre: string | null };
+type EmpleadoOpcion = { employee_no: string; nombre: string; sector: string | null };
 
 export function RegistroButton({
   tipo,
@@ -62,6 +70,7 @@ export function RegistroButton({
   isAdmin,
   onSaved,
   onOpcionesChanged,
+  trigger = "row",
 }: {
   tipo: "estado" | "novedad";
   opciones: Opcion[];
@@ -70,13 +79,18 @@ export function RegistroButton({
   numLabel: "días" | "horas";
   placeholder: string;
   toneOf: (nombre: string) => string;
-  employee_no: string;
-  employee_name: string | null;
-  fecha: string;
+  // En modo "row" (default) vienen fijos de la fila. En modo "top" arrancan
+  // vacíos: el paso "empleado" del modal los completa (selector con
+  // coincidencias, igual que el código de manguera) — para dar de alta un
+  // estado/novedad de alguien que ese día no aparece en la grilla (2026-09-18).
+  employee_no?: string;
+  employee_name?: string | null;
+  fecha?: string;
   bruto?: number | null;
   isAdmin: boolean;
   onSaved: () => void;
   onOpcionesChanged: () => void;
+  trigger?: "row" | "top";
 }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("bricks");
@@ -85,6 +99,17 @@ export function RegistroButton({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nuevoNombre, setNuevoNombre] = useState("");
+
+  // Empleado/fecha "efectivos" del registro: en modo "row" son fijos (vienen
+  // de la fila); en modo "top" los completa el paso "empleado".
+  const [empNo, setEmpNo] = useState(employee_no ?? "");
+  const [empName, setEmpName] = useState<string | null>(employee_name ?? null);
+  const [fechaSel, setFechaSel] = useState(fecha ?? todayLocal());
+
+  // Selector de empleado (sólo modo "top") — mismo patrón que el input de
+  // código de manguera: se tipea y sólo se muestran coincidencias.
+  const [empQuery, setEmpQuery] = useState("");
+  const [empleados, setEmpleados] = useState<EmpleadoOpcion[] | null>(null);
 
   // Rango de fechas.
   const hoy = new Date();
@@ -124,7 +149,17 @@ export function RegistroButton({
   const [nuevoEmailError, setNuevoEmailError] = useState<string | null>(null);
 
   const resetTransient = () => {
-    setStep("bricks");
+    setStep(trigger === "top" ? "empleado" : "bricks");
+    if (trigger === "top") {
+      setEmpNo("");
+      setEmpName(null);
+      setFechaSel(todayLocal());
+      setEmpQuery("");
+    } else {
+      setEmpNo(employee_no ?? "");
+      setEmpName(employee_name ?? null);
+      setFechaSel(fecha ?? todayLocal());
+    }
     setSelected(null);
     setNumVal("");
     setError(null);
@@ -170,13 +205,14 @@ export function RegistroButton({
 
   // ── Guardado simple (sin calendario) ────────────────────────────────────
   const guardarSimple = async (quitar = false) => {
+    if (!empNo || !fechaSel) return;
     if (!selected && !quitar) return;
     setSaving(true);
     setError(null);
     try {
       const body: any = {
-        employee_no,
-        fecha,
+        employee_no: empNo,
+        fecha: fechaSel,
         kind: tipo,
         value: quitar ? null : selected!.nombre,
         num: quitar ? null : numVal || null,
@@ -198,6 +234,32 @@ export function RegistroButton({
     } finally {
       setSaving(false);
     }
+  };
+
+  // ── Selector de empleado (modo "top"): carga la lista liviana al abrir ──
+  useEffect(() => {
+    if (trigger !== "top" || !open || empleados !== null) return;
+    fetch("/api/rrhh/asistencia/empleados")
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        return (r.ok ? d.empleados : []) as EmpleadoOpcion[];
+      })
+      .then(setEmpleados)
+      .catch(() => setEmpleados([]));
+  }, [trigger, open, empleados]);
+
+  const empMatches = useMemo(() => {
+    const q = empQuery.trim().toLowerCase();
+    if (!q || !empleados) return [];
+    return empleados
+      .filter((e) => e.nombre.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [empQuery, empleados]);
+
+  const elegirEmpleado = (e: EmpleadoOpcion) => {
+    setEmpNo(e.employee_no);
+    setEmpName(e.nombre);
+    setEmpQuery(e.nombre);
   };
 
   // ── Paso calendario: carga la lista al entrar ───────────────────────────
@@ -283,7 +345,7 @@ export function RegistroButton({
   const horasDiaValida = tipo !== "novedad" || (Number.isFinite(horasDiaNum) && horasDiaNum > 0);
 
   const confirmarRango = async () => {
-    if (!selected || !rangeStart || !rangeEnd || !calendarioId || !horasDiaValida) return;
+    if (!empNo || !selected || !rangeStart || !rangeEnd || !calendarioId || !horasDiaValida) return;
     setSaving(true);
     setError(null);
     try {
@@ -291,7 +353,7 @@ export function RegistroButton({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          employee_no,
+          employee_no: empNo,
           tipo,
           nombre: selected.nombre,
           desde: rangeStart,
@@ -388,15 +450,26 @@ export function RegistroButton({
 
   return (
     <>
-      <button type="button" onClick={openModal} className={btnClass}>
-        <span className="text-xs font-medium">{value ?? placeholder}</span>
-        {num != null && (
-          <span className="text-[10px] opacity-75">
-            {num}
-            {numLabel === "días" ? "d" : "h"}
-          </span>
-        )}
-      </button>
+      {trigger === "top" ? (
+        <button
+          type="button"
+          onClick={openModal}
+          className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-[#171717] px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-yellow-400/60 hover:text-yellow-400"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {tipo === "estado" ? "Nuevo estado" : "Nueva novedad"}
+        </button>
+      ) : (
+        <button type="button" onClick={openModal} className={btnClass}>
+          <span className="text-xs font-medium">{value ?? placeholder}</span>
+          {num != null && (
+            <span className="text-[10px] opacity-75">
+              {num}
+              {numLabel === "días" ? "d" : "h"}
+            </span>
+          )}
+        </button>
+      )}
 
       {open &&
         createPortal(
@@ -411,24 +484,110 @@ export function RegistroButton({
               )}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="mb-3 flex items-center justify-between">
+              <div className="mb-3 flex items-center justify-between gap-2">
                 <h2 className="text-sm font-medium">
-                  {tipo === "estado" ? "Estado" : "Novedad"} · {employee_name ?? employee_no} ·{" "}
-                  {fecha}
+                  {tipo === "estado" ? "Estado" : "Novedad"}
+                  {step !== "empleado" && (
+                    <>
+                      {" "}
+                      · {empName || empNo || "…"} · {fechaSel}
+                    </>
+                  )}
                 </h2>
-                <button
-                  type="button"
-                  onClick={close}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  {trigger === "top" && step !== "empleado" && (
+                    <button
+                      type="button"
+                      onClick={() => setStep("empleado")}
+                      className="text-xs text-yellow-400 hover:underline"
+                    >
+                      Cambiar empleado
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
 
               {error && (
                 <p className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
                   {error}
                 </p>
+              )}
+
+              {step === "empleado" && (
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Empleado</label>
+                  <div className="relative">
+                    <Input
+                      autoFocus
+                      value={empQuery}
+                      onChange={(e) => {
+                        setEmpQuery(e.target.value);
+                        setEmpNo("");
+                        setEmpName(null);
+                      }}
+                      placeholder="Escribí el nombre…"
+                      className="h-9"
+                    />
+                    {!empNo && empQuery.trim() !== "" && empMatches.length > 0 && (
+                      <ul className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border bg-popover shadow">
+                        {empMatches.map((e) => (
+                          <li key={e.employee_no}>
+                            <button
+                              type="button"
+                              onClick={() => elegirEmpleado(e)}
+                              className="block w-full px-3 py-2 text-left text-sm hover:bg-accent"
+                            >
+                              {e.nombre}
+                              {e.sector && (
+                                <span className="text-xs text-muted-foreground"> · {e.sector}</span>
+                              )}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {!empNo && empQuery.trim() !== "" && empleados !== null && empMatches.length === 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">Sin coincidencias.</p>
+                    )}
+                    {empleados === null && (
+                      <p className="mt-1 text-xs text-muted-foreground">Cargando empleados…</p>
+                    )}
+                  </div>
+
+                  <label className="mb-1 mt-3 block text-xs text-muted-foreground">Fecha</label>
+                  <input
+                    type="date"
+                    value={fechaSel}
+                    onClick={abrirPicker}
+                    onChange={(e) => setFechaSel(e.target.value)}
+                    className="h-9 w-full cursor-pointer rounded-md border bg-background px-2 text-sm"
+                  />
+
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={close}
+                      className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-accent"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!empNo || !fechaSel}
+                      onClick={() => setStep("bricks")}
+                      className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
+                    >
+                      Continuar
+                    </button>
+                  </div>
+                </div>
               )}
 
               {step === "bricks" && (
