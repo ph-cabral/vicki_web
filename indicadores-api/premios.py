@@ -35,7 +35,7 @@ lo aplica el front con esFilaProductiva() de lib/deposito/parseDeposito.ts,
 que es la única fuente de verdad de esa regla.
 """
 from calendar import monthrange
-from datetime import datetime
+from datetime import date, datetime
 
 from db import get_connection
 from db_pg import get_pg_connection
@@ -81,9 +81,23 @@ CROSS APPLY (
     FROM (VALUES (ped.CodControlador1), (ped.CodControlador2)) v(cod)
     WHERE v.cod > 0
 ) c
-WHERE ped.FechaControl BETWEEN dbo.FECHA_SQL2Cla(?) AND dbo.FECHA_SQL2Cla(?)
+WHERE ped.FechaControl BETWEEN ? AND ?
 GROUP BY c.cod
 """
+
+# Magnus guarda las fechas como días enteros desde esta época (convención
+# Clarion). El entero se calcula acá y NO con dbo.FECHA_SQL2Cla(?) dentro del
+# WHERE: una función escalar del lado del parámetro deja al optimizador sin
+# saber qué rango va a filtrar, así que estima mal y elige el peor plan.
+_BASE_CLARION = date(1800, 12, 28)
+
+
+def _dia_magnus(valor) -> int:
+    """date | datetime -> entero de días de Magnus (mismo valor que devuelve
+    dbo.FECHA_SQL2Cla, verificado contra la base)."""
+    d = valor.date() if isinstance(valor, datetime) else valor
+    return (d - _BASE_CLARION).days
+
 
 SQL_USUARIOS = "SELECT Numero, Nombre FROM dbo.Gen_Usuarios"
 
@@ -169,7 +183,7 @@ def _mesa(desde: datetime, hasta: datetime) -> dict[str, dict]:
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         cur.execute(SQL_USUARIOS)
         nombres = {int(r[0]): str(r[1]).strip() for r in cur.fetchall() if r[0] is not None}
-        cur.execute(SQL_MESA, (desde, hasta))
+        cur.execute(SQL_MESA, (_dia_magnus(desde), _dia_magnus(hasta)))
         for codigo, renglones in cur.fetchall():
             cod = int(codigo)
             nombre = nombres.get(cod) or f"Controlador {cod}"

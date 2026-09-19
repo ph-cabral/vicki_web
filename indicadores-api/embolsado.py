@@ -252,9 +252,9 @@ def buscar_usuario(q: str):
 # artículo con COLLATE DATABASE_DEFAULT (ver GOTCHAS). El INNER JOIN contra el
 # WMS ya deja afuera los artículos sin ninguna ubicación cargada.
 SQL_UNIVERSO = f"""
-SELECT LTRIM(RTRIM(s.CodArticulo))                                   AS Cod,
-       LTRIM(RTRIM(ap.Detalle)) + ' ' + LTRIM(RTRIM(s.DetalleMedida)) AS Nombre,
-       LTRIM(RTRIM(s.DetalleEmpaque))                                AS Empaque,
+SELECT LTRIM(RTRIM(s.CodArticulo))                                        AS Cod,
+       MAX(LTRIM(RTRIM(ap.Detalle)) + ' ' + LTRIM(RTRIM(s.DetalleMedida))) AS Nombre,
+       MAX(LTRIM(RTRIM(s.DetalleEmpaque)))                                AS Empaque,
        SUM(CASE WHEN RTRIM(u.UbicacionCodigo) = '{UBIC_INGRESO}'
                 THEN u.UbicacionDetalleCantidad ELSE 0 END)          AS EnIngreso,
        SUM(CASE WHEN RTRIM(u.UbicacionCodigo) <> '{UBIC_INGRESO}'
@@ -268,10 +268,13 @@ WHERE s.Estado = 1
   AND s.LlevaExistencia = 1
   AND s.DetalleEmpaque LIKE '{EMPAQUE_LIKE}'
   {"".join(f"AND ap.Detalle NOT LIKE '{p}'{chr(10)}  " for p in PATRONES_EXCLUIDOS)}
-GROUP BY LTRIM(RTRIM(s.CodArticulo)),
-         LTRIM(RTRIM(ap.Detalle)) + ' ' + LTRIM(RTRIM(s.DetalleMedida)),
-         LTRIM(RTRIM(s.DetalleEmpaque))
+GROUP BY s.CodArticulo
 """
+# Se agrupa SOLO por s.CodArticulo, que es la clave del artículo: el nombre y
+# el empaque dependen de él, así que salen con MAX() arriba en vez de entrar a
+# la clave del GROUP BY. Antes la clave incluía una concatenación de texto, y
+# armar esa cadena para cada una de las ~41 mil filas solo para agrupar era
+# trabajo puro de descarte.
 
 # ── 3. Venta neta por artículo y MES, acotada al universo ─────────────────
 # El signo lo pone Ven_CodCom.DebitoCredito (1 débito suma, 2 crédito resta),
@@ -290,7 +293,7 @@ WHERE c.FecMovim >= DATEDIFF(DAY, '1800-12-28', '{{desde}}')
   AND c.FecMovim <  DATEDIFF(DAY, '1800-12-28', '{{hasta}}')
   AND cc.EvitaInformesYListados <> 1
   AND cc.CompCodigo IN ({comprobantes})
-GROUP BY LTRIM(RTRIM(r.CodArticu)),
+GROUP BY r.CodArticu,
          DATEDIFF(MONTH, '1800-12-28', DATEADD(DAY, c.FecMovim, '1800-12-28'))
 """.format(
     empaque=EMPAQUE_LIKE,

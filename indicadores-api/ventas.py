@@ -258,7 +258,13 @@ def _prueba(sql: str) -> str:
 SQL_VENTAS_CLIENTE = """
 SELECT  -- ver COMPROBANTES_VENTA: el IN del WHERE define qué es venta
     r.CodArticu AS CodArticu,
-    dbo.fecha_cla2sql(c.FecMovim) AS Fecha,
+    -- Antes: dbo.fecha_cla2sql(c.FecMovim). Es una función escalar, y una
+    -- función escalar en el SELECT se evalúa fila por fila. La cuenta directa
+    -- da exactamente lo mismo (verificado contra los 4.595 valores distintos
+    -- de FecMovim de la tabla, cero diferencias) y el motor la resuelve en la
+    -- misma pasada. La única diferencia sería con FecMovim negativo, que no
+    -- existe en la tabla.
+    DATEADD(day, c.FecMovim, '1800-12-28') AS Fecha,
     cc.EvitaInformesYListados AS Evita,
     CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS CantidadNeta,
     CASE cc.DebitoCredito WHEN 1 THEN (r.Cantidad * r.PrecioVenta) ELSE (r.Cantidad * r.PrecioVenta) * -1 END AS MontoNeto
@@ -571,7 +577,7 @@ def _ventana(expr: str) -> str:
 SQL_TOP_CLIENTES = _solo_venta(f"""
 SELECT
     c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
+    MAX(LTRIM(RTRIM(c.Cliente_Nombre))) AS Nombre,
     {_ventana(_MONTO_NETO)} AS MontoNeto,
     {_ventana(_MONTO_NETO)} AS MontoMes
 FROM MAGNUS_SITD.dbo.Clientes c
@@ -581,7 +587,7 @@ JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 {MARCA_VENDEDOR}
-GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
+GROUP BY c.CodCliente
 """)
 
 # El `HAVING SUM(...) > 0` y el `ORDER BY` que tenían estas dos consultas se
@@ -1083,13 +1089,15 @@ _TOP_CLIENTES_LINEA_TTL_SEG = 15 * 60  # 15 minutos
 # fetch_clientes_por_sub_linea, más abajo.
 _MARGEN_FECHA_RENGLON = 7
 
+# Nombre por MAX() y fuera del GROUP BY: depende de CodCliente, agruparlo
+# también sólo agregaba una columna de texto a la clave del hash.
 SQL_CLIENTES_LINEA_WRAP = """
-SELECT CodCliente, Nombre, AnioMes,
+SELECT CodCliente, MAX(Nombre) AS Nombre, AnioMes,
        SUM(Cant)  AS CantidadNeta,
        SUM(Monto) AS MontoNeto
 FROM ({sub}) t
 WHERE AnioMes IS NOT NULL
-GROUP BY CodCliente, Nombre, AnioMes
+GROUP BY CodCliente, AnioMes
 """
 
 
@@ -1343,13 +1351,16 @@ WHERE cc.EvitaInformesYListados <> 1
 # agregación en SQL, sólo con una dimensión más — y _acumular hace la suma
 # final por cliente/año/mes en Python al descartar los artículos que sí
 # matchean.
+# El nombre del cliente sale con MAX() y NO entra al GROUP BY: depende
+# funcionalmente de CodCliente, así que agruparlo también sólo engordaba la
+# clave del hash con una columna de texto sobre millones de renglones.
 SQL_CLIENTES_SIN_CLASIF_WRAP = """
-SELECT CodCliente, Nombre, CodArticu, AnioMes,
+SELECT CodCliente, MAX(Nombre) AS Nombre, CodArticu, AnioMes,
        SUM(Cant)  AS CantidadNeta,
        SUM(Monto) AS MontoNeto
 FROM ({sub}) t
 WHERE AnioMes IS NOT NULL
-GROUP BY CodCliente, Nombre, CodArticu, AnioMes
+GROUP BY CodCliente, CodArticu, AnioMes
 """
 
 

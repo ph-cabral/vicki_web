@@ -165,6 +165,14 @@ LEFT JOIN MAGNUS_SITD.dbo.Vta_OrigenRegistracion or1 ON p.PedOrigenCodigo = or1.
 LEFT JOIN MAGNUS_SITD.dbo.Ped_OrigenRegistracion or2 ON p.PedOrigenCodigo = or2.PedOrigenCodigo
 WHERE p.CompCodigo NOT IN (9, 49, 208, 410)
   AND p.FechaPedido >= {corte_dias}
+  -- Estos dos filtros son los que antes hacía `filtrar()` en pandas, ya
+  -- traídas todas las filas. Sobre 7 meses eso son 25.513 pedidos leídos,
+  -- convertidos a timestamps y descartados para quedarse con 5.870: el 77%
+  -- del trabajo era para tirarlo. Mismo criterio, mismos valores, pero el
+  -- recorte lo hace la base. COMP_VALIDOS / ESTADOS_VALIDOS siguen aplicados
+  -- en `filtrar()` por si alguien cambia esas constantes.
+  AND e.Ped_EstadoDescripcion IN ('Facturados', 'Cerrados')
+  AND cc.DetalleCorto = 'PED.MAYOR'
 ORDER BY p.NroMovVenta DESC
 """
 

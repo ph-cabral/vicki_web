@@ -130,8 +130,8 @@ WHERE OT.OTEstado IN (2, 3, 4)
   AND OT.OTFechaHoraEjecucion >= ?
   AND OT.OTFechaHoraEjecucion <= ?
   AND TRY_CAST(LEFT(t.CodComprobante, CHARINDEX(' ', t.CodComprobante + ' ') - 1) AS INT) IN ({codigos})
-  AND LTRIM(RTRIM(t.Estado)) IN ('Abierto', 'Cerrado', 'Facturado')
-  AND LTRIM(RTRIM(ISNULL(t.CodComprobante_Factura, 'SinCodigo'))) <> 'SinCodigo'
+  AND t.Estado IN ('Abierto', 'Cerrado', 'Facturado')
+  AND ISNULL(t.CodComprobante_Factura, 'SinCodigo') <> 'SinCodigo'
 ORDER BY OT.OTId DESC
 """
 
@@ -160,7 +160,7 @@ def fetch_wms(desde: datetime, hasta: datetime, todos: bool = False):
 SQL_TIEMPO = """
 SELECT * FROM dbo.TMP_TiempoDePedidos
 WHERE TRY_CAST(LEFT(CodComprobante, CHARINDEX(' ', CodComprobante + ' ') - 1) AS INT) IN (10, 100, 210, 310)
-  AND LTRIM(RTRIM(Estado)) IN ('Facturado', 'Cerrado')
+  AND Estado IN ('Facturado', 'Cerrado')
 ORDER BY NroMovVenta DESC
 """
 
@@ -222,7 +222,7 @@ CROSS APPLY (VALUES (
     LTRIM(RTRIM(ISNULL(t.CodComprobante_Factura, 'SinCodigo')))
 )) c(cod, fac)
 WHERE TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103) BETWEEN ? AND ?
-  AND LTRIM(RTRIM(t.Estado)) IN ('Abierto', 'Cerrado', 'Facturado')
+  AND t.Estado IN ('Abierto', 'Cerrado', 'Facturado')
   AND (   (c.cod IN ({cod_fact}) AND c.fac <> 'SinCodigo')
        OR  c.cod IN ({cod_sin_fact}) )
 GROUP BY TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103)
@@ -327,7 +327,7 @@ SQL_ABIERTOS_AHORA = """
 SELECT COUNT(*) FROM dbo.TMP_TiempoDePedidos
 WHERE TRY_CAST(LEFT(CodComprobante, CHARINDEX(' ', CodComprobante + ' ') - 1) AS INT)
       NOT IN ({codigos})
-  AND LTRIM(RTRIM(Estado)) = 'Abierto'
+  AND Estado = 'Abierto'
 """
 
 
@@ -398,10 +398,15 @@ def _fotos_abiertos_del_dia(dia: date) -> list[tuple[datetime, int]]:
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        # Rango sobre `ts` en vez de `ts::date = %s`: el índice
+        # idx_pedidos_abiertos_snapshot_ts ya existe, pero con el casteo a date
+        # Postgres no lo puede usar y barría la tabla entera — que crece una
+        # fila cada 15 minutos, para siempre. Medido sobre la gemela de
+        # estados: 43 buffers y 1,8 ms con el casteo, 4 buffers y 0,14 ms así.
         cur.execute(
             "SELECT ts, abiertos FROM deposito.pedidos_abiertos_snapshot "
-            "WHERE ts::date = %s ORDER BY ts",
-            (dia,),
+            "WHERE ts >= %s AND ts < %s + interval '1 day' ORDER BY ts",
+            (dia, dia),
         )
         return [(ts, int(ab)) for ts, ab in cur.fetchall()]
     finally:
@@ -462,8 +467,8 @@ def guardar_snapshot_wms_estados() -> dict:
         # quedamos con la máxima previa en vez de guardar una baja espuria.
         cur.execute(
             "SELECT COALESCE(MAX(terminadas), 0) FROM deposito.wms_estados_snapshot "
-            "WHERE ts::date = %s",
-            (hoy,),
+            "WHERE ts >= %s AND ts < %s + interval '1 day'",
+            (hoy, hoy),
         )
         terminadas_prev = cur.fetchone()[0]
         if terminadas < terminadas_prev:
@@ -496,8 +501,9 @@ def _fotos_estados_del_dia(dia: date) -> list[tuple[datetime, int, int, int, int
         cur.execute(
             "SELECT ts, en_espera, en_proceso, terminadas, "
             "       COALESCE(espera_merca, 0) "
-            "FROM deposito.wms_estados_snapshot WHERE ts::date = %s ORDER BY ts",
-            (dia,),
+            "FROM deposito.wms_estados_snapshot "
+            "WHERE ts >= %s AND ts < %s + interval '1 day' ORDER BY ts",
+            (dia, dia),
         )
         return [(ts, int(a), int(b), int(c), int(d)) for ts, a, b, c, d in cur.fetchall()]
     except Exception as e:  # noqa: BLE001 — tabla/columna inexistente → sin fotos
@@ -994,16 +1000,19 @@ SELECT
                     THEN LTRIM(RTRIM(uv.Usu_Arma_Nombre)) END, '')
     ) AS Vendedor
 FROM EVERWEAR.dbo.[Ven_PedRenPendientes] p
-OUTER APPLY (
-    -- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
-    -- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón.
-    SELECT TOP 1 u2.ubicacion
-    FROM EVERWEAR.dbo.[Ubicacion#] u2
-    WHERE u2.codArticulo = p.CodArticu
-      AND u2.ubicacion NOT LIKE '%[A-Za-z]%'
-      AND u2.ubicacion LIKE '%-%'
-    ORDER BY u2.ubicacion
-) u
+-- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
+-- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón:
+-- MIN(ubicacion) es lo mismo que el TOP 1 ... ORDER BY ubicacion que había acá
+-- como OUTER APPLY, pero la tabla Ubicacion# se recorre UNA vez en total en
+-- lugar de una vez por renglón (es un heap sin ningún índice, así que cada
+-- pasada costaba la tabla entera).
+LEFT JOIN (
+    SELECT codArticulo, MIN(ubicacion) AS ubicacion
+    FROM EVERWEAR.dbo.[Ubicacion#]
+    WHERE ubicacion NOT LIKE '%[A-Za-z]%'
+      AND ubicacion LIKE '%-%'
+    GROUP BY codArticulo
+) u ON u.codArticulo = p.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_Articulos]      s  ON s.CodArticulo    = p.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet]     ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nivel1
@@ -1055,7 +1064,11 @@ WITH base AS (
         ) AS PrimerDiaNum,
         MAX(p.FecRegistracion) OVER (
             PARTITION BY p.NroPedOrigen, p.NroRengOrigen
-        ) AS UltimoDiaNum
+        ) AS UltimoDiaNum,
+        -- Último snapshot del rango, calculado en la MISMA pasada que ya hace
+        -- esta CTE (antes era una subconsulta aparte que volvía a recorrer
+        -- Ven_PedRenPendientes entera una segunda vez).
+        MAX(p.FecRegistracion) OVER () AS MaxDiaRango
     FROM EVERWEAR.dbo.[Ven_PedRenPendientes] p
     WHERE p.FecRegistracion BETWEEN ? AND ?
 )
@@ -1088,16 +1101,17 @@ SELECT
                     THEN LTRIM(RTRIM(uv.Usu_Arma_Nombre)) END, '')
     ) AS Vendedor
 FROM base b
-OUTER APPLY (
-    -- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
-    -- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón.
-    SELECT TOP 1 u2.ubicacion
-    FROM EVERWEAR.dbo.[Ubicacion#] u2
-    WHERE u2.codArticulo = b.CodArticu
-      AND u2.ubicacion NOT LIKE '%[A-Za-z]%'
-      AND u2.ubicacion LIKE '%-%'
-    ORDER BY u2.ubicacion
-) u
+-- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
+-- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón:
+-- MIN(ubicacion) equivale al TOP 1 ... ORDER BY ubicacion que había como OUTER
+-- APPLY, pero recorre Ubicacion# una vez y no una vez por renglón.
+LEFT JOIN (
+    SELECT codArticulo, MIN(ubicacion) AS ubicacion
+    FROM EVERWEAR.dbo.[Ubicacion#]
+    WHERE ubicacion NOT LIKE '%[A-Za-z]%'
+      AND ubicacion LIKE '%-%'
+    GROUP BY codArticulo
+) u ON u.codArticulo = b.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_Articulos]      s  ON s.CodArticulo    = b.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet]     ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nivel1
@@ -1114,11 +1128,10 @@ LEFT JOIN MAGNUS_SITD.dbo.[Clientes]           cli ON cli.CodCliente = b.CodClie
 WHERE b.rn = 1
   -- Solo lo que sigue pendiente en la foto más nueva del rango: si un renglón se
   -- entregó a mitad del rango (no llega al último snapshot) NO es demanda viva.
-  AND b.UltimoDiaNum = (
-      SELECT MAX(FecRegistracion)
-      FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
-      WHERE FecRegistracion BETWEEN ? AND ?
-  )
+  -- El máximo del rango sale del MAX(...) OVER () que ya calcula la CTE `base`
+  -- sobre la misma pasada; antes era una subconsulta que volvía a recorrer
+  -- Ven_PedRenPendientes entera una segunda vez.
+  AND b.UltimoDiaNum = b.MaxDiaRango
   -- Filtro agregado 2026-09-17: si el renglon REAL de venta (VenFer_PedidoReng)
   -- ya quedo cumplido o sobre-cumplido (CantidadCumplida >= CantidadPedida),
   -- Ven_PedRenPendientes puede seguir arrastrando la fila vieja (caso real:
@@ -1151,7 +1164,11 @@ WITH base AS (
         ) AS PrimerDiaNum,
         MAX(p.FecRegistracion) OVER (
             PARTITION BY p.NroPedOrigen, p.NroRengOrigen
-        ) AS UltimoDiaNum
+        ) AS UltimoDiaNum,
+        -- Último snapshot del rango, calculado en la MISMA pasada que ya hace
+        -- esta CTE (antes era una subconsulta aparte que volvía a recorrer
+        -- Ven_PedRenPendientes entera una segunda vez).
+        MAX(p.FecRegistracion) OVER () AS MaxDiaRango
     FROM EVERWEAR.dbo.[Ven_PedRenPendientes] p
     WHERE p.FecRegistracion BETWEEN ? AND ?
 )
@@ -1159,11 +1176,7 @@ SELECT
     b.NroPedOrigen, b.NroRengOrigen,
     CONVERT(date, DATEADD(day, b.FecRegistracion, '1800-12-28')) AS Fecha,
     CONVERT(date, DATEADD(day, b.PrimerDiaNum,   '1800-12-28')) AS PrimerDia,
-    CASE WHEN b.UltimoDiaNum = (
-        SELECT MAX(FecRegistracion)
-        FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
-        WHERE FecRegistracion BETWEEN ? AND ?
-    ) THEN 1 ELSE 0 END AS Vivo,
+    CASE WHEN b.UltimoDiaNum = b.MaxDiaRango THEN 1 ELSE 0 END AS Vivo,
     u.ubicacion AS SecuenciaRutPicking,
     b.CodArticu,
     ap.Detalle      AS Patron,
@@ -1189,16 +1202,17 @@ SELECT
                     THEN LTRIM(RTRIM(uv.Usu_Arma_Nombre)) END, '')
     ) AS Vendedor
 FROM base b
-OUTER APPLY (
-    -- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
-    -- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón.
-    SELECT TOP 1 u2.ubicacion
-    FROM EVERWEAR.dbo.[Ubicacion#] u2
-    WHERE u2.codArticulo = b.CodArticu
-      AND u2.ubicacion NOT LIKE '%[A-Za-z]%'
-      AND u2.ubicacion LIKE '%-%'
-    ORDER BY u2.ubicacion
-) u
+-- Ubicación asignada de picking = numérica con guión (rack). Excluye depósito
+-- (letras) y el carro de preparado (0002, sin guión). 1 sola por renglón:
+-- MIN(ubicacion) equivale al TOP 1 ... ORDER BY ubicacion que había como OUTER
+-- APPLY, pero recorre Ubicacion# una vez y no una vez por renglón.
+LEFT JOIN (
+    SELECT codArticulo, MIN(ubicacion) AS ubicacion
+    FROM EVERWEAR.dbo.[Ubicacion#]
+    WHERE ubicacion NOT LIKE '%[A-Za-z]%'
+      AND ubicacion LIKE '%-%'
+    GROUP BY codArticulo
+) u ON u.codArticulo = b.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_Articulos]      s  ON s.CodArticulo    = b.CodArticu
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet]     ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]            n1 ON n1.Nivel1         = ap.Nivel1
@@ -1294,9 +1308,10 @@ def fetch_faltantes(desde=None, hasta=None, historico=False):
             cur.execute(_sql_con_estado_art(SQL_FALTANTES, col_est))
         else:
             d_num, h_num = _rango_dias(desde, hasta)
-            # params: BETWEEN del CTE (d,h) + BETWEEN de la subconsulta (d,h)
+            # params: solo el BETWEEN del CTE (d,h). La subconsulta que repetía
+            # el rango se reemplazó por MAX(...) OVER () dentro del mismo CTE.
             sql = SQL_FALTANTES_RANGO_HIST if historico else SQL_FALTANTES_RANGO
-            cur.execute(_sql_con_estado_art(sql, col_est), (d_num, h_num, d_num, h_num))
+            cur.execute(_sql_con_estado_art(sql, col_est), (d_num, h_num))
         cols = [c[0] for c in cur.description]
         fecha, rows = None, []
         for r in cur.fetchall():
@@ -1516,7 +1531,7 @@ def fetch_pedidos_cumplido_real(pedidos):
                        SUM(CantidadCumplida) AS Cumplida
                 FROM EVERWEAR.dbo.VenFer_PedidoReng
                 WHERE NroMovVenta IN ({ph})
-                GROUP BY NroMovVenta, LTRIM(RTRIM(CodArticu))
+                GROUP BY NroMovVenta, CodArticu
             """, chunk)
             for nro, cod, pedida, cumplida in cur.fetchall():
                 out[(int(nro), cod)] = (float(pedida or 0), float(cumplida or 0))
@@ -1631,7 +1646,7 @@ WHERE Codot.CodotProcesoNegocio = 4                    -- Picking
   AND OT.OTEstado = 2                                  -- Cumplido
   AND i.OTItemTipo = 1                                 -- Recolectar
   AND i.OTItemCantPedida > i.OTItemCantCumplida         -- solo faltante real (pedida > cumplida, excluye negativas de sobreenvíos previos)
-  AND LTRIM(RTRIM(i.OTItemUbicacionCodigo)) <> 'PLAYA_PEDIDOS'
+  AND i.OTItemUbicacionCodigo <> 'PLAYA_PEDIDOS'
   AND OT.OTFechaHoraEjecucion >= ?
   AND OT.OTFechaHoraEjecucion <= ?
 ORDER BY OT.OTId DESC, i.OTItemNroRenglon
@@ -1692,7 +1707,7 @@ def fetch_ot_diferencias(desde=None, hasta=None):
                    s.UnidadMedida  AS Unidad
             FROM EVERWEAR.dbo.[StkFer_Articulos]  s
             LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
-            WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
+            WHERE s.CodArticulo IN ({ph})
         """
         conn_ew = get_connection("EVERWEAR")
         try:
@@ -1713,15 +1728,15 @@ def fetch_ot_diferencias(desde=None, hasta=None):
     if codigos:
         ph = ",".join("?" for _ in codigos)
         sql_precios = f"""
-            SELECT CodArticu, PrecioVenta
+            SELECT LTRIM(RTRIM(CodArticu)) AS CodArticu, PrecioVenta
             FROM (
-                SELECT LTRIM(RTRIM(CodArticu)) AS CodArticu, PrecioVenta,
+                SELECT CodArticu, PrecioVenta,
                        ROW_NUMBER() OVER (
-                           PARTITION BY LTRIM(RTRIM(CodArticu))
+                           PARTITION BY CodArticu
                            ORDER BY FecRegistracion DESC
                        ) AS rn
                 FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
-                WHERE LTRIM(RTRIM(CodArticu)) IN ({ph})
+                WHERE CodArticu IN ({ph})
             ) t
             WHERE rn = 1
         """
@@ -2143,8 +2158,8 @@ LEFT JOIN Personal P_Repositor ON OT.OTUsuarioGUID_Repositor = P_Repositor.Perso
 WHERE Codot.CodotProcesoNegocio = 4              -- Picking
   AND OT.OTEstado IN ({vivos})                   -- vivas: Pendiente (0/1) o En proceso (5)
   AND i.OTItemTipo = 1                           -- Recolectar
-  AND LTRIM(RTRIM(i.OTItemUbicacionCodigo)) <> 'PLAYA_PEDIDOS'
-GROUP BY OT.OTId, OT.{col_pedido}, P_Repositor.PersonalNombre, LTRIM(RTRIM(i.OTItemArticuloId))
+  AND i.OTItemUbicacionCodigo <> 'PLAYA_PEDIDOS'
+GROUP BY OT.OTId, OT.{col_pedido}, P_Repositor.PersonalNombre, i.OTItemArticuloId
 HAVING SUM(i.OTItemCantPedida) > SUM(i.OTItemCantCumplida)
 """
 
@@ -2577,16 +2592,19 @@ def fetch_articulo_ubicaciones(articulo: str):
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        # El código va sin LTRIM/RTRIM contra la columna: son CHAR de ancho fijo,
+        # SQL Server ya ignora los espacios a derecha al comparar y así la
+        # columna puede usar su índice en vez de barrer la tabla entera.
         sql = f"""
             SELECT LTRIM(RTRIM(u.{UBIC_COL_UBI}))  AS Ubicacion,
                    SUM(u.{UBIC_COL_CANT})          AS Cantidad
             FROM dbo.{UBIC_TABLA} u
-            WHERE LTRIM(RTRIM(u.{UBIC_COL_ART})) = LTRIM(RTRIM(?))
-            GROUP BY LTRIM(RTRIM(u.{UBIC_COL_UBI}))
+            WHERE u.{UBIC_COL_ART} = ?
+            GROUP BY u.{UBIC_COL_UBI}
             HAVING SUM(u.{UBIC_COL_CANT}) > 1
             ORDER BY SUM(u.{UBIC_COL_CANT}) DESC
         """
-        cur.execute(sql, (articulo,))
+        cur.execute(sql, ((articulo or "").strip(),))
         rows = [{"Ubicacion": _txt(u), "Cantidad": float(_safe(c) or 0)}
                 for u, c in cur.fetchall()]
         return {"articulo": articulo, "total": len(rows), "rows": rows}
@@ -2613,15 +2631,20 @@ def _sql_pivot_stock(filtro_q: str = "") -> str:
         for d in DEPOSITOS
     )
     deps = ",".join(str(d) for d in DEPOSITOS)
+    # Agrupa y ordena por la columna cruda, no por LTRIM(RTRIM(...)): el índice
+    # agrupado de Stk_ArticSucursalDeposito ya es (CodArticulo, CodSucursal,
+    # Deposito), así que agrupado así SQL Server suma al vuelo en el orden del
+    # índice y se ahorra ordenar 558k filas. El recorte de espacios se hace al
+    # devolver el dato, donde no cuesta nada.
     return f"""
         SELECT LTRIM(RTRIM(a.{ARSU_COL_ART})) AS Cod,
                {cols},
                SUM(a.{ARSU_COL_STK}) AS StockTotal
         FROM dbo.{ARSU_TABLA} a
         WHERE a.{ARSU_COL_DEP} IN ({deps}) {filtro_q}
-        GROUP BY LTRIM(RTRIM(a.{ARSU_COL_ART}))
+        GROUP BY a.{ARSU_COL_ART}
         HAVING SUM(a.{ARSU_COL_STK}) > 0
-        ORDER BY Cod
+        ORDER BY a.{ARSU_COL_ART}
     """
 
 
@@ -2669,7 +2692,7 @@ def _info_articulos(codigos: list[str]) -> dict[str, dict]:
                 FROM EVERWEAR.dbo.[StkFer_Articulos]  s
                 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
                 LEFT JOIN EVERWEAR.dbo.[Com_Proveedores]   pr ON pr.CodProveed     = s.CodProveedHabitual
-                WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
+                WHERE s.CodArticulo IN ({ph})
             """
             cur.execute(sql_info, chunk)
             for cod, patron, medida, unidad, prov in cur.fetchall():
@@ -2711,7 +2734,7 @@ def fetch_stock_deposito1(page: int = 1, page_size: int = 50, q: str | None = No
     # EVERWEAR.Stk_ArticSucursalDeposito → con q vacío no se nota (no arma el
     # filtro), pero al buscar algo el SQL queda inválido (alias "u" no existe
     # en la query) → 503 "Error en API de stock".
-    filtro_q = f"AND LTRIM(RTRIM(a.{ARSU_COL_ART})) LIKE ?" if q else ""
+    filtro_q = f"AND a.{ARSU_COL_ART} LIKE ?" if q else ""
     sql_stock = _sql_pivot_stock(filtro_q) + " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
     params: list = ([f"%{q}%"] if q else []) + [offset, page_size]
 
@@ -2762,8 +2785,8 @@ def fetch_stock_por_articulos(codigos: list[str]):
                        SUM(a.{ARSU_COL_STK})          AS Stock
                 FROM dbo.{ARSU_TABLA} a
                 WHERE a.{ARSU_COL_DEP} = ?
-                  AND LTRIM(RTRIM(a.{ARSU_COL_ART})) IN ({ph})
-                GROUP BY LTRIM(RTRIM(a.{ARSU_COL_ART}))
+                  AND a.{ARSU_COL_ART} IN ({ph})
+                GROUP BY a.{ARSU_COL_ART}
             """
             cur.execute(sql, [DEPOSITO_CENTRAL] + chunk)
             for cod, cant in cur.fetchall():
@@ -2791,7 +2814,7 @@ SELECT a.Cod, a.Ubic,
        ap.Detalle AS Patron, s.DetalleMedida AS Medida, s.UnidadMedida AS Unidad
 FROM asign a
 JOIN multi m ON m.Cod = a.Cod
-LEFT JOIN EVERWEAR.dbo.[StkFer_Articulos]  s  ON LTRIM(RTRIM(s.CodArticulo)) = a.Cod
+LEFT JOIN EVERWEAR.dbo.[StkFer_Articulos]  s  ON s.CodArticulo = a.Cod
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
 GROUP BY a.Cod, a.Ubic, ap.Detalle, s.DetalleMedida, s.UnidadMedida
 ORDER BY a.Cod, a.Ubic
@@ -2854,8 +2877,8 @@ def fetch_contenedor(tag: str):
                    LTRIM(RTRIM(desUser.PersonalNombre))   AS Desarmo,
                    c.ContenedorControlCalidad              AS ControlCalidad
             FROM Contenedor c
-            LEFT JOIN Personal desUser ON LTRIM(RTRIM(desUser.PersonalUserGUID)) = LTRIM(RTRIM(c.ContenedorUsuarioGUIDDesarme))
-            WHERE LTRIM(RTRIM(c.ContenedorTAG)) = LTRIM(RTRIM(?))
+            LEFT JOIN Personal desUser ON desUser.PersonalUserGUID = c.ContenedorUsuarioGUIDDesarme
+            WHERE c.ContenedorTAG = ?
         """, (tag,))
         info_rows = _rows(cur)
         info = info_rows[0] if info_rows else None
@@ -2864,7 +2887,7 @@ def fetch_contenedor(tag: str):
             SELECT LTRIM(RTRIM(i.ContenedorItemArticuloId)) AS Articulo,
                    i.ContenedorItemCantidad                  AS Cantidad
             FROM ContenedorItem i
-            WHERE LTRIM(RTRIM(i.ContenedorTAG)) = LTRIM(RTRIM(?))
+            WHERE i.ContenedorTAG = ?
         """, (tag,))
         items = _rows(cur)
 
@@ -2885,12 +2908,12 @@ def fetch_contenedor(tag: str):
                    r.KmovRengCantidad                              AS Cantidad
             FROM KmovContenedor c
             JOIN Kmov k               ON k.KmovId = c.KmovId
-            LEFT JOIN Personal regUser  ON LTRIM(RTRIM(regUser.PersonalUserGUID))  = LTRIM(RTRIM(k.KmovUsuarioGUID_Regist))
-            LEFT JOIN Personal realUser ON LTRIM(RTRIM(realUser.PersonalUserGUID)) = LTRIM(RTRIM(c.KmovContenedorUsuarioGUID))
+            LEFT JOIN Personal regUser  ON regUser.PersonalUserGUID  = k.KmovUsuarioGUID_Regist
+            LEFT JOIN Personal realUser ON realUser.PersonalUserGUID = c.KmovContenedorUsuarioGUID
             LEFT JOIN KmovReng r
                    ON r.KmovId = c.KmovId
-                  AND LTRIM(RTRIM(r.KmovRengContenedorAsociado)) = LTRIM(RTRIM(c.KmovContenedorContenedorTAG))
-            WHERE LTRIM(RTRIM(c.KmovContenedorContenedorTAG)) = LTRIM(RTRIM(?))
+                  AND r.KmovRengContenedorAsociado = c.KmovContenedorContenedorTAG
+            WHERE c.KmovContenedorContenedorTAG = ?
             ORDER BY k.KmovFechaHora DESC
         """, (tag,))
         historial = _rows(cur)

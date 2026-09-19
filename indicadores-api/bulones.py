@@ -242,12 +242,12 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
              + MARCA_VENDEDOR)
     params: tuple = dias_acum + dias_mes + dias_total
     sql = f"""
-SELECT c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
+SELECT c.CodCliente, MAX(LTRIM(RTRIM(c.Cliente_Nombre))) AS Nombre,
        {_ventana(_MONTO)} AS MontoNeto,
        {_ventana(_MONTO)} AS MontoMes
 {joins}{_JOIN_ART}{where}
   AND {COND_BULON}
-GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
+GROUP BY c.CodCliente
 """
     sql = recortar_vendedor(sql, vendedor)
     # El HAVING y el ORDER BY se resuelven en Python: con dos sub-empresas el
@@ -329,7 +329,7 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
        {_ventana(_MONTO)} AS MontoMes
 {joins}{_JOIN_ART}{where}
   AND {COND_BULON}
-GROUP BY LTRIM(RTRIM(s.ArticuloPatron))
+GROUP BY s.ArticuloPatron
 """
     sql = recortar_vendedor(sql, vendedor)
     conn, cur = _conn()
@@ -546,11 +546,13 @@ GROUP BY vc.vendedor
 # modal NO son clickeables, así que cada una de estas funciones se llama
 # desde el ranking del pie y nada más.
 # ──────────────────────────────────────────────────────────────────────────
+# Nombre por MAX() y fuera del GROUP BY: depende de Clave, así que agruparlo
+# también sólo sumaba una columna de texto a la clave del hash.
 _WRAP = """
-SELECT Clave, Nombre, AnioMes, SUM(Cant) AS Cant, SUM(Monto) AS Monto
+SELECT Clave, MAX(Nombre) AS Nombre, AnioMes, SUM(Cant) AS Cant, SUM(Monto) AS Monto
 FROM ({sub}) t
 WHERE AnioMes IS NOT NULL
-GROUP BY Clave, Nombre, AnioMes
+GROUP BY Clave, AnioMes
 """
 
 

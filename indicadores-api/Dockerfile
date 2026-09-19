@@ -21,6 +21,15 @@ RUN apt-get update \
     && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
 
+# 3b. Pool de conexiones del driver manager.
+# db.py pide pooling (pyodbc.pooling = True), pero en unixODBC el pool solo se
+# activa si está declarado acá. Sin esto, cada request paga de nuevo el
+# handshake TCP + TLS + login contra SRV-SQL2 — y hay endpoints que abren tres
+# o cuatro conexiones. CPTimeout = segundos que una conexión queda disponible
+# en el pool antes de cerrarse.
+RUN printf '\n[ODBC]\nPooling=Yes\n' >> /etc/odbcinst.ini \
+    && sed -i '/^\[ODBC Driver 18 for SQL Server\]/a CPTimeout=120' /etc/odbcinst.ini
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

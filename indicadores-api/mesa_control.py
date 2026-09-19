@@ -54,6 +54,19 @@ def _fecha_desde_dias(dias) -> date | None:
         return None
 
 
+def _dia_magnus(valor) -> int:
+    """date | datetime -> entero de días de Magnus (inverso de
+    _fecha_desde_dias, y mismo valor que devuelve dbo.FECHA_SQL2Cla —
+    verificado contra la base).
+
+    Se calcula acá y no con dbo.FECHA_SQL2Cla(?) dentro del WHERE: una función
+    escalar del lado del parámetro deja al optimizador sin saber qué rango se
+    va a filtrar, así que estima mal la cantidad de filas y elige el peor plan.
+    """
+    d = valor.date() if isinstance(valor, datetime) else valor
+    return (d - _BASE_CLARION).days
+
+
 def _hora_desde_centesimas(valor) -> int | None:
     """HoraControl (int Clarion, centésimas de segundo desde medianoche) ->
     hora 0-23, o None si no hay hora registrada (valor <= 0 — no visto en la
@@ -206,7 +219,7 @@ LEFT JOIN dbo.StkFer_Articulos  s  ON s.CodArticulo     = reng.CodArticu
 LEFT JOIN dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN dbo.Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE (ped.CodControlador1 > 0 OR ped.CodControlador2 > 0)
-  AND ped.FechaControl BETWEEN dbo.FECHA_SQL2Cla(?) AND dbo.FECHA_SQL2Cla(?)
+  AND ped.FechaControl BETWEEN ? AND ?
 """
 
 
@@ -299,7 +312,7 @@ def fetch_mesa_control(meses: list[str]) -> dict:
             d, h = _rango_mes(mes)
             if d > h:
                 continue  # mes futuro, sin datos posibles
-            cur.execute(SQL_RENGLONES_CONTROLADOS, (d, h))
+            cur.execute(SQL_RENGLONES_CONTROLADOS, (_dia_magnus(d), _dia_magnus(h)))
             filas = cur.fetchall()
 
             renglones_unicos: set[tuple] = set()
@@ -431,7 +444,7 @@ SELECT COUNT(*) AS pedidos_con_recontrol, SUM(cnt) AS filas_extra
 FROM (
     SELECT NroMovVenta, CodCentroPrep, COUNT(*) AS cnt
     FROM dbo.Ven_PedImpresoCP
-    WHERE FechaControl BETWEEN dbo.FECHA_SQL2Cla(?) AND dbo.FECHA_SQL2Cla(?)
+    WHERE FechaControl BETWEEN ? AND ?
     GROUP BY NroMovVenta, CodCentroPrep
     HAVING COUNT(*) > 1
 ) x
@@ -449,7 +462,7 @@ def fetch_mesa_control_recontroles_diag(mes: str | None = None) -> dict:
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_RECONTROLES_DIAG, (d, h))
+        cur.execute(SQL_RECONTROLES_DIAG, (_dia_magnus(d), _dia_magnus(h)))
         row = cur.fetchone()
     finally:
         conn.close()

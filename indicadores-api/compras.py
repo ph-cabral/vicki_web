@@ -575,15 +575,15 @@ def fetch_compras_valorizado(desde: str, hasta: str, incluir_fabril: bool = Fals
         if codigos:
             ph = ",".join("?" for _ in codigos)
             sql_precios = f"""
-                SELECT CodArticu, PrecioVenta
+                SELECT LTRIM(RTRIM(CodArticu)) AS CodArticu, PrecioVenta
                 FROM (
-                    SELECT LTRIM(RTRIM(CodArticu)) AS CodArticu, PrecioVenta,
+                    SELECT CodArticu, PrecioVenta,
                            ROW_NUMBER() OVER (
-                               PARTITION BY LTRIM(RTRIM(CodArticu))
+                               PARTITION BY CodArticu
                                ORDER BY FecRegistracion DESC
                            ) AS rn
                     FROM EVERWEAR.dbo.[Ven_PedRenPendientes]
-                    WHERE LTRIM(RTRIM(CodArticu)) IN ({ph})
+                    WHERE CodArticu IN ({ph})
                 ) t
                 WHERE rn = 1
             """
@@ -1589,7 +1589,7 @@ SELECT LTRIM(RTRIM(s.CodArticulo)) AS CodArticulo,
 FROM EVERWEAR.dbo.[StkFer_Articulos] s
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
-WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
+WHERE s.CodArticulo IN ({ph})
 """
 
 

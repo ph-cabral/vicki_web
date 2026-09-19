@@ -290,7 +290,7 @@ def fetch_articulos_pedido(nro_pedido: int) -> list[dict]:
                        s.UnidadMedida  AS Unidad
                 FROM EVERWEAR.dbo.[StkFer_Articulos]  s
                 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
-                WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
+                WHERE s.CodArticulo IN ({ph})
                 """,
                 codigos,
             )

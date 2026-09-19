@@ -265,7 +265,7 @@ FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
 INNER JOIN EVERWEAR.dbo.TMP_TiempoDePedidos   t   ON t.NroMovVenta   = cab.NroMovVenta
 LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo   = cc.CompCodigo
 LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente   = cli.CodCliente
-WHERE LTRIM(RTRIM(t.Estado)) = 'Abierto'
+WHERE t.Estado = 'Abierto'
   AND cab.EstadoPedido = 2
   -- FIX 2026-08-24, 2da vuelta del día (reportado en vivo: la cola
   -- le asignó el pedido 757555, que en Magnus ya estaba FACTURADO). Causa
@@ -335,7 +335,7 @@ ORDER BY COALESCE(cab.Prioridad, 999) ASC, cab.FechaPedido ASC
 # INNER JOIN EVERWEAR.dbo.TMP_TiempoDePedidos   t   ON t.NroMovVenta   = cab.NroMovVenta
 # LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo   = cc.CompCodigo
 # LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente   = cli.CodCliente
-# WHERE LTRIM(RTRIM(t.Estado)) = 'Abierto'
+# WHERE t.Estado = 'Abierto'
 #   AND (
 #         cab.CompCodigo IN (10, 75, 100, 210, 310)  -- FIX 2026-08-04: antes era NOT IN (70) — dejaba pasar Factura Directa
 #         -- (107/1107/1207/170/207/47/7) a la cola del widget de errores-mesa.
@@ -433,7 +433,7 @@ SELECT
     CASE WHEN EXISTS (
         SELECT 1 FROM OTItem i
         WHERE i.OTId = OT.OTId
-          AND LTRIM(RTRIM(i.OTItemUbicacionCodigo)) = 'PLAYA_PEDIDOS'
+          AND i.OTItemUbicacionCodigo = 'PLAYA_PEDIDOS'
     ) THEN 1 ELSE 0 END        AS EnPlaya
 FROM OT
 INNER JOIN Codot ON OT.CodotCodigo = Codot.CodotCodigo
