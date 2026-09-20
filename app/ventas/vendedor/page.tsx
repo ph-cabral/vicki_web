@@ -194,8 +194,15 @@ interface RespTopLineas {
   totalLineasMonto: number;
   porUnidades: TopLinea[];
   porMonto: TopLinea[];
+  // Total NETO en $ de las dos ventanas (filas de `porMonto` + ajuste), lo
+  // calcula el back (2026-09-20). Hay que usarlo y no sumar las filas a mano:
+  // a un usuario NO admin la ruta le borra `ajuste`/`ajusteMes`, y sin esto
+  // el total de esta pestaña quedaba BRUTO — por encima del de Clientes, que
+  // trae el ajuste adentro de cada fila.
+  total?: number;
+  totalMes?: number;
   // Sólo mueve $ — el concepto de una nota de crédito no tiene cantidad, así
-  // que en la vista por unidades no hay nada que ajustar.
+  // que en la vista por unidades no hay nada que ajustar. SOLO ADMIN.
   ajuste?: number;
   ajusteMes?: number;
 }
@@ -1084,6 +1091,25 @@ export default function VentasVendedorPage() {
     if (!acum && !mes) return null;
     return { acum, mes };
   }, [topResp, modo, topVista]);
+
+  // Total NETO que se muestra en el encabezado y en el pie. Tres casos:
+  //   · unidades: no hay nada que ajustar, es la suma de las filas;
+  //   · clientes: las filas YA traen el ajuste adentro (ajusteIncluido);
+  //   · líneas en $: las filas son BRUTAS y el neto lo manda el back en
+  //     `total`/`totalMes`. No se arma sumando `topAjuste` porque a un
+  //     usuario no admin ese campo no le viaja (2026-09-20) y el total
+  //     quedaba por encima del de la pestaña Clientes justo por la
+  //     bonificación del período.
+  const topNeto = useMemo(() => {
+    if (modo === "unidades") return topSumas;
+    if (topVista === "lineas" && topLineas?.total != null) {
+      return { acum: topLineas.total, mes: topLineas.totalMes ?? 0 };
+    }
+    return {
+      acum: topSumas.acum + (topAjuste?.acum ?? 0),
+      mes: topSumas.mes + (topAjuste?.mes ?? 0),
+    };
+  }, [modo, topVista, topLineas, topSumas, topAjuste]);
 
   // Cuánto de las filas del ranking de clientes son bonificaciones y ajustes
   // (ya sumados en cada fila). Sólo para mostrarlo debajo del total.
@@ -2114,7 +2140,7 @@ export default function VentasVendedorPage() {
                                 avisa en el hover que el número es estimativo. */}
                             <span className="inline-flex items-center justify-end gap-1">
                               <span className="tabular-nums">
-                                {fmtTop(topSumas.mes + (topAjuste?.mes ?? 0))}
+                                {fmtTop(topNeto.mes)}
                               </span>
                               <span
                                 className="group relative inline-flex cursor-help align-middle"
@@ -2341,7 +2367,7 @@ export default function VentasVendedorPage() {
                                 : "text-yellow-400 font-bold"
                             }`}
                           >
-                            {fmtTop(topSumas.acum)}
+                            {fmtTop(topAjuste ? topSumas.acum : topNeto.acum)}
                           </td>
                           <td
                             className={`px-3 py-2 text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${
@@ -2350,7 +2376,7 @@ export default function VentasVendedorPage() {
                                 : "text-yellow-400 font-bold"
                             }`}
                           >
-                            {fmtTop(topSumas.mes)}
+                            {fmtTop(topAjuste ? topSumas.mes : topNeto.mes)}
                           </td>
                         </tr>
                         {topAjusteIncluido && (
@@ -2393,10 +2419,10 @@ export default function VentasVendedorPage() {
                                 Venta neta
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topSumas.acum + topAjuste.acum)}
+                                {fmtTop(topNeto.acum)}
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topSumas.mes + topAjuste.mes)}
+                                {fmtTop(topNeto.mes)}
                               </td>
                             </tr>
                           </>

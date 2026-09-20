@@ -984,6 +984,11 @@ def fetch_top_lineas(
         por_unidades = _armar(lambda x: x["unidades"] + x["unidadesMes"])
         por_monto = _armar(lambda x: x["monto"] + x["montoMes"])
 
+        # El ajuste sólo mueve $: el concepto no tiene cantidad (el SP del
+        # BI emite 0 AS Cantidad), así que el ranking por unidades no se
+        # toca. Ver bonificaciones.py.
+        aj = _ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar)
+
         resultado = {
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
@@ -992,10 +997,18 @@ def fetch_top_lineas(
             "totalLineasMonto": len(por_monto),
             "porUnidades": por_unidades[:limit_i],
             "porMonto": por_monto[:limit_i],
-            # El ajuste sólo mueve $: el concepto no tiene cantidad (el SP del
-            # BI emite 0 AS Cantidad), así que el ranking por unidades no se
-            # toca. Ver bonificaciones.py.
-            **_ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar),
+            # Total NETO en $ de las dos ventanas (filas brutas + ajuste), ya
+            # calculado acá (2026-09-20). El front no puede armarlo solo: a un
+            # usuario NO admin la ruta le borra `ajuste`/`ajusteMes` del
+            # payload y el total de esta pestaña quedaba en BRUTO, por encima
+            # del de la pestaña Clientes (que trae el ajuste adentro de cada
+            # fila desde 2026-09-08). Mismo universo que las filas que se
+            # muestran: `porMonto`.
+            "total": round(sum(g["monto"] for g in por_monto) + aj["ajuste"], 2),
+            "totalMes": round(
+                sum(g["montoMes"] for g in por_monto) + aj["ajusteMes"], 2
+            ),
+            **aj,
         }
         _TOP_LINEAS_CACHE[cache_key] = (ahora, resultado)
         return resultado

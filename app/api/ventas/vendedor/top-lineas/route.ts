@@ -75,6 +75,11 @@ export async function GET(req: NextRequest) {
     // Bonificaciones y ajustes: SOLO ADMIN (2026-09-07). Mismo criterio que
     // /api/ventas/vendedor/top-clientes: sin `ajuste`/`ajusteMes` el pie de
     // la tabla vuelve a ser una sola fila ("Total") y el número no viaja.
+    //
+    // `total`/`totalMes` (el neto ya calculado por el back) NO se borran
+    // (2026-09-20): son el total de la pestaña, no el desglose. Borrarlos
+    // dejaba al no-admin sumando filas BRUTAS, y su total de Líneas daba por
+    // encima del de Clientes exactamente la bonificación del período.
     if (!acceso.isAdmin) {
       delete (data as Record<string, unknown>).ajuste;
       delete (data as Record<string, unknown>).ajusteMes;
