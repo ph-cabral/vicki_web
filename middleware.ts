@@ -96,6 +96,14 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // Mesa de arriba (opciones GET / alta en lote POST).
   if (method === "GET" && pathname === "/api/deposito/errores-mesa/calidad/opciones") return true;
   if (method === "POST" && pathname === "/api/deposito/errores-mesa/calidad/items") return true;
+  // Widget de escritorio "Falta en Picking" (widgets/picking-falta-widget):
+  // mismo caso que los de arriba — corre como proceso de fondo en la PC del
+  // depósito, sin cookie de sesión de navegador. Sólo lectura, GET exacto, y
+  // lo que devuelve es lo mismo que ya ve cualquiera parado frente al estante
+  // (artículo, posición y cantidad). Sin esto el widget recibe 401 en cada
+  // consulta y, como se queda sin filas, NUNCA aparece: se ve igual que si
+  // estuviera todo bien.
+  if (method === "GET" && pathname === "/api/deposito/picking-disponible") return true;
   return false;
 }
 
