@@ -2,7 +2,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, User, CalendarDays, CalendarRange, Calendar, LayoutGrid,
-  Loader2, RefreshCw, AlertTriangle, PackageSearch, MapPin, X,
+  Loader2, RefreshCw, AlertTriangle, PackageSearch, MapPin, X, ClipboardList,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -39,7 +39,7 @@ type Row = Record<string, unknown>;
 interface Rec { d: Date; dp: Date | null; op: string; items: number }
 interface IngRec { d: Date; pedidos: number }
 type Gran = "dia" | "sem" | "mes";
-type Vista = "comp" | "ind" | "mat" | "rep";
+type Vista = "comp" | "ind" | "mat" | "rep" | "pick";
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const fmtDM = (d: Date) => `${d.getDate()}/${d.getMonth() + 1}`;
@@ -332,6 +332,258 @@ function UbicacionesModal({
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── En picking — cartel de armado. Por cada OT de Picking viva (ya asignada a
+// un armador, la haya tomado o no), qué hay REALMENTE para tomar en la POSICIÓN
+// de picking de cada renglón. Ojo: NO es lo mismo que el panel Reposición —
+// ahí se compara la demanda contra el stock del depósito entero (detecta el
+// faltante real de la empresa), acá contra el estante que el WMS le asignó al
+// renglón, ya descontado lo que las OT anteriores en la cola tienen comprometido
+// sobre esa misma posición (reparto FIFO). Un artículo puede tener 300.000 u en
+// guardado y cero en el estante: eso es lo que esta vista muestra y la otra no.
+// /api/deposito/picking-disponible
+// ──────────────────────────────────────────────────────────────────────────
+type SituacionPick = "faltante" | "reponer" | "repo_pedida" | "ok";
+
+interface PickRow {
+  CodArticulo: string;
+  Nombre: string;
+  Posicion: string;
+  Pedido: number;
+  EnPosicion: number;
+  OtrasOT: number;
+  Disponible: number;
+  AReponer: number;
+  RepoEnCamino: number;
+  EnGuardado: number;
+  EnPulmon: number;
+  OtroPicking: number;
+  EsPlaya: boolean;
+  Situacion: SituacionPick;
+}
+interface PickOt {
+  OTId: number;
+  NroMovVenta: number | null;
+  Cliente: string;
+  Armador: string;
+  Estado: string;
+  Registrada: string;
+  Renglones: number;
+  ConProblema: number;
+  Faltantes: number;
+  rows: PickRow[];
+}
+interface PickData {
+  generado: string;
+  ventanaDias: number;
+  resumen: {
+    otsVivas: number;
+    otsConProblema: number;
+    faltanteReal: number;
+    hayParaReponer: number;
+    repoPedida: number;
+    renglonesDescartados: number;
+    renglonesEsperaMercaderia: number;
+  };
+  ots: PickOt[];
+}
+
+const SIT_META: Record<
+  SituacionPick,
+  { label: string; tone: "red" | "amber" | "neutral" | "green" }
+> = {
+  faltante:    { label: "No está en el depósito", tone: "red" },
+  reponer:     { label: "Bajar de guardado",      tone: "amber" },
+  repo_pedida: { label: "Reposición en camino",   tone: "neutral" },
+  ok:          { label: "Alcanza",                tone: "green" },
+};
+
+function PickingDisponiblePanel() {
+  const [data, setData] = useState<PickData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [soloFaltantes, setSoloFaltantes] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/deposito/picking-disponible`, { cache: "no-store" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setData(j as PickData);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al cargar");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Foto en vivo: se refresca sola cada 60s además del botón manual (mismo
+  // criterio que el panel de Reposición).
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 60000);
+    return () => clearInterval(interval);
+  }, [load]);
+
+  const ots = useMemo(
+    () => (data?.ots ?? []).filter((o) => !soloFaltantes || o.Faltantes > 0),
+    [data, soloFaltantes],
+  );
+  const res = data?.resumen;
+
+  const cols: Col<PickRow>[] = [
+    {
+      key: "CodArticulo",
+      label: "Artículo",
+      render: (r) => (
+        <span className="font-mono text-zinc-200">
+          {r.CodArticulo}
+          {r.Nombre ? <span className="ml-2 font-sans text-zinc-500">{clip(r.Nombre, 34)}</span> : null}
+        </span>
+      ),
+    },
+    {
+      key: "Posicion",
+      label: "Posición",
+      render: (r) => (
+        <span className="inline-flex items-center gap-1 text-zinc-300">
+          <MapPin size={12} className="text-zinc-600" />
+          {r.Posicion}
+        </span>
+      ),
+    },
+    {
+      key: "Disponible", label: "Disponible", num: true,
+      render: (r) => (
+        <span className={r.Disponible <= 0 ? "text-red-400" : "text-zinc-200"}>
+          {fmtNum(r.Disponible)}
+        </span>
+      ),
+    },
+    { key: "Pedido", label: "Pedido", num: true, render: (r) => fmtNum(r.Pedido) },
+    {
+      key: "AReponer", label: "A reponer", num: true,
+      render: (r) => (r.AReponer > 0 ? <Tag tone={SIT_META[r.Situacion].tone}>{fmtNum(r.AReponer)}</Tag> : "—"),
+    },
+    {
+      key: "Situacion", label: "Situación",
+      render: (r) => (
+        <div className="flex flex-col gap-0.5">
+          <Tag tone={SIT_META[r.Situacion].tone}>{SIT_META[r.Situacion].label}</Tag>
+          <span className="text-[10px] text-zinc-600">
+            {r.Situacion === "repo_pedida"
+              ? `viene ${fmtNum(r.RepoEnCamino)}`
+              : r.Situacion === "reponer"
+                ? `${fmtNum(r.EnGuardado)} en guardado`
+                : r.EsPlaya
+                  ? "acopio en playa"
+                  : r.OtroPicking > 0
+                    ? `${fmtNum(r.OtroPicking)} en otra posición de picking`
+                    : r.EnPulmon > 0
+                      ? `${fmtNum(r.EnPulmon)} a granel sin embolsar`
+                      : r.EnGuardado > 0
+                        ? `sólo ${fmtNum(r.EnGuardado)} en guardado`
+                        : "sin stock en ningún lado"}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: "OtrasOT", label: "Ya comprometido", num: true,
+      render: (r) => (r.OtrasOT > 0 ? <span className="text-amber-400">{fmtNum(r.OtrasOT)}</span> : "—"),
+    },
+  ];
+
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <p className="text-[11px] text-zinc-600 leading-relaxed max-w-2xl">
+          Foto en vivo de las OT de Picking ya asignadas a un armador, la haya tomado o no.
+          Disponible = lo que hay en la posición que el WMS le asignó al renglón − lo que
+          las OT anteriores en la cola ya tienen comprometido sobre esa misma posición
+          (reparto FIFO: la OT más vieja tiene prioridad). El stock de la posición baja
+          recién cuando el armador pickea, así que hasta ese momento dos pedidos pueden
+          estar apuntados al mismo estante sin que nadie lo vea.
+          {data ? ` Ventana: OT de los últimos ${data.ventanaDias} días.` : ""}
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setSoloFaltantes((v) => !v)}
+            className={`text-sm px-2.5 py-1.5 rounded-md border transition-colors ${
+              soloFaltantes
+                ? "border-red-400/50 text-red-400"
+                : "border-zinc-700 text-zinc-400 hover:text-yellow-400"
+            }`}
+          >
+            Sólo faltantes
+          </button>
+          <button onClick={load} disabled={loading}
+            className="flex items-center gap-1.5 text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 disabled:opacity-40 text-sm">
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refrescar
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-red-400 text-sm mb-3">
+          <AlertTriangle size={16} /> {error}
+        </div>
+      )}
+
+      {res && (
+        <Grid cols={4}>
+          <KPI label="OT con problema" value={fmtNum(res.otsConProblema)} sub={`de ${fmtNum(res.otsVivas)} vivas`} accent={res.otsConProblema ? "amber" : "green"} />
+          <KPI label="No está en el depósito" value={fmtNum(res.faltanteReal)} sub="renglones" accent={res.faltanteReal ? "red" : "green"} />
+          <KPI label="Bajar de guardado" value={fmtNum(res.hayParaReponer)} sub="renglones sin OT de repo" accent="amber" />
+          <KPI label="Reposición en camino" value={fmtNum(res.repoPedida)} sub="renglones ya cubiertos" accent="neutral" />
+        </Grid>
+      )}
+
+      {loading && !data ? (
+        <div className="flex justify-center py-20">
+          <Loader2 size={36} className="text-yellow-400 animate-spin" />
+        </div>
+      ) : ots.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-20 gap-2 text-center">
+          <ClipboardList size={40} className="text-zinc-700" />
+          <p className="text-zinc-400 font-medium">
+            {soloFaltantes ? "Ninguna OT con faltante real" : "Ninguna OT asignada con problemas de picking"}
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4 mt-4">
+          {ots.map((o) => (
+            <Panel
+              key={o.OTId}
+              title={
+                <span className="flex items-center gap-2 flex-wrap">
+                  <span className="text-zinc-100">Pedido {o.NroMovVenta ?? `OT ${o.OTId}`}</span>
+                  <span className="text-zinc-500 font-normal">{clip(o.Cliente, 32)}</span>
+                </span>
+              }
+              accent={
+                <span className="flex items-center gap-2 flex-wrap justify-end">
+                  <Tag tone="neutral">{o.Armador}</Tag>
+                  <Tag tone={o.Estado === "En proceso" ? "yellow" : "neutral"}>{o.Estado}</Tag>
+                  {o.Faltantes > 0 && <Tag tone="red">{o.Faltantes} sin stock</Tag>}
+                  <span className="text-[10px] text-zinc-600">
+                    {o.ConProblema} de {o.Renglones} renglones · {o.Registrada}
+                  </span>
+                </span>
+              }
+              bodyClass="p-0"
+            >
+              <Table<PickRow> cols={cols} rows={o.rows} max={60} empty="Sin renglones con problema" />
+            </Panel>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -657,8 +909,9 @@ export default function PedidosPreparadosPage() {
               { v: "mat", label: "Ítems", icon: LayoutGrid },
               { v: "ind", label: "Individual", icon: User },
               { v: "rep", label: "Reposición", icon: PackageSearch },
+              { v: "pick", label: "En picking", icon: ClipboardList },
             ]} />
-          {vista !== "rep" && (
+          {vista !== "rep" && vista !== "pick" && (
           <Seg<Gran> val={gran} onChange={setGran}
             opts={[
               { v: "dia", label: "Diario", icon: CalendarDays },
@@ -677,6 +930,8 @@ export default function PedidosPreparadosPage() {
 
         {vista === "rep" ? (
           <ReposicionOtPanel />
+        ) : vista === "pick" ? (
+          <PickingDisponiblePanel />
         ) : !hayDatos ? (
           <div className="flex flex-col items-center justify-center py-28 gap-3 text-center">
             {loading ? <Loader2 size={40} className="text-yellow-400 animate-spin" />

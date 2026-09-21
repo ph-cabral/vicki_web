@@ -18,6 +18,10 @@ from deposito import (
     fetch_reposicion_ot_abiertas,
     PEDIDOS_ABIERTOS_SNAPSHOT_INTERVALO_MIN,
 )
+from picking_disponible import (
+    fetch_picking_disponible,
+    fetch_picking_disponible_ot,
+)
 from compras import (
     fetch_ordenes_pendientes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
     fetch_compras_valorizado,
@@ -509,6 +513,32 @@ def deposito_reposicion_ot():
     una foto del momento)."""
     try:
         return fetch_reposicion_ot_abiertas()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/picking-disponible")
+def deposito_picking_disponible(
+    dias: int = Query(default=7, ge=1, le=60),
+    todos: int = Query(default=0),
+):
+    """Cartel de armado: por cada OT de Picking viva (ya asignada a un armador,
+    la haya tomado o no), qué hay REALMENTE para tomar en la POSICIÓN de picking
+    de cada renglón — disponible | pedido | a reponer — con la demanda de las
+    otras OT vivas descontada y la reposición ya generada por el WMS. Distinto
+    de /deposito/reposicion-ot, que compara contra el stock del depósito entero.
+    ?dias acota la antigüedad de la OT (default 7, evita el backlog zombi);
+    ?todos=1 devuelve todos los renglones de las OT con problema, no sólo los
+    renglones con problema."""
+    try:
+        return fetch_picking_disponible(dias=dias, solo_problemas=not todos)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/picking-disponible/ot")
+def deposito_picking_disponible_ot(ot: int = Query(...)):
+    """El cartel completo de UNA OT (todos sus renglones, con o sin problema)."""
+    try:
+        return fetch_picking_disponible_ot(ot)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
