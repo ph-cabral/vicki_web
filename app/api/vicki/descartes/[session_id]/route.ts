@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sessionIdVicki } from "@/lib/vicki/sesionChat";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,13 @@ export async function GET(
   { params }: { params: Promise<{ session_id: string }> },
 ) {
   const { session_id } = await params;
+  // Cada uno opera sobre su propia conversación (ver lib/vicki/sesionChat.ts).
+  const sid = await sessionIdVicki();
+  if (!sid) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  if (sid !== session_id) {
+    return NextResponse.json({ error: "No corresponde" }, { status: 403 });
+  }
+
   return proxy(`${VICKI_URL}/descartes/${encodeURIComponent(session_id)}`, {});
 }
 
@@ -19,6 +27,13 @@ export async function POST(
   { params }: { params: Promise<{ session_id: string }> },
 ) {
   const { session_id } = await params;
+  // Cada uno opera sobre su propia conversación (ver lib/vicki/sesionChat.ts).
+  const sid = await sessionIdVicki();
+  if (!sid) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  if (sid !== session_id) {
+    return NextResponse.json({ error: "No corresponde" }, { status: 403 });
+  }
+
   const body = await req.text();
   return proxy(`${VICKI_URL}/descartes/${encodeURIComponent(session_id)}`, {
     method: "POST",

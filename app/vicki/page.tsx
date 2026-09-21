@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback} from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InicioButton } from "@/components/ui/InicioButton";
@@ -173,15 +173,22 @@ export default function VickiPage() {
   const [candidatos, setCandidatos] = useState<Candidato[]>([]);
   const [recomendados, setRecomendados] = useState<Set<string>>(new Set());
   const [descartados, setDescartados] = useState<Candidato[]>([]);
+  // Mensajes que quedaron atrás del corte de «Nueva conversación»: están en
+  // la base, sólo que no se muestran hasta que los pidas.
+  const [anteriores, setAnteriores] = useState(0);
   const endRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
-  // Cargar historial (espera a tener el session_id real del usuario)
-  useEffect(() => {
-    if (!sessionId) return;
-    (async () => {
+  // Cargar historial (espera a tener el session_id real del usuario).
+  // Por defecto trae la conversación EN CURSO; con `todo` trae también lo
+  // anterior al corte de «Nueva conversación» (nada se borra nunca).
+  const cargarHistorial = useCallback(
+    async (todo = false) => {
+      if (!sessionId) return;
       try {
-        const r = await fetch(`/api/vicki/history/${sessionId}`);
+        const r = await fetch(
+          `/api/vicki/history/${sessionId}${todo ? "?todo=1" : ""}`,
+        );
         if (!r.ok) return;
         const data = await r.json();
         const map: Record<string, "user" | "assistant"> = {
@@ -193,6 +200,7 @@ export default function VickiPage() {
           content: m.content,
         }));
         setMessages(hist);
+        setAnteriores(todo ? 0 : Number(data.anteriores ?? 0));
 
         // Reconstruir la barra de CVs: cada mensaje "ai" de búsqueda guardó
         // sus candidatos en metadata. Se recorre al revés para que los de la
@@ -223,8 +231,25 @@ export default function VickiPage() {
           ),
         );
       } catch {}
-    })();
-  }, [sessionId]);
+    },
+    [sessionId],
+  );
+
+  useEffect(() => {
+    cargarHistorial();
+  }, [cargarHistorial]);
+
+  // «Nueva conversación»: Vicki arranca de cero (deja de arrastrar el puesto y
+  // el tema de la charla anterior). Los mensajes NO se borran — quedan atrás
+  // del corte y se vuelven a ver con «Ver anteriores».
+  async function nuevaConversacion() {
+    if (!sessionId || loading) return;
+    try {
+      const r = await fetch(`/api/vicki/conversacion/${sessionId}`, { method: "POST" });
+      if (!r.ok) return;
+      await cargarHistorial();
+    } catch {}
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -472,7 +497,16 @@ export default function VickiPage() {
       <header className="border-b border-zinc-800 px-6 py-4 flex items-center gap-3">
         <InicioButton className="text-zinc-400 hover:text-white transition-colors p-1.5" />
         <h1 className="text-lg font-semibold">Vicki — Selección de Personal</h1>
-        <UsuarioActual className="ml-auto" />
+        <button
+          type="button"
+          onClick={nuevaConversacion}
+          disabled={loading || !sessionId}
+          title="Vicki arranca de cero y deja de arrastrar el puesto y el tema de la charla anterior. No se borra nada: los mensajes quedan y se vuelven a ver con «Ver anteriores»."
+          className="ml-auto rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white disabled:opacity-40"
+        >
+          Nueva conversación
+        </button>
+        <UsuarioActual />
       </header>
 
       {/* chat a la izquierda, barra de CVs a la derecha (solo escritorio) */}
@@ -480,6 +514,20 @@ export default function VickiPage() {
       <div className="flex flex-1 min-w-0 flex-col">
       <main className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl flex flex-col gap-4">
+          {/* Lo anterior al corte de «Nueva conversación» sigue guardado: acá
+              se vuelve a traer. Vicki no lo lee, es para que lo veas vos. */}
+          {anteriores > 0 && (
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={() => cargarHistorial(true)}
+                className="text-xs text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300"
+              >
+                Ver los {anteriores} mensajes anteriores
+              </button>
+            </div>
+          )}
+
           {messages.length === 0 && (
             <div className="text-zinc-500 text-sm text-center py-12">
               Escribí{" "}

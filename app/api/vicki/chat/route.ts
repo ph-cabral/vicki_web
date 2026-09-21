@@ -3,6 +3,7 @@ import { resolverAccesoVickiRrhh } from "@/lib/rrhh/vickiRrhhAcceso";
 import { resolverAccesoVickiVentas } from "@/lib/ventas/vickiVentasAcceso";
 import { resolverAccesoVickiCompras } from "@/lib/compras/vickiComprasAcceso";
 import { resolverAccesoVickiDeposito } from "@/lib/deposito/vickiDepositoAcceso";
+import { sessionIdVicki } from "@/lib/vicki/sesionChat";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,15 @@ const VICKI_URL = process.env.VICKI_API_URL ?? "http://chat-agent:8000";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+
+    // El session_id se impone acá, igual que los permisos: venía del browser,
+    // así que cambiándolo se podía escribir y leer la conversación de otro
+    // usuario. Ver lib/vicki/sesionChat.ts.
+    const sid = await sessionIdVicki();
+    if (!sid) {
+      return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+    }
+    body.session_id = sid;
 
     // Acceso a datos de ventas (intent "ventas" en vicki_chat): se resuelve
     // ACÁ, server-side contra la cookie de sesión, y se pisa lo que haya
