@@ -104,6 +104,12 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // consulta y, como se queda sin filas, NUNCA aparece: se ve igual que si
   // estuviera todo bien.
   if (method === "GET" && pathname === "/api/deposito/picking-disponible") return true;
+  // Carga automática de la OT de reposición (2026-09-22): el userscript corre
+  // dentro de la pantalla del WMS (10.10.0.158), que no comparte cookie con
+  // vicki_web, así que llega sin sesión. Mismo caso que el widget: GET exacto,
+  // sólo lectura, y lo que devuelve es lo que el repositor ya lee parado frente
+  // al estante (artículo, ubicación de origen y cantidad).
+  if (method === "GET" && pathname === "/api/deposito/picking-disponible/armar-ot") return true;
   return false;
 }
 

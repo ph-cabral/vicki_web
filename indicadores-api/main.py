@@ -19,6 +19,7 @@ from deposito import (
     PEDIDOS_ABIERTOS_SNAPSHOT_INTERVALO_MIN,
 )
 from picking_disponible import (
+    fetch_ot_reposicion,
     fetch_picking_disponible,
     fetch_picking_disponible_ot,
 )
@@ -544,6 +545,21 @@ def deposito_picking_disponible_ot(ot: int = Query(...)):
     """El cartel completo de UNA OT (todos sus renglones, con o sin problema)."""
     try:
         return fetch_picking_disponible_ot(ot)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/picking-disponible/armar-ot")
+def deposito_picking_disponible_armar_ot(
+    pasillo: str = Query(...),
+    dias: int = Query(default=7, ge=1, le=60),
+):
+    """Renglones listos para cargar la OT de reposición de UN pasillo: lo mismo
+    que muestra el cartel por pasillo, más de qué ubicación de guardado sacar
+    cada artículo (que es el dato que hoy hay que buscar a mano en la Consulta
+    de Stock del WMS). El destino no viene: en la pantalla del WMS lo resuelve
+    el botón "Ubicar todo en Picking"."""
+    try:
+        return fetch_ot_reposicion(pasillo, dias=dias)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

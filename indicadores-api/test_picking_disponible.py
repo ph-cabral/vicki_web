@@ -282,5 +282,44 @@ uno = pd.fetch_picking_disponible_ot(6)["ot"]
 check("OT 6 aparece con solo_con_problema=False", uno is not None and uno["OTId"], 6)
 check("OT 6 trae su fila OK", uno["rows"][0]["Situacion"], "ok")
 
+
+print("\n=== armado de la OT de reposición: elección del origen ===")
+# _elegir_origenes es pura: recibe los candidatos ya filtrados y reparte.
+def cands(*t):
+    return [{"ubic": u, "pasillo": p, "libre": float(c), "desde": d} for u, p, c, d in t]
+
+uno = cands(("01-37-17-03-DER", "37", 50, "2026-01-01"))
+r = pd._elegir_origenes("37", 3, uno)
+check("un solo origen alcanza", [(x["Ubicacion"], x["Cantidad"]) for x in r],
+      [("01-37-17-03-DER", 3.0)])
+check("descuenta lo ya tomado del candidato", uno[0]["libre"], 47.0)
+
+# Mismo pasillo primero aunque el de otro pasillo sea más viejo: el repositor
+# ya está parado ahí.
+c2 = cands(("01-09-04-01-01-01", "SOBRESTOCK", 100, "2020-01-01"),
+           ("01-37-17-03-DER", "37", 100, "2026-05-05"))
+check("gana el mismo pasillo", pd._elegir_origenes("37", 10, c2)[0]["Ubicacion"],
+      "01-37-17-03-DER")
+check("marca si es del mismo pasillo", pd._elegir_origenes("37", 1, c2)[0]["MismoPasillo"], True)
+
+# Entre dos del mismo pasillo manda el FIFO (lo más viejo sale antes).
+c3 = cands(("01-37-01-01-DER", "37", 100, "2026-08-08"),
+           ("01-37-02-01-DER", "37", 100, "2026-02-02"))
+check("FIFO: sale lo más viejo", pd._elegir_origenes("37", 5, c3)[0]["Ubicacion"],
+      "01-37-02-01-DER")
+
+# Si una no cubre, se parte en varios renglones.
+c4 = cands(("01-37-01-01-DER", "37", 4, "2026-02-02"),
+           ("01-37-02-01-DER", "37", 30, "2026-03-03"))
+r4 = pd._elegir_origenes("37", 10, c4)
+check("parte el renglón en dos ubicaciones", [(x["Ubicacion"], x["Cantidad"]) for x in r4],
+      [("01-37-01-01-DER", 4.0), ("01-37-02-01-DER", 6.0)])
+
+# Guardado insuficiente: devuelve lo que hay (el viaje sirve igual) y el
+# llamador lo reporta en sinOrigen.
+c5 = cands(("01-37-01-01-DER", "37", 7, "2026-02-02"))
+check("cubre parcial", sum(x["Cantidad"] for x in pd._elegir_origenes("37", 100, c5)), 7.0)
+check("sin candidatos no inventa renglones", pd._elegir_origenes("37", 5, []), [])
+
 print(f"\n{ok} ok / {fail} fail")
 sys.exit(1 if fail else 0)

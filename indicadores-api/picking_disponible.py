@@ -183,6 +183,50 @@ WHERE Codot.CodotProcesoNegocio = 1              -- Reposición
 GROUP BY i.OTItemArticuloId, i.OTItemUbicacionCodigo
 """
 
+# ── Armado de la OT de reposición ────────────────────────────────────────────
+# Código de OT que usa el WMS para una reposición manual (pantalla
+# wp_ejecutarot_cont.aspx, combo "Código"). Los otros son OT1PIC (picking),
+# OT1U (ubicación) y OT1L (inventario).
+CODOT_REPOSICION = "OT1R"
+
+# De dónde BAJAR la mercadería al estante. Mismo criterio de "guardado" que usa
+# el cálculo de arriba (EsGuardado ó EsAbastecedora), y se filtran después en
+# Python las ubicaciones que no son rack y las de otro depósito — la lista de
+# artículos es de un pasillo, así que el IN es chico.
+SQL_ORIGENES = """
+SELECT
+    LTRIM(RTRIM(d.UbicacionDetalleArticuloId)) AS art,
+    LTRIM(RTRIM(d.UbicacionCodigo))            AS ubic,
+    SUM(d.UbicacionDetalleCantidad)            AS cant,
+    MIN(d.UbicacionDetalleFecPrimIngAubi)      AS desde
+FROM UbicacionDetalle d
+INNER JOIN Ubicacion u ON u.UbicacionCodigo = d.UbicacionCodigo
+WHERE d.UbicacionDetalleArticuloId IN ({ph})
+  AND (ISNULL(u.UbicacionEsGuardado, 0) = 1 OR ISNULL(u.UbicacionEsAbastecedora, 0) = 1)
+GROUP BY d.UbicacionDetalleArticuloId, d.UbicacionCodigo
+HAVING SUM(d.UbicacionDetalleCantidad) > 0
+"""
+
+# Lo que otras OT de reposición vivas YA se comprometieron a sacar de esas
+# mismas ubicaciones de guardado (OTItemTipo = 1 = Recolectar). Sin esto, dos
+# OT armadas con minutos de diferencia mandan al repositor a buscar dos veces
+# el mismo stock y la segunda queda corta en el estante.
+SQL_ORIGEN_COMPROMETIDO = """
+SELECT
+    LTRIM(RTRIM(i.OTItemArticuloId))      AS art,
+    LTRIM(RTRIM(i.OTItemUbicacionCodigo)) AS ubic,
+    SUM(i.OTItemCantPedida - i.OTItemCantCumplida) AS tomado
+FROM OT
+INNER JOIN Codot    ON OT.CodotCodigo = Codot.CodotCodigo
+INNER JOIN OTItem i ON i.OTId = OT.OTId
+WHERE Codot.CodotProcesoNegocio = 1              -- Reposición
+  AND OT.OTEstado IN ({vivos})
+  AND i.OTItemTipo = 1                           -- Recolectar (origen = guardado)
+  AND i.OTItemCantCumplida < i.OTItemCantPedida
+  AND i.OTItemArticuloId IN ({ph})
+GROUP BY i.OTItemArticuloId, i.OTItemUbicacionCodigo
+"""
+
 
 def pasillo_de(ubic) -> str:
     """Pasillo al que pertenece una ubicación del WMS.
@@ -555,3 +599,135 @@ def fetch_picking_disponible_ot(ot_id: int):
     data = fetch_picking_disponible(solo_problemas=False, solo_con_problema=False)
     ot = next((o for o in data["ots"] if o["OTId"] == int(ot_id)), None)
     return {"generado": data["generado"], "ot": ot}
+
+
+# ── Armar la OT de reposición de un pasillo ──────────────────────────────────
+def _elegir_origenes(pasillo: str, falta: float, candidatos: list[dict]) -> list[dict]:
+    """Reparte lo que falta reponer entre las ubicaciones de guardado que
+    tienen stock, y devuelve los renglones de recolección.
+
+    El orden es el del recorrido real del repositor, no el del stock:
+
+    1. **el mismo pasillo primero** — si el material está en el rack de arriba
+       del propio estante no hay que cruzar el depósito;
+    2. **lo más viejo primero** (FecPrimIngAubi), que es el FIFO que ya aplica
+       el WMS al recolectar;
+    3. a igualdad, la ubicación con más cantidad, para partir el renglón en la
+       menor cantidad de paradas posible.
+
+    Si ninguna cubre el total se parte en varios renglones, y si el guardado
+    alcanza sólo para una parte se devuelve esa parte (un viaje que repone 30
+    de 100 sirve igual, mismo criterio que la vista por pasillo).
+    """
+    orden = sorted(
+        candidatos,
+        key=lambda c: (
+            0 if c["pasillo"] == pasillo else 1,
+            str(c["desde"] or "9999"),
+            -c["libre"],
+        ),
+    )
+    lineas, resta = [], float(falta)
+    for c in orden:
+        if resta <= 0:
+            break
+        toma = min(resta, c["libre"])
+        if toma <= 0:
+            continue
+        c["libre"] -= toma          # el dict es compartido entre artículos
+        resta -= toma
+        lineas.append({
+            "Ubicacion": c["ubic"],
+            "Deposito": DEPOSITO_CENTRAL,
+            "Cantidad": _r3(toma),
+            "EnUbicacion": _r3(c["libre"] + toma),
+            "MismoPasillo": c["pasillo"] == pasillo,
+        })
+    return lineas
+
+
+def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
+    """Renglones listos para cargar la OT de reposición de UN pasillo.
+
+    Es la vista por pasillo del widget (`porPasillo`) más el dato que ahí falta:
+    **de qué ubicación de guardado sacar cada artículo**. El destino no se
+    calcula acá a propósito — en la pantalla del WMS lo resuelve el botón
+    "Ubicar todo en Picking", que usa la posición de picking que el propio WMS
+    tiene asignada; se devuelve como `DestinoEsperado` sólo para control.
+
+    Sale ordenado por ubicación de origen, que es el orden en que el repositor
+    camina el pasillo.
+    """
+    pas = str(pasillo or "").strip().upper()
+    if not pas:
+        return {"pasillo": "", "codigo": CODOT_REPOSICION, "lineas": [], "sinOrigen": []}
+
+    data = fetch_picking_disponible(dias=dias)
+    grupo = next((g for g in data.get("porPasillo", []) if str(g["Pasillo"]).upper() == pas), None)
+    filas = (grupo or {}).get("rows", [])
+    codigos = sorted({r["CodArticulo"] for r in filas if r.get("AReponer", 0) > 0})
+
+    cand: dict[str, list[dict]] = {}
+    if codigos:
+        vivos = ",".join(str(e) for e in WMS_ESTADOS_VIVOS)
+        conn = get_connection("WMS")
+        try:
+            cur = conn.cursor()
+            cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+            tomado: dict[tuple[str, str], float] = {}
+            for art, ubic, cant in _chunked_query(
+                cur, SQL_ORIGEN_COMPROMETIDO, codigos, vivos=vivos
+            ):
+                k = (_txt(art), _txt(ubic))
+                tomado[k] = tomado.get(k, 0.0) + _num(cant)
+            for art, ubic, cant, desde in _chunked_query(cur, SQL_ORIGENES, codigos):
+                art, ubic = _txt(art), _txt(ubic)
+                if ubic.upper() in UBIC_NO_RACK or deposito_de(ubic) != DEPOSITO_CENTRAL:
+                    continue
+                libre = _num(cant) - tomado.get((art, ubic), 0.0)
+                if libre <= 0:
+                    continue
+                cand.setdefault(art, []).append({
+                    "ubic": ubic,
+                    "pasillo": pasillo_de(ubic),
+                    "libre": libre,
+                    "desde": desde,
+                })
+        finally:
+            conn.close()
+
+    lineas, sin_origen = [], []
+    for r in sorted(filas, key=lambda x: -x["AReponer"]):
+        falta = r.get("AReponer") or 0
+        if falta <= 0:
+            continue
+        destino = (r.get("Posiciones") or [None])[0]
+        partes = _elegir_origenes(pas, falta, cand.get(r["CodArticulo"], []))
+        cubierto = sum(p["Cantidad"] for p in partes)
+        for p in partes:
+            lineas.append({
+                "Articulo": r["CodArticulo"],
+                "Nombre": r.get("Nombre", ""),
+                "DestinoEsperado": destino,
+                "AReponer": _r3(falta),
+                **p,
+            })
+        if cubierto < falta - 0.001:
+            sin_origen.append({
+                "Articulo": r["CodArticulo"],
+                "Nombre": r.get("Nombre", ""),
+                "AReponer": _r3(falta),
+                "Cubierto": _r3(cubierto),
+            })
+
+    lineas.sort(key=lambda l: (l["Ubicacion"], l["Articulo"]))
+    return {
+        "generado": data.get("generado"),
+        "pasillo": pas,
+        "codigo": CODOT_REPOSICION,
+        "deposito": DEPOSITO_CENTRAL,
+        "articulos": len({l["Articulo"] for l in lineas}),
+        "unidades": _r3(sum(l["Cantidad"] for l in lineas)),
+        "lineas": lineas,
+        "sinOrigen": sin_origen,
+    }
