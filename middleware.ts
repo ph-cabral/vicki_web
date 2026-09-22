@@ -110,6 +110,16 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // sólo lectura, y lo que devuelve es lo que el repositor ya lee parado frente
   // al estante (artículo, ubicación de origen y cantidad).
   if (method === "GET" && pathname === "/api/deposito/picking-disponible/armar-ot") return true;
+  // Widget "Falta en Picking 2" (2026-09-22): arma y DA DE ALTA la OT de
+  // reposición sin pasar por la pantalla del WMS. Corre como proceso de fondo
+  // en la PC del depósito, sin cookie de sesión, igual que el widget original.
+  // El POST escribe en el WMS, así que acá no hay "es sólo lectura" que lo
+  // justifique: lo que lo acota es que el payload sólo puede pedir artículos
+  // que ya están en falta y ubicaciones que el propio WMS valida del otro lado
+  // (ver ot_reposicion.py), y que la OT queda marcada en OTObservaciones.
+  if (method === "GET" && pathname === "/api/deposito/repo/pasillo") return true;
+  if (method === "GET" && pathname === "/api/deposito/repo/operarios") return true;
+  if (method === "POST" && pathname === "/api/deposito/repo/ot") return true;
   return false;
 }
 

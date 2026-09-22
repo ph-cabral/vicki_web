@@ -23,6 +23,15 @@ from picking_disponible import (
     fetch_picking_disponible,
     fetch_picking_disponible_ot,
 )
+# Alta de la OT de reposición por fuera del WMS. ES EL ÚNICO MÓDULO DE ESTA API
+# QUE ESCRIBE en la base del WMS (WMS.dbo.OT + WMS.dbo.OTItem); todo el resto,
+# picking_disponible.py incluido, es sólo lectura. Ver ot_reposicion.py.
+from ot_reposicion import (
+    OTReposicionError,
+    crear_ot,
+    fetch_armado,
+    fetch_repositores,
+)
 from compras import (
     fetch_ordenes_pendientes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
     fetch_compras_valorizado,
@@ -560,6 +569,76 @@ def deposito_picking_disponible_armar_ot(
     el botón "Ubicar todo en Picking"."""
     try:
         return fetch_ot_reposicion(pasillo, dias=dias)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Armado y alta de la OT de reposición desde el widget (2026-09-22) ─────────
+# Los tres endpoints que usa el widget "Falta en Picking 2": el pasillo con las
+# ubicaciones para elegir, la lista de operarios y el alta propiamente dicha.
+# El POST ESCRIBE en el WMS — ver ot_reposicion.py para qué tablas toca y por
+# qué el stock se relee dentro de la transacción.
+class OTRepoLinea(BaseModel):
+    articulo: str
+    origen: str
+    destino: str
+    cantidad: float
+
+
+class OTRepoIn(BaseModel):
+    pasillo: str = ""
+    operario: str
+    lineas: list[OTRepoLinea]
+    observaciones: str = ""
+    simular: bool = False
+    forzar: bool = False
+
+
+@app.get("/deposito/repo/pasillo")
+def deposito_repo_pasillo(
+    pasillo: str = Query(...),
+    dias: int = Query(default=7, ge=1, le=60),
+):
+    """Lo que hay que reponer en un pasillo, cada artículo con TODAS sus
+    ubicaciones de guardado para elegir (no una sola elegida por el sistema,
+    como /picking-disponible/armar-ot) y su posición de picking de destino."""
+    try:
+        return fetch_armado(pasillo, dias=dias)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.get("/deposito/repo/operarios")
+def deposito_repo_operarios(
+    dias: int = Query(default=90, ge=1, le=730),
+    todos: int = Query(default=0),
+):
+    """Operarios a los que se les puede asignar la OT: por defecto los que
+    repusieron en los últimos `dias`, ordenados por uso. `todos=1` trae todos
+    los activos de WMS.Personal."""
+    try:
+        return fetch_repositores(dias=dias, todos=bool(todos))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.post("/deposito/repo/ot")
+def deposito_repo_ot(body: OTRepoIn):
+    """Alta de la OT de reposición (OT1R) en el WMS. Con `simular: true` corre
+    todas las validaciones y devuelve los renglones tal como se insertarían,
+    sin escribir nada. Un 409 es una validación de negocio con el motivo en
+    claro para mostrarle al operario (stock que se movió, reposición ya viva
+    hacia ese estante, ubicación que no es de guardado…)."""
+    try:
+        return crear_ot(
+            body.pasillo,
+            body.operario,
+            [l.model_dump() for l in body.lineas],
+            observaciones=body.observaciones,
+            simular=body.simular,
+            forzar=body.forzar,
+        )
+    except OTReposicionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
