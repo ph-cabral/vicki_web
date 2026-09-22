@@ -47,6 +47,19 @@ de picking):
     reponer     → no hay OT de repo, pero hay stock en guardado/abastecedora
     faltante    → no alcanza ni sumando guardado: no está en el depósito
 
+El guardado que habilita `reponer` se cuenta SÓLO en el depósito 1, el central
+(ver DEPOSITO_CENTRAL): lo que está en otro depósito no se baja al estante.
+
+Y el `faltante` se abre en dos, porque no son el mismo aviso:
+
+    faltante             hay algo para bajar aunque no alcance → se muestra
+    faltante + SinRepo   no hay NADA en el depósito central para reponer (ni en
+                         guardado ni en camino), o el renglón es de playa: el
+                         que repone no puede hacer nada con el aviso, así que
+                         NO viaja en `porPasillo` (lo que lee el widget). Sigue
+                         en `ots` y contado en resumen.faltanteSinRepo para la
+                         vista web y para compras.
+
 Gotchas (medidos 2026-09-21, ver claude/picking_disponible_al_asignar_armador.md):
 
 - OT zombi: de 37 OT en estado 1, 9 eran de meses anteriores (una de 2025). Sin
@@ -103,6 +116,12 @@ UBIC_NO_RACK: frozenset[str] = frozenset({
     "PULMON_INGRESO", "PULMON_EGRESO", "SALON_RECEPCION", "NO_CONFORME",
     "DEVOLUCION_CLIENTE", "UBICACION_FICTICIA", "PARA_BORRAR", PLAYA,
 })
+
+# Depósito del que sí se puede bajar mercadería al estante. El 1er segmento del
+# código es el depósito (`DD-PP-CC-NN`): de las 7.848 ubicaciones con código de
+# rack, 7.847 son del 01 y una sola (`02-22-06-04-izq`, vacía) es de otro. Sumar
+# otros depósitos daría "hay para reponer" sobre mercadería que no está acá.
+DEPOSITO_CENTRAL = 1
 
 SIN_ARMADOR = "— Sin asignar"
 
@@ -204,6 +223,26 @@ def pasillo_de(ubic) -> str:
     return u
 
 
+def deposito_de(ubic) -> int | None:
+    """Depósito (1er segmento) de una ubicación con código de rack.
+
+    `01-33-15-03` → 1. Devuelve None para las ubicaciones con nombre
+    (PLAYA_PEDIDOS, CARRO25…), que no pertenecen a ningún depósito.
+
+    Los códigos sucios con un 0 de más (`010-09-04-04-24-01`) son del 01: el
+    depósito son los 2 primeros dígitos. Un prefijo de letras (`SE01-…`) se
+    limpia igual que en pasillo_de.
+    """
+    u = _txt(ubic).upper()
+    if not u:
+        return None
+    parte = next((p for p in u.split("-") if p), "")
+    digitos = "".join(c for c in parte if c.isdigit())
+    if not digitos:
+        return None
+    return int(digitos[:2])
+
+
 def _orden_pasillo(pas: str):
     """Los numéricos primero y en orden; los con nombre, al final alfabético."""
     return (0, int(pas), "") if pas.isdigit() else (1, 0, pas)
@@ -282,6 +321,8 @@ def fetch_picking_disponible(
                     pulmon[art] = pulmon.get(art, 0.0) + cant
                 elif u in UBIC_NO_RACK:
                     continue          # carros, cajas, no conforme, devolución…
+                elif deposito_de(u) != DEPOSITO_CENTRAL:
+                    continue          # otro depósito: no se baja a este estante
                 elif _int(es_guard) == 1:
                     guardado[art] = guardado.get(art, 0.0) + cant
                 elif _int(es_pick) == 1:
@@ -359,6 +400,7 @@ def fetch_picking_disponible(
 
     salida = []
     tot = {"faltante": 0, "reponer": 0, "repo_pedida": 0}
+    tot_sin_repo = 0
     for ot in orden_fifo:
         filas = []
         problemas = 0
@@ -384,14 +426,24 @@ def fetch_picking_disponible(
                 libre_guard[cod] = max(0.0, en_guard - a_reponer)
             else:
                 sit = "faltante"
+
+            # Sin nada para bajar al estante el aviso no sirve: el que repone no
+            # puede hacer nada. Se marca y se saca de la vista por pasillo (el
+            # widget), no del detalle por OT. La playa nunca se repone, así que
+            # va siempre acá.
+            sin_repo = sit == "faltante" and (
+                es_playa or (en_guard <= 0 and en_camino <= 0)
+            )
             if sit != "ok":
                 problemas += 1
                 tot[sit] += 1
+                if sin_repo:
+                    tot_sin_repo += 1
 
             pas = pasillo_de(pos)
             e = por_art.setdefault((pas, cod), {
                 "ots": set(), "pedido": 0.0, "reponer": 0.0, "hay": {},
-                "sit": "ok", "posiciones": set(),
+                "sit": "ok", "posiciones": set(), "sin_repo": True,
             })
             e["ots"].add(ot["OTId"])
             e["pedido"] += pedido
@@ -400,6 +452,10 @@ def fetch_picking_disponible(
             e["posiciones"].add(pos)
             if PEOR[sit] < PEOR[e["sit"]]:
                 e["sit"] = sit
+            # El artículo se oculta sólo si NINGUNO de sus renglones con
+            # faltante tiene de dónde reponerse.
+            if a_reponer > 0 and not sin_repo:
+                e["sin_repo"] = False
 
             filas.append({
                 "CodArticulo": cod,
@@ -416,6 +472,7 @@ def fetch_picking_disponible(
                 "EnPulmon":    _r3(en_pulmon),
                 "OtroPicking": _r3(max(0.0, otro_picking.get(cod, 0.0) - (en_pos if not es_playa else 0.0))),
                 "EsPlaya":     es_playa,
+                "SinRepo":     sin_repo,
                 "Situacion":   sit,
             })
 
@@ -441,9 +498,15 @@ def fetch_picking_disponible(
 
     salida.sort(key=lambda o: (-o["Faltantes"], -o["ConProblema"], o["OTId"]))
 
+    # Vista por pasillo = orden de trabajo del repositor: lo que no se puede
+    # reponer (nada en el depósito central, o playa) no entra.
     grupos: dict[str, list] = {}
+    ocultos_sin_repo = 0
     for (pas, cod), e in por_art.items():
         if e["reponer"] <= 0:
+            continue
+        if e["sin_repo"]:
+            ocultos_sin_repo += 1
             continue
         grupos.setdefault(pas, []).append({
             "CodArticulo": cod,
@@ -473,8 +536,10 @@ def fetch_picking_disponible(
             "otsVivas":        len(ots),
             "otsConProblema":  len(salida),
             "faltanteReal":    tot["faltante"],
+            "faltanteSinRepo": tot_sin_repo,
             "hayParaReponer":  tot["reponer"],
             "repoPedida":      tot["repo_pedida"],
+            "articulosOcultosSinRepo": ocultos_sin_repo,
             "renglonesDescartados": descartadas,
             "renglonesEsperaMercaderia": espera_merca,
         },

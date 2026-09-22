@@ -172,6 +172,8 @@ export default function VickiPage() {
   // se tiraron al tacho (salen de la barra y de las próximas búsquedas).
   const [candidatos, setCandidatos] = useState<Candidato[]>([]);
   const [recomendados, setRecomendados] = useState<Set<string>>(new Set());
+  // Sólo para pantallas angostas (abajo de lg la barra no entra al costado).
+  const [barraAbierta, setBarraAbierta] = useState(false);
   const [descartados, setDescartados] = useState<Candidato[]>([]);
   // Mensajes que quedaron atrás del corte de «Nueva conversación»: están en
   // la base, sólo que no se muestran hasta que los pidas.
@@ -506,10 +508,25 @@ export default function VickiPage() {
         >
           Nueva conversación
         </button>
+        {/* Abajo de 1024px la barra de CVs no entra al costado: se abre desde
+            acá. Con recomendados nuevos el botón se marca en azul, para que no
+            haya que adivinar que hay CVs esperando. */}
+        <button
+          type="button"
+          onClick={() => setBarraAbierta((v) => !v)}
+          title="CVs de la conversación"
+          className={`rounded-lg border px-3 py-1.5 text-xs transition-colors lg:hidden ${
+            recomendados.size
+              ? "border-blue-600/70 text-blue-300 hover:bg-blue-950/40"
+              : "border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+          }`}
+        >
+          CVs{candidatos.length ? ` (${candidatos.length})` : ""}
+        </button>
         <UsuarioActual />
       </header>
 
-      {/* chat a la izquierda, barra de CVs a la derecha (solo escritorio) */}
+      {/* chat a la izquierda, barra de CVs a la derecha (panel en pantallas angostas) */}
       <div className="flex flex-1 min-h-0">
       <div className="flex flex-1 min-w-0 flex-col">
       <main className="flex-1 overflow-y-auto px-4 py-6">
@@ -712,6 +729,8 @@ export default function VickiPage() {
         descartados={descartados}
         onDescartar={descartar}
         onRecuperar={recuperar}
+        abierta={barraAbierta}
+        onCerrar={() => setBarraAbierta(false)}
       />
       </div>
     </div>

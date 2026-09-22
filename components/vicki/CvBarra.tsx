@@ -212,12 +212,19 @@ export function CvBarra({
   descartados,
   onDescartar,
   onRecuperar,
+  abierta = false,
+  onCerrar,
 }: {
   candidatos: Candidato[];
   recomendados: Set<string>;
   descartados: Candidato[];
   onDescartar: (c: Candidato) => void;
   onRecuperar: (c: Candidato) => void;
+  // En pantallas angostas la barra no entra al costado del chat: se abre como
+  // panel sobre la conversación con el botón «CVs» del encabezado. Desde lg
+  // (1024px) va siempre fija a la derecha y estos dos no hacen nada.
+  abierta?: boolean;
+  onCerrar?: () => void;
 }) {
   const [abierto, setAbierto] = useState<Candidato | null>(null);
   const [arrastrando, setArrastrando] = useState<Candidato | null>(null);
@@ -239,7 +246,24 @@ export function CvBarra({
 
   return (
     <>
-      <aside className="hidden w-60 shrink-0 flex-col border-l border-zinc-800 bg-zinc-950 xl:flex">
+      {/* Antes era `hidden … xl:flex`: abajo de 1280px CSS la barra no se
+          dibujaba nunca y el reclutador no veía ningún CV (en una notebook con
+          escalado de Windows, 1280 no se alcanza). Ahora entra desde lg y, más
+          abajo, se abre como panel con el botón «CVs» del encabezado. */}
+      <aside
+        className={`${
+          abierta ? "fixed inset-y-0 right-0 z-40 flex shadow-2xl shadow-black/60" : "hidden"
+        } w-60 shrink-0 flex-col border-l border-zinc-800 bg-zinc-950 lg:static lg:z-auto lg:flex lg:shadow-none`}
+      >
+        {onCerrar && (
+          <button
+            onClick={onCerrar}
+            className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 text-[11px] text-zinc-400 hover:text-white lg:hidden"
+          >
+            <span>CVs de la conversación</span>
+            <span className="text-lg leading-none">×</span>
+          </button>
+        )}
         <div className="flex-1 overflow-y-auto px-3 py-4">
           {candidatos.length === 0 && (
             <p className="px-1 text-xs leading-relaxed text-zinc-600">

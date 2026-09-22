@@ -30,6 +30,9 @@ DEMANDA_COLS = [
 # OT 6            → todo OK, no tiene que aparecer
 # OT 7            → PLAYA_PEDIDOS sin stock: faltante, nunca "reponer"
 # OT 8            → A-PULMON sólo tiene material a granel: faltante, no "reponer"
+# OT 9            → A-PARCIAL tiene en guardado MENOS de lo que falta: faltante,
+#                   pero algo se puede bajar → tiene que seguir mostrándose
+# OT 10           → A-OTRODEP sólo tiene guardado en el depósito 02: no cuenta
 DEMANDA = [
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-SOBRA",  "01-10-01-01", 5),
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-FALTA",  "01-10-01-02", 3),
@@ -43,6 +46,8 @@ DEMANDA = [
     (6, 900006, 1, HOY, "CLIENTE SEIS", "Molina Martina", "A-SOBRA",  "01-10-01-01", 1),
     (7, 900007, 1, HOY, "CLIENTE SIETE", "Molina Martina", "A-PLAYA", "PLAYA_PEDIDOS", 4),
     (8, 900008, 1, HOY, "CLIENTE OCHO", "Molina Martina", "A-PULMON", "01-14-01-01", 25),
+    (9, 900009, 1, HOY, "CLIENTE NUEVE", "Molina Martina", "A-PARCIAL", "01-15-01-01", 100),
+    (10, 900010, 1, HOY, "CLIENTE DIEZ", "Molina Martina", "A-OTRODEP", "01-16-01-01", 20),
 ]
 # (art, ubic, cant, es_pick, es_guard)
 STOCK = [
@@ -57,6 +62,10 @@ STOCK = [
     ("A-PULMON", "PULMON_INGRESO", 9000, 0, 1),   # a granel: NO es reposición
     ("A-PULMON", "NO_CONFORME",    500,  0, 1),   # tampoco
     ("A-PLAYA",  "01-40-01-01", 300, 1, 0),       # tiene en un estante, pero el pedido es de playa
+    ("A-PARCIAL", "01-15-01-01", 0,  1, 0),
+    ("A-PARCIAL", "01-15-01-01-DER", 30, 0, 1),   # 30 para 100: alcanza para un viaje
+    ("A-OTRODEP", "01-16-01-01", 0,  1, 0),
+    ("A-OTRODEP", "02-22-06-04-izq", 500, 0, 1),  # otro depósito: no se baja acá
 ]
 # (art, ubic, en_camino)
 REPO = [("A-REPO", "01-13-01-01", 200)]
@@ -136,7 +145,7 @@ def fila(otid, cod):
     return next((r for r in ots[otid]["rows"] if r["CodArticulo"] == cod), None)
 
 print("\n=== qué OT entran ===")
-check("OT con problema", sorted(ots), [1, 2, 3, 7, 8])
+check("OT con problema", sorted(ots), [1, 2, 3, 7, 8, 9, 10])
 check("OT 4 (pedido cancelado) descartada", 4 in ots, False)
 check("OT 5 (buzón mercadería) descartada", 5 in ots, False)
 check("OT 6 (todo ok) no aparece", 6 in ots, False)
@@ -154,6 +163,7 @@ check("A-FALTA situación", f["Situacion"], "faltante")
 check("A-FALTA disponible", f["Disponible"], 0.0)
 check("A-FALTA a reponer", f["AReponer"], 3.0)
 check("A-FALTA sin guardado", f["EnGuardado"], 0.0)
+check("A-FALTA no hay de dónde reponer", f["SinRepo"], True)
 
 print("\n=== dos OT compitiendo por la misma posición (reparto FIFO) ===")
 # 80 en el estante, la OT 2 (más vieja) pide 60 y la OT 3 pide 50. La primera
@@ -191,11 +201,34 @@ u = fila(8, "A-PULMON")
 check("A-PULMON situación", u["Situacion"], "faltante")
 check("A-PULMON guardado en cero", u["EnGuardado"], 0.0)
 check("A-PULMON a granel informado", u["EnPulmon"], 9000.0)
+check("A-PULMON no se puede reponer", u["SinRepo"], True)
+
+print("\n=== faltante que SÍ se puede reponer en parte ===")
+pa = fila(9, "A-PARCIAL")
+check("A-PARCIAL situación", pa["Situacion"], "faltante")
+check("A-PARCIAL a reponer", pa["AReponer"], 100.0)
+check("A-PARCIAL hay 30 en guardado", pa["EnGuardado"], 30.0)
+check("A-PARCIAL no se oculta", pa["SinRepo"], False)
+
+print("\n=== el guardado de otro depósito no cuenta ===")
+od = fila(10, "A-OTRODEP")
+check("A-OTRODEP situación", od["Situacion"], "faltante")
+check("A-OTRODEP guardado del 02 ignorado", od["EnGuardado"], 0.0)
+check("A-OTRODEP se oculta", od["SinRepo"], True)
+check("deposito_de 01-15-01-01", pd.deposito_de("01-15-01-01"), 1)
+check("deposito_de 02-22-06-04-izq", pd.deposito_de("02-22-06-04-izq"), 2)
+check("deposito_de 010-09-04-04-24-01 (0 de más)", pd.deposito_de("010-09-04-04-24-01"), 1)
+check("deposito_de SE01-09-04-02-10-02", pd.deposito_de("SE01-09-04-02-10-02"), 1)
+check("deposito_de PLAYA_PEDIDOS", pd.deposito_de("PLAYA_PEDIDOS"), None)
+check("deposito_de vacío", pd.deposito_de(""), None)
 
 print("\n=== resumen ===")
-check("faltantes reales", data["resumen"]["faltanteReal"], 3)
+check("faltantes reales", data["resumen"]["faltanteReal"], 5)
+check("faltantes sin nada para reponer", data["resumen"]["faltanteSinRepo"], 4)
 check("para bajar de guardado", data["resumen"]["hayParaReponer"], 2)
 check("repo pedida", data["resumen"]["repoPedida"], 1)
+check("artículos ocultos en la vista por pasillo",
+      data["resumen"]["articulosOcultosSinRepo"], 4)
 check("orden: primero las que tienen faltante", data["ots"][0]["Faltantes"] > 0, True)
 
 print("\n=== pasillo_de: el 2º segmento, con las trampas de la base ===")
@@ -220,9 +253,14 @@ check("orden: los numéricos antes que los con nombre",
       sorted(["SOBRESTOCK", "07", "36", "PLAYA_PEDIDOS", "02"], key=pd._orden_pasillo),
       ["02", "07", "36", "PLAYA_PEDIDOS", "SOBRESTOCK"])
 
-print("\n=== vista por pasillo ===")
+print("\n=== vista por pasillo: sólo lo que se puede reponer ===")
 pas = {g["Pasillo"]: g for g in data["porPasillo"]}
-check("pasillos con algo que reponer", sorted(pas), ["10", "11", "12", "13", "14", "PLAYA_PEDIDOS"])
+check("pasillos con algo que reponer", sorted(pas), ["11", "12", "13", "15"])
+check("A-FALTA (nada en ningún lado) no viaja", "10" in pas, False)
+check("PLAYA_PEDIDOS nunca viaja", "PLAYA_PEDIDOS" in pas, False)
+check("A-PULMON (sólo granel) no viaja", "14" in pas, False)
+check("A-OTRODEP (guardado en otro depósito) no viaja", "16" in pas, False)
+check("A-PARCIAL sí viaja", pas["15"]["rows"][0]["AReponer"], 100.0)
 
 g11 = pas["11"]["rows"][0]
 check("A-COMPET: una sola fila aunque la pidan 2 OT", len(pas["11"]["rows"]), 1)
@@ -231,17 +269,13 @@ check("A-COMPET hay (sin contar 2 veces la misma posición)", g11["Hay"], 80.0)
 check("A-COMPET pedido total 60+50", g11["Pedido"], 110.0)
 check("A-COMPET a reponer (sólo la 2ª queda corta)", g11["AReponer"], 30.0)
 
-g10 = {r["CodArticulo"]: r for r in pas["10"]["rows"]}
-check("el artículo que alcanzaba no aparece", "A-SOBRA" in g10, False)
-check("A-FALTA está", g10["A-FALTA"]["AReponer"], 3.0)
-
 g12 = pas["12"]["rows"][0]
 check("A-GUARD suma los 2 renglones de la misma OT", g12["Pedido"], 50.0)
 check("A-GUARD una sola OT", g12["OTs"], 1)
 
 check("totales del pasillo", pas["13"]["AReponer"], 80.0)
 check("situación peor del artículo", pas["13"]["rows"][0]["Situacion"], "repo_pedida")
-check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]][:3], ["10", "11", "12"])
+check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]][:3], ["11", "12", "13"])
 
 print("\n=== todos los renglones (cartel de una OT) ===")
 uno = pd.fetch_picking_disponible_ot(6)["ot"]
