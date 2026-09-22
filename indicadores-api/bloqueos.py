@@ -122,6 +122,26 @@ WHERE   detectado_en >= DATEADD(DAY, -?, SYSDATETIME())
 """
 
 
+_SQL_INSTALADO = """
+SELECT CASE WHEN OBJECT_ID('vicki.v_bloqueo_vivo')      IS NULL
+             OR OBJECT_ID('vicki.sp_bloqueos_detectar') IS NULL
+             OR OBJECT_ID('vicki.bloqueo_episodio')     IS NULL
+            THEN 0 ELSE 1 END AS instalado
+"""
+
+FALTA_INSTALAR = (
+    "Falta correr sql/magnus_watchdog_bloqueos.sql en SRV-SQL2 (como sa, en la "
+    "base EVERWEAR): el schema vicki todavía no existe."
+)
+
+
+def _instalado(cur) -> bool:
+    """El schema vicki se crea corriendo el .sql una vez. Chequearlo cuesta una
+    lectura de metadata y evita que la vista muera con un 503 ilegible."""
+    cur.execute(_SQL_INSTALADO)
+    return bool(cur.fetchone()[0])
+
+
 def fetch_estado(detectar: bool = True) -> dict:
     """Foto de ahora: cabezas que están bloqueando, su cadena y el episodio
     abierto de cada una.
@@ -132,6 +152,16 @@ def fetch_estado(detectar: bool = True) -> dict:
     conn = _conn()
     try:
         cur = conn.cursor()
+        if not _instalado(cur):
+            return {
+                "ahora": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                "instalado": False,
+                "mensaje": FALTA_INSTALAR,
+                "hay_bloqueo": False,
+                "bloqueados_total": 0,
+                "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG},
+                "cabezas": [],
+            }
         if detectar:
             try:
                 cur.execute(
@@ -166,6 +196,7 @@ def fetch_estado(detectar: bool = True) -> dict:
 
     return {
         "ahora": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "instalado": True,
         "hay_bloqueo": bool(cabezas),
         "bloqueados_total": sum(c["bloqueados"] for c in cabezas),
         "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG},
@@ -177,6 +208,9 @@ def fetch_historial(dias: int = 30, limite: int = 100) -> dict:
     conn = _conn()
     try:
         cur = conn.cursor()
+        if not _instalado(cur):
+            return {"dias": dias, "instalado": False, "mensaje": FALTA_INSTALAR,
+                    "resumen": {}, "episodios": []}
         cur.execute(_SQL_HISTORIAL, limite, dias)
         episodios = _limpiar(_filas(cur), json_cols=("objetos",))
         cur.execute(_SQL_RESUMEN, dias)
@@ -185,6 +219,7 @@ def fetch_historial(dias: int = 30, limite: int = 100) -> dict:
         conn.close()
     return {
         "dias": dias,
+        "instalado": True,
         "resumen": resumen[0] if resumen else {},
         "episodios": episodios,
     }
