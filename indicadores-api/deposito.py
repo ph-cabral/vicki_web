@@ -14,6 +14,9 @@ OJO compatibilidad con lib/deposito/parseDeposito.ts:
   * FECHA EJECUCION en dd/mm/yyyy (CONVERT 103) para que parseFecha() use el
     regex local y no haya corrimiento por timezone (ART = UTC-3).
 """
+import os
+import re
+import unicodedata
 from datetime import datetime, date, timedelta
 from decimal import Decimal
 from db import get_connection
@@ -307,6 +310,13 @@ MOV_ABIERTOS_VENTANA_DIAS = 30
 # Personal.PersonalNombre (case-insensitive, sin acento; ver OPERARIO helper).
 OPERARIO_ESPERA_MERCA = "Mercaderia X Llegar"
 
+# Operarios cuyas OT NO son un aviso de faltante: ya se sabe por qué están
+# esperando, así que ensucian las alertas de picking y de reposición en vez de
+# aportar algo. Siempre incluye el buzón de arriba. Se amplía sin tocar el
+# código con la variable de entorno WMS_OPERARIOS_IGNORADOS (nombres separados
+# por coma), que REEMPLAZA a esta lista (el buzón se agrega igual).
+OPERARIOS_IGNORADOS_DEFAULT = "Carossio Jose"
+
 SQL_PEDIDOS_HORA = """
 SELECT
     p.NroMovVenta,
@@ -423,12 +433,42 @@ def _fotos_abiertos_del_dia(dia: date) -> list[tuple[datetime, int]]:
 # (deposito.wms_estados_snapshot, ver sql/deposito_wms_estados_snapshot.sql —
 # falta correrlo antes del deploy). Guardamos los 3 valores del resumen para que
 # el gráfico coincida exactamente con las tarjetas KPI.
+_RE_ASTER_OP = re.compile(r"^[\*\s]+")
+
+
+def _clave_operario(nombre) -> str:
+    """Nombre de operario en forma comparable: sin los asteriscos con que
+    Personal guarda varios legajos ('****Sanchez Evelyn'), sin acentos, sin
+    espacios de más y en mayúsculas. Sin esto, 'Mercadería X Llegar' y
+    '****Mercaderia X Llegar' pasaban como operarios distintos."""
+    s = _RE_ASTER_OP.sub("", str(nombre or "")).strip()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return " ".join(s.upper().split())
+
+
+# Se resuelve UNA vez al importar: estos helpers se llaman por renglón y el
+# universo de renglones es de miles.
+OPERARIOS_IGNORADOS = frozenset(
+    k
+    for k in (
+        _clave_operario(n)
+        for n in [OPERARIO_ESPERA_MERCA]
+        + os.getenv("WMS_OPERARIOS_IGNORADOS", OPERARIOS_IGNORADOS_DEFAULT).split(",")
+    )
+    if k
+)
+
+
 def _es_operario_merca(nombre) -> bool:
     """True si el nombre de operario es el buzón 'Mercaderia X Llegar'
-    (case-insensitive, tolerante a acentos/espacios)."""
-    s = str(nombre or "").strip().lower()
-    ref = OPERARIO_ESPERA_MERCA.strip().lower()
-    return s == ref or s == ref.replace("mercaderia", "mercadería")
+    (case-insensitive, tolerante a acentos/espacios/asteriscos)."""
+    return _clave_operario(nombre) == _clave_operario(OPERARIO_ESPERA_MERCA)
+
+
+def es_operario_ignorado(nombre) -> bool:
+    """True si las OT de ese operario no deben generar aviso — el buzón de
+    mercadería y los de OPERARIOS_IGNORADOS."""
+    return _clave_operario(nombre) in OPERARIOS_IGNORADOS
 
 
 def guardar_snapshot_wms_estados() -> dict:
@@ -2216,11 +2256,12 @@ def fetch_reposicion_ot_abiertas():
             ots_descartadas.add(_int(f.get("OTId")))
             continue
         operario = _txt(f.get("Operario")) or SIN_OPERARIO_ASIGNADO
-        if _es_operario_merca(operario):
-            # OT parqueada en el buzón "Mercaderia X Llegar": ya se sabe que
-            # está esperando que llegue la mercadería, no es demanda a punto
-            # de recolectarse por un operario real. Se excluye de la alerta
-            # de reposición (mismo criterio que guardar_snapshot_wms_estados).
+        if es_operario_ignorado(operario):
+            # OT parqueada en el buzón "Mercaderia X Llegar" (o de otro
+            # operario de OPERARIOS_IGNORADOS): ya se sabe por qué está
+            # esperando, no es demanda a punto de recolectarse por un operario
+            # real. Se excluye de la alerta de reposición (mismo criterio que
+            # guardar_snapshot_wms_estados).
             ots_espera_merca.add(_int(f.get("OTId")))
             continue
         cod = _txt(f.get("CodArticulo"))

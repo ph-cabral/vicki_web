@@ -84,7 +84,7 @@ from deposito import (
     PATRONES_CANCELADO,
     WMS_ESTADOS_VIVOS,
     WMS_ESTADO_LABELS,
-    _es_operario_merca,
+    es_operario_ignorado,
     _info_articulos,
     _info_pedidos_resumen,
     _int,
@@ -432,7 +432,11 @@ def fetch_picking_disponible(
             descartadas += 1
             continue
         armador = _txt(f.get("Armador")) or SIN_ARMADOR
-        if _es_operario_merca(armador):
+        # El buzón "Mercaderia X Llegar" y los demás operarios de
+        # deposito.OPERARIOS_IGNORADOS no generan aviso: de esas OT ya se sabe
+        # por qué están esperando, así que su demanda no entra ni al cartel ni
+        # al armado de la OT de reposición.
+        if es_operario_ignorado(armador):
             espera_merca += 1
             continue
         cod = _txt(f.get("CodArticulo"))
@@ -633,6 +637,9 @@ def fetch_picking_disponible(
             "repoPedida":      tot["repo_pedida"],
             "articulosOcultosSinRepo": ocultos_sin_repo,
             "renglonesDescartados": descartadas,
+            # Renglones dejados afuera por operario ignorado (el buzón de
+            # mercadería y los de OPERARIOS_IGNORADOS). Se mantiene el nombre
+            # del campo: es el que ya lee la vista web.
             "renglonesEsperaMercaderia": espera_merca,
         },
         "ots": salida,
