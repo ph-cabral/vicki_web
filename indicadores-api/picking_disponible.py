@@ -75,6 +75,7 @@ Gotchas (medidos 2026-09-21, ver claude/picking_disponible_al_asignar_armador.md
   no aplica el gotcha de collation. El nombre del artículo se resuelve aparte
   con _info_articulos (segunda conexión, se junta en Python).
 """
+import re
 from datetime import datetime, timedelta
 
 from db import get_connection
@@ -124,6 +125,12 @@ UBIC_NO_RACK: frozenset[str] = frozenset({
 DEPOSITO_CENTRAL = 1
 
 SIN_ARMADOR = "— Sin asignar"
+
+# Los nombres de Personal vienen con asteriscos adelante en varios legajos
+# ('****Sanchez Evelyn'); se limpian sólo para mostrar, igual que en
+# ot_reposicion._limpiar_nombre. El campo `Armador` de las OT se deja tal cual
+# está para no cambiarle el valor a lo que ya lo consume.
+_RE_ASTER = re.compile(r"^[\*\s]+")
 
 _CH = 1000  # tope de parámetros por IN (mismo criterio que _info_articulos)
 
@@ -307,6 +314,35 @@ def _estado_label(estado) -> str:
     return WMS_ESTADO_LABELS.get(_int(estado), {}).get("label", "Sin estado")
 
 
+def _nombre_operario(nombre) -> str:
+    """Nombre del armador listo para mostrar (sin los asteriscos del legajo)."""
+    n = _txt(nombre)
+    return _RE_ASTER.sub("", n) or n
+
+
+def texto_observaciones(operarios) -> str:
+    """Las Observaciones con las que nace la OT de reposición: una línea por
+    armador que está esperando alguno de los artículos que se van a reponer.
+
+        * para Sanchez Evelyn
+        * para Gomez Luis
+
+    El que repone lee ahí a quién le está destrabando el pedido, que es lo que
+    decide si le conviene hacer ese viaje ahora o después. Se ordena
+    alfabético y se deduplica sin distinguir mayúsculas; las OT sin armador
+    asignado no aportan un nombre, así que no ocupan una línea.
+    """
+    vistos: set[str] = set()
+    nombres: list[str] = []
+    for o in operarios or []:
+        n = _nombre_operario(o)
+        if not n or n == SIN_ARMADOR or n.lower() in vistos:
+            continue
+        vistos.add(n.lower())
+        nombres.append(n)
+    return "\n".join("* para %s" % n for n in sorted(nombres, key=str.lower))
+
+
 def _chunked_query(cur, sql_tpl: str, codigos: list[str], **fmt) -> list[tuple]:
     """Ejecuta una consulta con IN (...) partida de a _CH códigos."""
     out: list[tuple] = []
@@ -486,10 +522,11 @@ def fetch_picking_disponible(
 
             pas = pasillo_de(pos)
             e = por_art.setdefault((pas, cod), {
-                "ots": set(), "pedido": 0.0, "reponer": 0.0, "hay": {},
-                "sit": "ok", "posiciones": set(), "sin_repo": True,
+                "ots": set(), "operarios": set(), "pedido": 0.0, "reponer": 0.0,
+                "hay": {}, "sit": "ok", "posiciones": set(), "sin_repo": True,
             })
             e["ots"].add(ot["OTId"])
+            e["operarios"].add(ot["Armador"])
             e["pedido"] += pedido
             e["reponer"] += a_reponer
             e["hay"][pos] = en_pos
@@ -552,10 +589,21 @@ def fetch_picking_disponible(
         if e["sin_repo"]:
             ocultos_sin_repo += 1
             continue
+        # Quién está esperando este artículo. Va por artículo (y no sólo por
+        # pasillo) porque es el dato con el que se arman las Observaciones de la
+        # OT de reposición — ver texto_observaciones.
+        operarios = sorted(
+            {
+                n for n in (_nombre_operario(o) for o in e["operarios"])
+                if n and n != SIN_ARMADOR
+            },
+            key=str.lower,
+        )
         grupos.setdefault(pas, []).append({
             "CodArticulo": cod,
             "Nombre":      info_art.get(cod, {}).get("Nombre", ""),
             "OTs":         len(e["ots"]),
+            "Operarios":   operarios,
             "Hay":         _r3(sum(e["hay"].values())),
             "Pedido":      _r3(e["pedido"]),
             "AReponer":    _r3(e["reponer"]),
@@ -660,7 +708,10 @@ def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
     """
     pas = str(pasillo or "").strip().upper()
     if not pas:
-        return {"pasillo": "", "codigo": CODOT_REPOSICION, "lineas": [], "sinOrigen": []}
+        return {
+            "pasillo": "", "codigo": CODOT_REPOSICION, "lineas": [],
+            "sinOrigen": [], "operarios": [], "observaciones": "",
+        }
 
     data = fetch_picking_disponible(dias=dias)
     grupo = next((g for g in data.get("porPasillo", []) if str(g["Pasillo"]).upper() == pas), None)
@@ -710,6 +761,7 @@ def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
                 "Nombre": r.get("Nombre", ""),
                 "DestinoEsperado": destino,
                 "AReponer": _r3(falta),
+                "Operarios": r.get("Operarios") or [],
                 **p,
             })
         if cubierto < falta - 0.001:
@@ -721,6 +773,12 @@ def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
             })
 
     lineas.sort(key=lambda l: (l["Ubicacion"], l["Articulo"]))
+    # Los armadores que esperan CUALQUIERA de los artículos que entran en la OT
+    # (sólo los que quedaron con renglón: si no hay de dónde sacarlo, ese
+    # operario no se destraba con esta OT y no va en las Observaciones).
+    operarios = sorted(
+        {o for l in lineas for o in (l.get("Operarios") or [])}, key=str.lower
+    )
     return {
         "generado": data.get("generado"),
         "pasillo": pas,
@@ -728,6 +786,8 @@ def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
         "deposito": DEPOSITO_CENTRAL,
         "articulos": len({l["Articulo"] for l in lineas}),
         "unidades": _r3(sum(l["Cantidad"] for l in lineas)),
+        "operarios": operarios,
+        "observaciones": texto_observaciones(operarios),
         "lineas": lineas,
         "sinOrigen": sin_origen,
     }

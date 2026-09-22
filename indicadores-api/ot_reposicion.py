@@ -52,6 +52,7 @@ from picking_disponible import (
     deposito_de,
     fetch_picking_disponible,
     pasillo_de,
+    texto_observaciones,
 )
 
 # Fecha "vacía" del WMS. SQL Server la escribe sola en las columnas datetime
@@ -207,7 +208,7 @@ def fetch_armado(pasillo: str, dias: int = VENTANA_DIAS):
     pas = str(pasillo or "").strip().upper()
     vacio = {
         "pasillo": pas, "codigo": CODOT_REPOSICION, "deposito": DEPOSITO_CENTRAL,
-        "articulos": [], "sinOrigen": [],
+        "articulos": [], "sinOrigen": [], "operarios": [], "observaciones": "",
     }
     if not pas:
         return vacio
@@ -256,18 +257,28 @@ def fetch_armado(pasillo: str, dias: int = VENTANA_DIAS):
             "AReponer": _r3(falta),
             "Hay": r.get("Hay"),
             "OTs": r.get("OTs"),
+            "Operarios": r.get("Operarios") or [],
             "Situacion": r.get("Situacion"),
             "Destino": (r.get("Posiciones") or [None])[0],
             "Sugerida": 0,
             "Opciones": opciones,
         })
 
+    # Armadores que esperan alguno de los artículos que SÍ tienen de dónde
+    # sacarse: es el texto de Observaciones con el que nace la OT. Se manda
+    # armado para que el widget no tenga que rehacerlo (y para que la pantalla
+    # del WMS y el alta directa escriban exactamente lo mismo).
+    operarios = sorted(
+        {o for a in articulos for o in (a.get("Operarios") or [])}, key=str.lower
+    )
     return {
         "generado": data.get("generado"),
         "pasillo": pas,
         "codigo": CODOT_REPOSICION,
         "deposito": DEPOSITO_CENTRAL,
         "articulos": articulos,
+        "operarios": operarios,
+        "observaciones": texto_observaciones(operarios),
         "sinOrigen": sin_origen,
     }
 
@@ -594,10 +605,15 @@ def crear_ot(
             })
 
         # La marca va SIEMPRE adelante: es lo único que permite separar después,
-        # en la base, las OT que nacieron acá de las cargadas por pantalla.
-        obs = " ".join(
-            p for p in (MARCA, ("pasillo %s" % pas) if pas else "", _txt(observaciones)) if p
-        )[:1000]
+        # en la base, las OT que nacieron acá de las cargadas por pantalla. Lo
+        # que venga en `observaciones` va DEBAJO y no pegado con espacios: es la
+        # lista "* para <armador>" (una por línea), que así se lee igual en el
+        # textarea del WMS y en la columna.
+        cabecera = " ".join(
+            p for p in (MARCA, ("pasillo %s" % pas) if pas else "") if p
+        )
+        extra = _txt(observaciones)
+        obs = ("%s\n%s" % (cabecera, extra) if extra else cabecera)[:1000]
 
         plan = {
             "simulado": bool(simular),
