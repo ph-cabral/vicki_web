@@ -435,6 +435,7 @@ def fetch_picking_disponible(
     ots: dict[int, dict] = {}
     descartadas = 0
     espera_merca = 0
+    sin_asignar = 0
 
     for f in demanda:
         otid = _int(f.get("OTId"))
@@ -450,6 +451,14 @@ def fetch_picking_disponible(
         # al armado de la OT de reposición.
         if es_operario_ignorado(armador):
             espera_merca += 1
+            continue
+        # OT sin armador ("— Sin asignar"): igual que el buzón, son pedidos
+        # guardados para pasar después, no trabajo en curso. No entran a la
+        # demanda: si entraran, por FIFO podrían dejar corta la OT de un armador
+        # real y traer el cartel solo. Cuando se le asigna un armador real
+        # entran en el sondeo siguiente (y ahí sí avisa).
+        if armador == SIN_ARMADOR:
+            sin_asignar += 1
             continue
         cod = _txt(f.get("CodArticulo"))
         pos = _txt(f.get("Posicion"))
@@ -663,6 +672,8 @@ def fetch_picking_disponible(
             # mercadería y los de OPERARIOS_IGNORADOS). Se mantiene el nombre
             # del campo: es el que ya lee la vista web.
             "renglonesEsperaMercaderia": espera_merca,
+            # Renglones de OT sin armador, dejados afuera (ver arriba).
+            "renglonesSinAsignar": sin_asignar,
         },
         "ots": salida,
         "porPasillo": por_pasillo,

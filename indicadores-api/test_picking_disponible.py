@@ -35,6 +35,7 @@ DEMANDA_COLS = [
 # OT 10           → A-OTRODEP sólo tiene guardado en el depósito 02: no cuenta
 # OT 11           → A-REPOPARCIAL: la reposición en camino cubre SÓLO PARTE del
 #                   faltante (30 de 50) → se resta, quedan 20, sigue "reponer"
+# OT 12           → sin armador ("— Sin asignar"): se descarta entera
 DEMANDA = [
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-SOBRA",  "01-10-01-01", 5),
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-FALTA",  "01-10-01-02", 3),
@@ -51,6 +52,7 @@ DEMANDA = [
     (9, 900009, 1, HOY, "CLIENTE NUEVE", "Molina Martina", "A-PARCIAL", "01-15-01-01", 100),
     (10, 900010, 1, HOY, "CLIENTE DIEZ", "Molina Martina", "A-OTRODEP", "01-16-01-01", 20),
     (11, 900011, 1, HOY, "CLIENTE ONCE", "Molina Martina", "A-REPOPARCIAL", "01-17-01-01", 50),
+    (12, 900012, 1, HOY, "CLIENTE DOCE", None, "A-FALTA", "01-10-01-02", 6),
 ]
 # (art, ubic, cant, es_pick, es_guard)
 STOCK = [
@@ -165,6 +167,9 @@ check("OT 5 (buzón mercadería) descartada", 5 in ots, False)
 check("OT 6 (todo ok) no aparece", 6 in ots, False)
 check("renglones descartados por cancelado", data["resumen"]["renglonesDescartados"], 1)
 check("renglones del buzón", data["resumen"]["renglonesEsperaMercaderia"], 1)
+check("OT 12 (sin asignar) descartada", 12 in ots, False)
+check("renglones sin asignar", data["resumen"]["renglonesSinAsignar"], 1)
+check("A-FALTA no suma lo de la OT sin asignar", fila(1, "A-FALTA")["AReponer"], 3.0)
 
 print("\n=== solo_problemas: la fila OK no viaja ===")
 check("OT 1 trae 1 fila", len(ots[1]["rows"]), 1)

@@ -939,7 +939,6 @@ function GrupoCard({
               <th className="px-3 py-2 font-medium">Cód.</th>
               <th className="px-3 py-2 font-medium">Artículo</th>
               <th className="px-3 py-2 font-medium text-right">Cant. faltante</th>
-              <th className="px-3 py-2 font-medium">Fecha faltante</th>
               <th className="px-3 py-2 font-medium">Fecha arribo</th>
               <th className="px-3 py-2 font-medium text-right">Importe</th>
               <th className="px-3 py-2 font-medium text-center">{vendidoMode ? "Vendido" : "Acción"}</th>
@@ -958,13 +957,12 @@ function GrupoCard({
                 <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
                 <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">{fmtAr(it.Fecha)}</td>
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">
                   {fmtAr(it.fechaArribo)}
                   {it.arriboOC && it.fechaArribo && (
                     <span
                       className="ml-1.5 text-[10px] text-sky-400/80 align-middle"
-                      title="Fecha estimada de la OC pendiente (editable en Compras → Faltantes, columna Arribo)"
+                      title="Entrega pactada + 2 días de la OC más vieja con este artículo todavía pendiente de recibir"
                     >
                       OC
                     </span>
@@ -1054,7 +1052,6 @@ function GrupoCardListo({
               <th className="px-3 py-2 font-medium">Cód.</th>
               <th className="px-3 py-2 font-medium">Artículo</th>
               <th className="px-3 py-2 font-medium text-right">Cant. faltante</th>
-              <th className="px-3 py-2 font-medium">Fecha faltante</th>
               <th className="px-3 py-2 font-medium">Fecha arribo</th>
               <th className="px-3 py-2 font-medium text-right">Importe</th>
               <th className="px-3 py-2 font-medium text-center">Vendido</th>
@@ -1073,7 +1070,6 @@ function GrupoCardListo({
                   <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
                   <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">{fmtAr(it.Fecha)}</td>
                   <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">{fmtAr(it.fechaArribo)}</td>
                   <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
                   <td className="px-3 py-2">

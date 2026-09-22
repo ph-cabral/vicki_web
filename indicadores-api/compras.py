@@ -15,9 +15,12 @@ Tablas (EVERWEAR, confirmadas por descubrimiento):
 El CodArticulo del renglón es el mismo que usa /deposito/faltantes (p.CodArticu),
 por eso cruzan por artículo.
 
-NOTA (afinar si hace falta): se considera "por llegar" todo renglón con
-Cantidad - CantidadCumplida > 0. No se filtra por Estado. Si aparecieran OC
-ANULADAS con saldo pendiente, sumar su Estado a ESTADOS_CAB_EXCLUIR (abajo).
+2026-09-22: "por llegar" = renglón con Cantidad - CantidadCumplida > 0 Y
+Com_OrdCompRenglones.Estado = 1 (pendiente). Un renglón que pasó a 2 (cumplido)
+o 3 (cerrado con saldo) ya ingresó con remito o no va a entrar: aunque le quede
+saldo NO cubre faltantes. Estado 1 de renglón sólo existe en cabeceras 0/1, así
+que canceladas (4) y anuladas (5, sin renglones) quedan fuera solas. Ver
+memoria oc_estados.
 """
 from collections import OrderedDict
 from datetime import datetime, date, timedelta
@@ -114,6 +117,7 @@ SELECT
     r.Cantidad                           AS CantPedida,
     ISNULL(r.CantidadCumplida, 0)        AS CantRecibida,
     r.FecEntregaPactada                  AS FechaEntrega,
+    r.Estado                             AS EstadoRenglon,
     pr.RazonSocial                       AS Proveedor,
     ISNULL(t_t.Descripcion, 'Nacional')  AS TipoArticulo
 FROM EVERWEAR.dbo.Com_OrdCompRenglones r
@@ -121,6 +125,7 @@ INNER JOIN EVERWEAR.dbo.Com_OrdCompCabecera cab ON cab.NroOrdCompra = r.NroOrdCo
 LEFT  JOIN EVERWEAR.dbo.Com_Proveedores    pr  ON pr.CodProveed   = cab.CodProveed
 {_join_tipo}
 WHERE ISNULL(r.Cantidad, 0) - ISNULL(r.CantidadCumplida, 0) > 0
+  AND r.Estado = 1   -- solo renglones PENDIENTES (2 cumplido / 3 cerrado con saldo ya ingresaron con remito o no van a entrar)
   {_excl}
   {_tipo}
   {_fecha}
@@ -267,6 +272,13 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
                 es_impo = int(_safe(d.get("NroImportacion")) or 0) != 0
             except (TypeError, ValueError):
                 es_impo = False
+            # Renglón de OC en estado 1 = pendiente de recibir. 2 cumplido y
+            # 3 cerrado con saldo NO van a entrar aunque tengan saldo (ver
+            # memoria oc_estados).
+            try:
+                ren_abierto = int(_safe(d.get("EstadoRenglon")) or 0) == 1
+            except (TypeError, ValueError):
+                ren_abierto = False
 
             a = agg.get(cod)
             if not a:
@@ -313,9 +325,15 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
                     "Importacion": es_impo,
                     "TipoArticulo": tipo,
                     "Proveedor": prov,
+                    # True si ALGÚN renglón de este artículo en esta OC sigue
+                    # en estado 1 (pendiente). /ventas/faltantes toma la fecha
+                    # de arribo solo de lotes abiertos.
+                    "Abierto": False,
                 }
                 lotes[lk] = lote
             lote["Pendiente"] += pend
+            if ren_abierto:
+                lote["Abierto"] = True
             if fecha is not None and (lote["FechaEntrega"] is None or fecha < lote["FechaEntrega"]):
                 lote["FechaEntrega"] = fecha
             if es_impo:
@@ -328,7 +346,7 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
         rows = sorted(agg.values(), key=lambda x: -x["PorLlegar"])
         for r in rows:
             r["PorLlegar"] = round(r["PorLlegar"], 2)
-            r["Lotes"].sort(key=lambda l: l["FechaOC"] or "")
+            r["Lotes"].sort(key=lambda l: (l["FechaOC"] or "", l["NroOC"] or ""))
         return {
             "total": len(rows),
             "rows": rows,

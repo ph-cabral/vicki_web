@@ -395,6 +395,10 @@ export async function GET(req: Request) {
       FechaOC: string | null;
       FechaEntrega: string | null;
       Importacion?: boolean;
+      NroOC?: string | null;
+      // Algún renglón del artículo en esta OC sigue en estado 1 (pendiente
+      // de recibir). undefined = indicadores-api sin el campo todavía.
+      Abierto?: boolean;
     }
     const ocLotesPorArt = new Map<string, OcLote[]>();
     // Fallback si indicadores-api todavía no tiene "Lotes" (desfasaje de
@@ -435,8 +439,31 @@ export async function GET(req: Request) {
     const hoyISO = new Date().toLocaleDateString("sv-SE", {
       timeZone: "America/Argentina/Buenos_Aires",
     });
+    // 2026-09-22 — criterio vigente: la fecha de arribo es la de la OC MÁS
+    // VIEJA (FecMovim, desempate por N° de OC) que tenga el artículo con el
+    // renglón en estado 1 (pendiente de recibir): entrega pactada + 2 días
+    // (importación sin fecha confiable → fecha de la OC + 2). Cuando ese
+    // renglón pasa a cualquier otro estado (cumplido, cerrado con saldo,
+    // OC cancelada/anulada) deja de venir en los lotes abiertos y la fecha
+    // pasa sola a la OC siguiente. Ya NO se filtra por "OC hecha después
+    // del faltante" ni se prefiere la entrega no vencida: manda la más vieja
+    // abierta. Sin OC abierta → cae al arribo manual (faltante_control).
+    // El piso de OC sigue siendo OC_DESDE (fetch de ordenes-pendientes).
     const arriboParaFaltante = (cod: string, fechaFaltante: string | null): string | null => {
       const lotes = ocLotesPorArt.get(cod);
+      if (lotes?.length && lotes.some((l) => l.Abierto !== undefined)) {
+        const abierta = lotes
+          .filter((l) => l.Abierto === true)
+          .sort((a, b) =>
+            (a.FechaOC ?? "").localeCompare(b.FechaOC ?? "") ||
+            (a.NroOC ?? "").localeCompare(b.NroOC ?? ""),
+          )[0];
+        if (!abierta) return null;
+        const base = abierta.FechaEntrega && !abierta.Importacion ? abierta.FechaEntrega : abierta.FechaOC;
+        return base ? addDaysISO(base, 2) : null;
+      }
+      // Fallback (indicadores-api sin "Abierto", desfasaje de deploy):
+      // criterio anterior.
       if (!lotes?.length) {
         // Sin Lotes para este artículo: si indicadores-api no manda ese
         // campo todavía, usa el agregado viejo tal cual (sin filtrar).

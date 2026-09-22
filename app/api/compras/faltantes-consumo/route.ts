@@ -139,6 +139,7 @@ interface OcLote {
   FechaOC: string | null;
   FechaEntrega: string | null;
   Importacion?: boolean;
+  NroOC?: string | null;
 }
 interface OcRow {
   CodArticulo: string;
@@ -809,43 +810,23 @@ export async function GET(req: NextRequest) {
   // Se persisten al final: marca de agua nueva y último día cubierto.
   const cubiertosNuevos: { cod: string; fecha: string; stock: number; faltan: number }[] = [];
 
-  // Elige, para un bucket puntual (artículo + PrimerDia del faltante), la OC
-  // pendiente de ese artículo hecha DESPUÉS de esa fecha con la entrega más
-  // temprana (Despacho, salvo importación sin fecha confiable → FecMovim) —
-  // mismo criterio que arriboParaFaltante en app/api/ventas/faltantes/
-  // route.ts. Devuelve null si no hay ninguna OC elegible (el bucket cae al
-  // último fallback: fechaArribo cargada a mano, ver page.tsx).
-  const mejorLoteParaFecha = (lotes: OcLote[] | undefined, fechaBucket: string): OcLote | null => {
+  // 2026-09-22 — mismo criterio que arriboParaFaltante en
+  // app/api/ventas/faltantes/route.ts: la fecha mostrada es la de la OC MÁS
+  // VIEJA (FecMovim, desempate N° OC) con el artículo todavía pendiente
+  // (renglón en estado 1 — indicadores-api ya sólo manda esos). Cuando ese
+  // renglón pasa a 2/3 (ingresó con remito / cerrado) deja de venir y la
+  // fecha pasa a la OC siguiente. Ya no se filtra por "OC posterior al
+  // faltante" ni se prefiere la entrega no vencida. Sin OC → null (cae a la
+  // fecha de arribo cargada a mano, ver page.tsx).
+  const mejorLoteParaFecha = (lotes: OcLote[] | undefined, _fechaBucket: string): OcLote | null => {
     if (!lotes?.length) return null;
-    // 2026-09-16: se prefiere la entrega más temprana NO vencida (base + 2
-    // días >= hoy); si todas están vencidas, la más temprana igual. Mismo
-    // criterio que arriboParaFaltante en app/api/ventas/faltantes/route.ts.
-    const hoyISO = new Date().toLocaleDateString("sv-SE", {
-      timeZone: "America/Argentina/Buenos_Aires",
-    });
-    const mas2 = (iso: string) => {
-      const d = new Date(`${iso}T00:00:00Z`);
-      d.setUTCDate(d.getUTCDate() + 2);
-      return d.toISOString().slice(0, 10);
-    };
-    let mejor: OcLote | null = null;
-    let mejorBase: string | null = null;
-    let futuro: OcLote | null = null;
-    let futuroBase: string | null = null;
-    for (const l of lotes) {
-      if (!l.FechaOC || l.FechaOC < fechaBucket) continue;
-      const base = l.FechaEntrega && !l.Importacion ? l.FechaEntrega : l.FechaOC;
-      if (!base) continue;
-      if (mejorBase === null || base < mejorBase) {
-        mejorBase = base;
-        mejor = l;
-      }
-      if (mas2(base) >= hoyISO && (futuroBase === null || base < futuroBase)) {
-        futuroBase = base;
-        futuro = l;
-      }
-    }
-    return futuro ?? mejor;
+    return (
+      [...lotes].sort(
+        (a, c) =>
+          (a.FechaOC ?? "").localeCompare(c.FechaOC ?? "") ||
+          (a.NroOC ?? "").localeCompare(c.NroOC ?? ""),
+      )[0] ?? null
+    );
   };
 
   const artImporte = new Map<string, number>();
