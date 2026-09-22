@@ -87,6 +87,11 @@ from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
 # mesa, de un mes. Ver premios.py.
 from premios import fetch_premios
+# /sistema/bloqueos — watchdog de cadenas de bloqueo de Magnus. El job de SQL
+# Agent detecta y registra; acá sólo se lee el estado y se disparan las dos
+# acciones (matar la cabeza / dejarla), que corren dentro de SP auditados.
+# Ver bloqueos.py y ever/sql/magnus_watchdog_bloqueos.sql.
+import bloqueos
 from datetime import date, datetime, timedelta
 import threading
 import time
@@ -1880,3 +1885,69 @@ def deposito_picking_ot_items(ot: int = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
     return {"ot": ot, "total": len(rows), "rows": rows}
+
+
+# ── Sistema: watchdog de bloqueos de Magnus ──────────────────────────────────
+# La base "se cuelga" cuando una sesión del cliente de Magnus queda con una
+# transacción abierta y encadena decenas de sesiones detrás. El job de SQL
+# Agent "VICKI - Watchdog bloqueos" detecta y registra cada minuto; estos
+# endpoints son los ojos y las dos manos de /sistema/bloqueos.
+class BloqueoAccionIn(BaseModel):
+    episodioId: int
+    usuario: str | None = None
+    motivo: str | None = None
+
+
+@app.get("/sistema/bloqueos")
+def sistema_bloqueos(detectar: bool = Query(default=True)):
+    """Estado de ESTE segundo: cabezas que bloquean, su cadena de víctimas y el
+    episodio abierto de cada una (el `episodioId` que habilita los botones)."""
+    try:
+        return bloqueos.fetch_estado(detectar=detectar)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.get("/sistema/bloqueos/historial")
+def sistema_bloqueos_historial(
+    dias: int = Query(default=30, ge=1, le=365),
+    limite: int = Query(default=100, ge=1, le=500),
+):
+    """Episodios registrados: cuándo, qué PC fue cabeza, cuánto frenó y cómo
+    terminó (se destrabó solo / lo mataron / se decidió esperar)."""
+    try:
+        return bloqueos.fetch_historial(dias=dias, limite=limite)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.get("/sistema/bloqueos/episodio")
+def sistema_bloqueos_episodio(id: int = Query(...)):
+    """Un episodio con su evolución minuto a minuto (cuántos bloqueados y qué
+    esperaba cada uno en cada muestra)."""
+    try:
+        return bloqueos.fetch_episodio(id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.post("/sistema/bloqueos/matar")
+def sistema_bloqueos_matar(body: BloqueoAccionIn):
+    """KILL de la cabeza. El SP revalida que la sesión siga bloqueando antes de
+    matar y deja registrado quién lo pidió."""
+    try:
+        return bloqueos.matar(body.episodioId, body.usuario or "desconocido")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.post("/sistema/bloqueos/dejar")
+def sistema_bloqueos_dejar(body: BloqueoAccionIn):
+    """Se decide esperar: queda asentado y el watchdog lo sigue midiendo hasta
+    que se destrabe."""
+    try:
+        return bloqueos.dejar(body.episodioId, body.usuario or "desconocido", body.motivo)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")

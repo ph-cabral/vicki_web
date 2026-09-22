@@ -198,6 +198,51 @@ check("para bajar de guardado", data["resumen"]["hayParaReponer"], 2)
 check("repo pedida", data["resumen"]["repoPedida"], 1)
 check("orden: primero las que tienen faltante", data["ots"][0]["Faltantes"] > 0, True)
 
+print("\n=== pasillo_de: el 2º segmento, con las trampas de la base ===")
+casos = [
+    ("01-36-10-04", "36"),          # rack normal
+    ("01-07-01-01-DER", "07"),      # con lado
+    ("01-16-08-O", "16"),           # nivel con letra
+    ("01-34-04--03-DER", "34"),     # doble guión
+    ("01-09-04-06-15-02", "SOBRESTOCK"),     # zona de sobrestock, no pasillo 09
+    ("01-09-04-05-06-04-D", "SOBRESTOCK"),   # sobrestock con lado
+    ("010-09-04-04-24-01", "SOBRESTOCK"),    # un 0 de más
+    ("SE01-09-04-02-10-02", "SOBRESTOCK"),   # prefijo de letras
+    ("01-06-13-01-TRAMO", "06"),
+    ("PLAYA_PEDIDOS", "PLAYA_PEDIDOS"),      # con nombre: su propio grupo
+    ("PULMON_INGRESO", "PULMON_INGRESO"),
+    ("CARRO25", "CARRO25"),
+    ("", "?"),
+]
+for ubic, esperado in casos:
+    check("%-22s" % (ubic or "(vacío)"), pd.pasillo_de(ubic), esperado)
+check("orden: los numéricos antes que los con nombre",
+      sorted(["SOBRESTOCK", "07", "36", "PLAYA_PEDIDOS", "02"], key=pd._orden_pasillo),
+      ["02", "07", "36", "PLAYA_PEDIDOS", "SOBRESTOCK"])
+
+print("\n=== vista por pasillo ===")
+pas = {g["Pasillo"]: g for g in data["porPasillo"]}
+check("pasillos con algo que reponer", sorted(pas), ["10", "11", "12", "13", "14", "PLAYA_PEDIDOS"])
+
+g11 = pas["11"]["rows"][0]
+check("A-COMPET: una sola fila aunque la pidan 2 OT", len(pas["11"]["rows"]), 1)
+check("A-COMPET OTs", g11["OTs"], 2)
+check("A-COMPET hay (sin contar 2 veces la misma posición)", g11["Hay"], 80.0)
+check("A-COMPET pedido total 60+50", g11["Pedido"], 110.0)
+check("A-COMPET a reponer (sólo la 2ª queda corta)", g11["AReponer"], 30.0)
+
+g10 = {r["CodArticulo"]: r for r in pas["10"]["rows"]}
+check("el artículo que alcanzaba no aparece", "A-SOBRA" in g10, False)
+check("A-FALTA está", g10["A-FALTA"]["AReponer"], 3.0)
+
+g12 = pas["12"]["rows"][0]
+check("A-GUARD suma los 2 renglones de la misma OT", g12["Pedido"], 50.0)
+check("A-GUARD una sola OT", g12["OTs"], 1)
+
+check("totales del pasillo", pas["13"]["AReponer"], 80.0)
+check("situación peor del artículo", pas["13"]["rows"][0]["Situacion"], "repo_pedida")
+check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]][:3], ["10", "11", "12"])
+
 print("\n=== todos los renglones (cartel de una OT) ===")
 uno = pd.fetch_picking_disponible_ot(6)["ot"]
 check("OT 6 aparece con solo_con_problema=False", uno is not None and uno["OTId"], 6)

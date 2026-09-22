@@ -165,6 +165,50 @@ GROUP BY i.OTItemArticuloId, i.OTItemUbicacionCodigo
 """
 
 
+def pasillo_de(ubic) -> str:
+    """Pasillo al que pertenece una ubicación del WMS.
+
+    El código es `DD-PP-CC-NN[-LADO]` (depósito, pasillo, columna, nivel) y el
+    2º segmento es el pasillo — ver claude/wms_ubicaciones_nomenclatura.md. Dos
+    cosas que no se pueden resolver con un split a secas:
+
+    - **Sobrestock**: son 2.853 ubicaciones con el prefijo FIJO `01-09-04` y
+      después su propia estructura (`01-09-04-PP-CC-NN[-D/I]`). No son la
+      columna 4 del pasillo 9: es la zona de sobrestock entera. Se detectan
+      porque tienen 6 segmentos numéricos y el 2º y 3º son 9 y 4 (un rack normal
+      tiene 4).
+    - **Códigos sucios** que hay en la base: `010-09-04-04-24-01` (un 0 de más),
+      `SE01-09-04-02-10-02` (prefijo de letras), `01-34-04--03-DER` (doble
+      guión), `01-16-08-O` (nivel con letra). Por eso se recorren los segmentos
+      quedándose con los numéricos y se corta en el primero que no lo sea.
+
+    Las ubicaciones con nombre (PLAYA_PEDIDOS, PULMON_INGRESO, CARRO01…) se
+    devuelven tal cual: son su propio grupo.
+    """
+    u = _txt(ubic).upper()
+    if not u:
+        return "?"
+    nums: list[int] = []
+    for parte in [p for p in u.split("-") if p]:
+        digitos = "".join(c for c in parte if c.isdigit())
+        if digitos and digitos == parte:
+            nums.append(int(digitos))
+        elif not nums and digitos:
+            nums.append(int(digitos))      # "SE01" al principio
+        else:
+            break                          # "DER", "IZQ", "TRAMO", nivel-letra
+    if len(nums) >= 6 and nums[1] == 9 and nums[2] == 4:
+        return "SOBRESTOCK"
+    if len(nums) >= 2:
+        return "%02d" % nums[1]
+    return u
+
+
+def _orden_pasillo(pas: str):
+    """Los numéricos primero y en orden; los con nombre, al final alfabético."""
+    return (0, int(pas), "") if pas.isdigit() else (1, 0, pas)
+
+
 def _num(v) -> float:
     try:
         return float(_safe(v) or 0)
@@ -304,6 +348,15 @@ def fetch_picking_disponible(
     libre_repo: dict[tuple[str, str], float] = {}
     libre_guard: dict[str, float] = {}
 
+    # Vista por PASILLO: se acumula artículo por artículo mientras se recorre,
+    # incluidos los renglones que SÍ alcanzan, para que "cuánto se pidió en
+    # total" sea la demanda real del artículo y no sólo la parte que quedó
+    # corta. El "cuánto hay" se guarda por posición (dict) y no sumando, porque
+    # dos OT sobre la misma posición traen el mismo stock y sumarlo lo contaría
+    # dos veces.
+    por_art: dict[tuple[str, str], dict] = {}
+    PEOR = {"faltante": 0, "reponer": 1, "repo_pedida": 2, "ok": 3}
+
     salida = []
     tot = {"faltante": 0, "reponer": 0, "repo_pedida": 0}
     for ot in orden_fifo:
@@ -335,10 +388,24 @@ def fetch_picking_disponible(
                 problemas += 1
                 tot[sit] += 1
 
+            pas = pasillo_de(pos)
+            e = por_art.setdefault((pas, cod), {
+                "ots": set(), "pedido": 0.0, "reponer": 0.0, "hay": {},
+                "sit": "ok", "posiciones": set(),
+            })
+            e["ots"].add(ot["OTId"])
+            e["pedido"] += pedido
+            e["reponer"] += a_reponer
+            e["hay"][pos] = en_pos
+            e["posiciones"].add(pos)
+            if PEOR[sit] < PEOR[e["sit"]]:
+                e["sit"] = sit
+
             filas.append({
                 "CodArticulo": cod,
                 "Nombre":      info_art.get(cod, {}).get("Nombre", ""),
                 "Posicion":    pos,
+                "Pasillo":     pas,
                 "Pedido":      _r3(pedido),
                 "EnPosicion":  _r3(en_pos),
                 "OtrasOT":     _r3(otras),
@@ -374,6 +441,31 @@ def fetch_picking_disponible(
 
     salida.sort(key=lambda o: (-o["Faltantes"], -o["ConProblema"], o["OTId"]))
 
+    grupos: dict[str, list] = {}
+    for (pas, cod), e in por_art.items():
+        if e["reponer"] <= 0:
+            continue
+        grupos.setdefault(pas, []).append({
+            "CodArticulo": cod,
+            "Nombre":      info_art.get(cod, {}).get("Nombre", ""),
+            "OTs":         len(e["ots"]),
+            "Hay":         _r3(sum(e["hay"].values())),
+            "Pedido":      _r3(e["pedido"]),
+            "AReponer":    _r3(e["reponer"]),
+            "Posiciones":  sorted(e["posiciones"]),
+            "Situacion":   e["sit"],
+        })
+    por_pasillo = []
+    for pas in sorted(grupos, key=_orden_pasillo):
+        filas_pas = sorted(grupos[pas], key=lambda r: (-r["AReponer"], r["CodArticulo"]))
+        por_pasillo.append({
+            "Pasillo":   pas,
+            "Articulos": len(filas_pas),
+            "AReponer":  _r3(sum(r["AReponer"] for r in filas_pas)),
+            "Faltantes": sum(1 for r in filas_pas if r["Situacion"] == "faltante"),
+            "rows":      filas_pas,
+        })
+
     return {
         "generado":     datetime.now().isoformat(sep=" ", timespec="seconds"),
         "ventanaDias":  dias,
@@ -387,6 +479,7 @@ def fetch_picking_disponible(
             "renglonesEsperaMercaderia": espera_merca,
         },
         "ots": salida,
+        "porPasillo": por_pasillo,
     }
 
 
