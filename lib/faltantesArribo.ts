@@ -20,6 +20,27 @@ interface FaltRow {
   PrimerDia: string | null; // primera aparición dentro del rango consultado.
 }
 
+// Fila cruda de GET /deposito/faltante-pedidos — fuente desde 2026-09-22
+// (pedidos Cerrados/Facturados de Magnus, ya no Ven_PedRenPendientes). Cada
+// renglón aparece una sola vez con fecha fija (FechaCierre): no hay snapshot
+// que "decaiga" al facturarse, así que ya no hace falta pedir histórico ni
+// preocuparse porque el renglón haya "salido de la foto viva".
+interface FaltantePedidoRow {
+  NroMovVenta: number;
+  Renglon: number;
+  CodArticulo: string;
+  Fecha: string | null;
+}
+function mapFaltantePedido(r: FaltantePedidoRow): FaltRow {
+  return {
+    NroPedOrigen: r.NroMovVenta,
+    NroRengOrigen: r.Renglon,
+    CodArticulo: r.CodArticulo,
+    Fecha: r.Fecha,
+    PrimerDia: r.Fecha,
+  };
+}
+
 export interface BucketRenglon {
   nroPedOrigen: number;
   nroRengOrigen: number;
@@ -45,27 +66,26 @@ export async function resolveBucketRenglones(
 ): Promise<BucketRenglon[]> {
   const hoy = new Date().toISOString().slice(0, 10);
   const hasta = hoy > primerDia ? hoy : primerDia;
-  // historico=1 es obligatorio acá: sin esto /deposito/faltantes devuelve
-  // solo la foto MÁS NUEVA (SQL_FALTANTES_RANGO, descarta lo ya facturado a
-  // mitad de rango). Un renglón "vive" ~1 día en Ven_PedRenPendientes — para
-  // cuando compras carga el Arribo (días después de PrimerDia), el renglón ya
-  // no está en la foto viva y esta consulta devolvía [] → el POST no
-  // encontraba renglones y la fecha nunca llegaba a faltante_control (bug:
-  // /ventas/faltantes seguía mostrando el fallback automático por OC en vez
-  // del arribo real cargado en /compras/faltantes). Mismo patrón que ya usan
-  // /api/ventas/faltantes y /api/compras/faltantes-consumo.
-  const qs = new URLSearchParams({ desde: primerDia, hasta, historico: "1" });
+  // Fuente 2026-09-22: /deposito/faltante-pedidos (pedidos Cerrados/
+  // Facturados de Magnus) — cada renglón tiene FechaCierre fija, ya no "vive"
+  // ~1 día como en Ven_PedRenPendientes, así que no hace falta pedir
+  // histórico: el renglón sigue apareciendo igual muchos días después de
+  // PrimerDia. Mismo patrón que ya usan /api/ventas/faltantes y
+  // /api/compras/faltantes-consumo (ver mapFaltantePedido arriba).
+  const qs = new URLSearchParams({ desde: primerDia, hasta });
 
-  const res = await fetch(`${API_URL}/deposito/faltantes?${qs}`, {
+  const res = await fetch(`${API_URL}/deposito/faltante-pedidos?${qs}`, {
     cache: "no-store",
     signal: AbortSignal.timeout(45000),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} /deposito/faltantes`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} /deposito/faltante-pedidos`);
   const json = await res.json();
 
-  const rows: FaltRow[] = (json.rows ?? []).filter(
-    (r: FaltRow) => r.CodArticulo === codArticulo && (r.PrimerDia ?? r.Fecha) === primerDia,
-  );
+  const rows: FaltRow[] = ((json.rows ?? []) as FaltantePedidoRow[])
+    .map(mapFaltantePedido)
+    .filter(
+      (r: FaltRow) => r.CodArticulo === codArticulo && (r.PrimerDia ?? r.Fecha) === primerDia,
+    );
   if (!rows.length) return [];
 
   // última marca de existencia por renglón (mismo patrón que faltantes-consumo).

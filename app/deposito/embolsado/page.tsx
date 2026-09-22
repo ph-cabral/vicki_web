@@ -16,14 +16,20 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 // único que hace la vista es partirla en las tres solapas y llevar el ciclo
 // tomar → cerrar.
 //
-//   Para embolsar → falta stock Y hay material en el pulmón de ingreso.
-//   Sin material  → falta stock pero el pulmón está vacío: no se puede trabajar.
-//   Cubiertos     → ya llegan al objetivo de meses; están para poder mirarlos.
+//   Para embolsar → stock < promedio de venta (6 meses) x 2 Y hay material en
+//                    el pulmón de ingreso. Se recomienda embolsar el promedio
+//                    x 3, topeado por lo que haya en el pulmón.
+//   Sin material  → hace falta embolsar pero el pulmón está vacío: no se
+//                    puede trabajar.
+//   Cubiertos     → el stock ya llega al doble del promedio; están para poder
+//                    mirarlos.
 //
-// Además de las tres solapas, la API separa aparte los artículos que se
-// acaban de cerrar y el WMS todavía no confirmó (`pendientes`, ver route.ts):
-// se muestran en una tabla propia debajo, así no vuelven a "Para embolsar" ni
-// se pueden re-tomar mientras se espera que el stock se actualice.
+// Además de las tres solapas, la API separa aparte los artículos marcados
+// como EMBOLSADOS en los últimos 7 días cuyo movimiento el WMS todavía no
+// confirmó (`embolsados`, ver route.ts): se muestran en una tabla propia
+// ARRIBA de todo, así no vuelven a "Para embolsar" ni se pueden re-tomar
+// mientras se espera que el stock se actualice. Al vencer los 7 días (o
+// confirmarse antes) se vuelve a controlar el promedio contra el stock.
 //
 // QUIÉN embolsa se pide EN CADA TOMA, no una vez al entrar: esta pantalla queda
 // abierta en una PC compartida y por ella pasan muchas personas en el día. Al
@@ -68,9 +74,10 @@ type Registro = {
   enIngreso: number | null;
 };
 
-/** Fila de `pendientes`: un artículo recién cerrado, fuera de las 3 solapas
- * hasta que el WMS confirme el movimiento o venzan los días de gracia. */
-type Pendiente = Fila & {
+/** Fila de `embolsados`: un artículo recién marcado como embolsado, fuera de
+ * las 3 solapas hasta que el WMS confirme el movimiento o venzan los 7 días
+ * de gracia. */
+type Embolsado = Fila & {
   cantidadEmbolsada: number;
   ultimoCierre: string;
   venceEl: string;
@@ -86,13 +93,16 @@ const SOLAPAS: { key: Solapa; label: string }[] = [
   { key: "cubiertos", label: "Cubiertos" },
 ];
 
-const MESES_COBERTURA = 4;
+// Umbral de cobertura (en meses de promedio de venta) que dispara la
+// recomendación: por debajo de esto, stock < promedio x 2 (ver embolsado.py,
+// MULTIPLICADOR_UMBRAL). Se usa sólo para el semáforo de color de la tabla.
+const UMBRAL_COBERTURA_MESES = 2;
 
-/** Color del semáforo de cobertura contra el objetivo de meses. */
+/** Color del semáforo de cobertura contra el umbral (promedio x 2). */
 function colorCobertura(m: number) {
   if (m < 1) return "text-red-400";
-  if (m < 2) return "text-orange-400";
-  if (m < MESES_COBERTURA) return "text-yellow-400";
+  if (m < 1.5) return "text-orange-400";
+  if (m < UMBRAL_COBERTURA_MESES) return "text-yellow-400";
   return "text-emerald-400";
 }
 
@@ -126,7 +136,7 @@ export default function DepositoEmbolsadoPage() {
   const [rows, setRows] = useState<Fila[]>([]);
   const [enCurso, setEnCurso] = useState<Registro[]>([]);
   const [hechosHoy, setHechosHoy] = useState<Registro[]>([]);
-  const [pendientes, setPendientes] = useState<Pendiente[]>([]);
+  const [embolsados, setEmbolsados] = useState<Embolsado[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
@@ -162,7 +172,7 @@ export default function DepositoEmbolsadoPage() {
       setRows(j.rows ?? []);
       setEnCurso(j.enCurso ?? []);
       setHechosHoy(j.hechosHoy ?? []);
-      setPendientes(j.pendientes ?? []);
+      setEmbolsados(j.embolsados ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar");
     } finally {
@@ -324,7 +334,7 @@ export default function DepositoEmbolsadoPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap mb-3">
           <PageTitle
             title="Embolsado"
-            sub={`Qué fraccionar primero · cobertura = stock embolsado ÷ venta máxima mensual (6 meses) · objetivo ${MESES_COBERTURA} meses`}
+            sub="Qué fraccionar primero · si el stock de central no llega al doble del promedio de venta (6 meses), se recomienda embolsar el triple del promedio"
           />
           <div className="flex items-center gap-2 mt-1">
             <span className="text-sm text-zinc-400 mr-1">
@@ -362,6 +372,49 @@ export default function DepositoEmbolsadoPage() {
         {aviso && (
           <div className="flex items-center gap-2 text-emerald-300 text-sm mb-3">
             <Check size={14} /> {aviso}
+          </div>
+        )}
+
+        {embolsados.length > 0 && (
+          <div className="mb-6">
+            <div className="text-sm text-cyan-400 mb-2">
+              EMBOLSADOS · esperando que el WMS confirme el movimiento, hasta 7 días (
+              {embolsados.length})
+            </div>
+            <Panel bodyClass="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-xs text-zinc-500 border-b border-zinc-800">
+                    <tr>
+                      <th className="text-left font-medium px-3 py-2">Artículo</th>
+                      <th className="text-right font-medium px-3 py-2">Embolsado</th>
+                      <th className="text-left font-medium px-3 py-2">Último cierre</th>
+                      <th className="text-left font-medium px-3 py-2">Vuelve a la lista</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {embolsados.map((r) => (
+                      <tr key={r.codArticulo} className="border-b border-zinc-900 bg-cyan-400/5">
+                        <td className="px-3 py-3">
+                          <div className="font-mono text-zinc-300">{r.codArticulo}</div>
+                          <div className="text-zinc-400 text-[13px]">
+                            {r.nombre}
+                            {r.empaque && <span className="text-zinc-500"> · {r.empaque}</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-right tabular-nums text-zinc-100">
+                          {fmtNum(r.cantidadEmbolsada)}
+                        </td>
+                        <td className="px-3 py-3 text-zinc-400">{fechaHora(r.ultimoCierre)}</td>
+                        <td className="px-3 py-3 text-cyan-400">
+                          {faltaPara(r.venceEl, ahora)} si el WMS no lo confirma antes
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
           </div>
         )}
 
@@ -502,49 +555,6 @@ export default function DepositoEmbolsadoPage() {
           </div>
         </Panel>
 
-        {pendientes.length > 0 && (
-          <div className="mt-6">
-            <div className="text-sm text-cyan-400 mb-2">
-              Recién embolsado · esperando que el WMS confirme el movimiento (
-              {pendientes.length})
-            </div>
-            <Panel bodyClass="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-xs text-zinc-500 border-b border-zinc-800">
-                    <tr>
-                      <th className="text-left font-medium px-3 py-2">Artículo</th>
-                      <th className="text-right font-medium px-3 py-2">Embolsado</th>
-                      <th className="text-left font-medium px-3 py-2">Último cierre</th>
-                      <th className="text-left font-medium px-3 py-2">Vuelve a la lista</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendientes.map((r) => (
-                      <tr key={r.codArticulo} className="border-b border-zinc-900 bg-cyan-400/5">
-                        <td className="px-3 py-3">
-                          <div className="font-mono text-zinc-300">{r.codArticulo}</div>
-                          <div className="text-zinc-400 text-[13px]">
-                            {r.nombre}
-                            {r.empaque && <span className="text-zinc-500"> · {r.empaque}</span>}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-zinc-100">
-                          {fmtNum(r.cantidadEmbolsada)}
-                        </td>
-                        <td className="px-3 py-3 text-zinc-400">{fechaHora(r.ultimoCierre)}</td>
-                        <td className="px-3 py-3 text-cyan-400">
-                          {faltaPara(r.venceEl, ahora)} si el WMS no lo confirma antes
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-          </div>
-        )}
-
         {hechosHoy.length > 0 && (
           <div className="mt-6">
             <div className="text-sm text-zinc-400 mb-2">Terminados hoy</div>
@@ -596,11 +606,16 @@ export default function DepositoEmbolsadoPage() {
         <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
           Universo = artículos activos cuyo empaque es una bolsa
           (StkFer_Articulos.DetalleEmpaque), sin terminales. Cobertura = stock de
-          CENTRAL fuera de PULMON_INGRESO ÷ venta máxima de un mes en los últimos
-          6 meses (Magnus, las dos sub-empresas, criterio de venta de contaduría).
-          A embolsar = venta máxima × {MESES_COBERTURA} − stock embolsado,
-          topeado por lo que haya en el pulmón de ingreso. Orden: menor cobertura
-          primero y, a igual cobertura, mayor venta.
+          CENTRAL fuera de PULMON_INGRESO ÷ promedio de venta mensual de los
+          últimos 6 meses (Magnus, las dos sub-empresas, criterio de venta de
+          contaduría). Si el stock no llega al doble de ese promedio, se
+          recomienda embolsar el triple del promedio, topeado por lo que haya
+          en el pulmón de ingreso (si hacen falta 100 y sólo hay 5, se
+          recomiendan 5). Orden: menor cobertura primero y, a igual cobertura,
+          mayor venta. Un artículo recién marcado como embolsado se saca de la
+          lista por hasta 7 días (tabla EMBOLSADOS arriba) hasta que el WMS
+          confirme el movimiento o venzan los días de gracia; ahí se vuelve a
+          controlar el promedio contra el stock.
         </p>
       </main>
 

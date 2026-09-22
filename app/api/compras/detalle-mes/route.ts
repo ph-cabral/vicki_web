@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   agruparFaltantesMes,
   pasaRecorte,
+  adaptarFilaFaltantePedido,
   type FilaFaltanteApi,
+  type FilaFaltantePedidoApi,
 } from "@/lib/compras/faltantesMes";
 
 const API_URL =
@@ -100,7 +102,7 @@ export async function GET(req: NextRequest) {
   // Las 3 fuentes de Magnus, en paralelo y best-effort (si una falla, esa
   // columna queda vacía y se avisa por `warns` — no se rompe el export).
   const [faltRes, ocRes, ingRes] = await Promise.allSettled([
-    getJson(`${API_URL}/deposito/faltantes?${qs}&historico=1`),
+    getJson(`${API_URL}/deposito/faltante-pedidos?${qs}`),
     getJson(`${API_URL}/compras/ordenes-detalle?${qs}`),
     getJson(`${API_URL}/compras/ingresos?${qs}`),
   ]);
@@ -134,7 +136,7 @@ export async function GET(req: NextRequest) {
   // Faltantes: unidades pendientes + nombre/proveedor (mismo dato que usa la
   // card "Unidades faltantes" — se suma por artículo).
   const faltRows = faltRes.status === "fulfilled"
-    ? ((faltRes.value.rows ?? []) as (FilaFaltanteApi & { Nombre?: string | null })[])
+    ? ((faltRes.value.rows ?? []) as FilaFaltantePedidoApi[]).map(adaptarFilaFaltantePedido)
     : [];
   const faltMes = agruparFaltantesMes(faltRows);
   if (faltRes.status === "fulfilled") {

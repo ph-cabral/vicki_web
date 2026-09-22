@@ -73,6 +73,41 @@ interface FaltanteRow {
   Fecha: string | null;
 }
 
+// Fila cruda de GET /deposito/faltante-pedidos (indicadores-api/deposito.py,
+// fetch_faltante_pedidos) — fuente desde 2026-09-22: pedidos Cerrados/
+// Facturados de Magnus, YA NO Ven_PedRenPendientes. Se adapta a FaltanteRow
+// más abajo (mapFaltantePedido): esta vista no usa EstadoPedido/TipoArticulo/
+// Proveedor/Línea, así que el mapeo es directo. Un renglón cancelado a nivel
+// línea (EstadoRenglon=4) dentro de un pedido Cerrado/Facturado llega con
+// CantCumplida=0 y cuenta ENTERO como faltante — a propósito, ver
+// [[faltante-pedidos-cerrados-vs-compras-consumo]] en memoria.
+interface FaltantePedidoRow {
+  NroMovVenta: number;
+  Renglon: number;
+  CodArticulo: string;
+  Nombre: string;
+  Diferencia: number;
+  Cliente: number | string | null;
+  ClienteNombre: string | null;
+  Vendedor: string | null;
+  Importe: number;
+  Fecha: string | null;
+}
+function mapFaltantePedido(r: FaltantePedidoRow): FaltanteRow {
+  return {
+    NroPedOrigen: r.NroMovVenta,
+    NroRengOrigen: r.Renglon,
+    CodArticulo: r.CodArticulo,
+    Nombre: r.Nombre,
+    CantPend: r.Diferencia,
+    Cliente: r.Cliente,
+    ClienteNombre: r.ClienteNombre,
+    Vendedor: r.Vendedor,
+    Importe: r.Importe,
+    Fecha: r.Fecha,
+  };
+}
+
 // Fila cruda de preparado.faltante_wms (fallback de "En stock" cuando el
 // renglón ya no matchea en Magnus).
 interface WmsRow {
@@ -122,8 +157,13 @@ export async function GET(req: Request) {
     // (vive ~1 día), así que con el snapshot del día se perdían todos los
     // faltantes de días anteriores aunque siguieran sin responder.
     const hoy = new Date().toISOString().slice(0, 10);
+    // Fuente 2026-09-22: /deposito/faltante-pedidos (pedidos Cerrados/
+    // Facturados de Magnus), no más /deposito/faltantes (Ven_PedRenPendientes)
+    // — ver mapFaltantePedido arriba. Ya no hace falta "histórico": cada
+    // renglón aparece una sola vez con su FechaCierre fija, no hay snapshots
+    // que reconstruir.
     const res = await fetch(
-      `${API_URL}/deposito/faltantes?desde=${OC_DESDE}&hasta=${hoy}&historico=1`,
+      `${API_URL}/deposito/faltante-pedidos?desde=${OC_DESDE}&hasta=${hoy}`,
       {
         cache: "no-store",
         signal: AbortSignal.timeout(45000),
@@ -137,8 +177,8 @@ export async function GET(req: Request) {
       );
     }
     const fj = await res.json();
-    const rowsTodos: FaltanteRow[] = fj.rows ?? [];
-    const fecha: string | null = fj.fecha ?? null;
+    const rowsTodos: FaltanteRow[] = ((fj.rows ?? []) as FaltantePedidoRow[]).map(mapFaltantePedido);
+    const fecha: string | null = fj.hasta ?? fj.desde ?? null;
     if (!fecha)
       return NextResponse.json({ fecha: null, rows: [], listos: [], isAdmin: !soloVendedor });
 

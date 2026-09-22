@@ -456,17 +456,17 @@ def deposito_stock_por_articulos(codigos: str = Query(...)):
 @app.get("/deposito/embolsado")
 def deposito_embolsado(
     meses_venta: int = Query(default=6),
-    meses_cobertura: int = Query(default=4),
     incluir_cubiertos: bool = Query(default=True),
 ):
     """Recomendación de embolsado, ordenada por menor cobertura.
 
-    Cobertura = stock ya embolsado en CENTRAL / venta máxima mensual de los
-    últimos `meses_venta` meses. Se recomienda llevar el stock a
-    `meses_cobertura` meses, topeado por lo que haya en el pulmón de ingreso.
-    Ver el docstring de embolsado.py (universo, fuentes y gotchas)."""
+    Cobertura = stock ya embolsado en CENTRAL / promedio de venta mensual de
+    los últimos `meses_venta` meses. Si el stock no llega al doble de ese
+    promedio se recomienda embolsar el triple del promedio, topeado por lo
+    que haya en el pulmón de ingreso. Ver el docstring de embolsado.py
+    (universo, fuentes y gotchas)."""
     try:
-        return fetch_embolsado(meses_venta, meses_cobertura, incluir_cubiertos)
+        return fetch_embolsado(meses_venta, incluir_cubiertos)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

@@ -56,6 +56,9 @@ interface FaltanteRow {
   EstadoPedido: number | null;
   EstadoRenglon: number | null;
   CompCodigo: number | null;
+  TipoArticulo: string | null;
+  Proveedor: string | null;
+  Linea: string | null;
 }
 
 interface OtDifRow {
@@ -215,10 +218,10 @@ export async function GET(req: NextRequest) {
       Cliente: r.Cliente,
       ClienteNombre: r.ClienteNombre ?? null,
       Importe: r.Importe ?? 0,
-      TipoArticulo: null as string | null,
+      TipoArticulo: r.TipoArticulo ?? null,
       Preparador: null as string | null, // el pedido no dice quién pickeó
-      Linea: null as string | number | null,
-      Proveedor: null as string | null,
+      Linea: r.Linea ?? null,
+      Proveedor: r.Proveedor ?? null,
       Vendedor: r.Vendedor,
       Fecha: r.Fecha,
       CantPedida: r.CantPedida,

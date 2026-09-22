@@ -70,6 +70,64 @@ interface FaltRow {
   EstadoPedido?: string | null; // Pedido_Estados de Magnus (deposito.py); ausente si indicadores-api es viejo
   TipoArticulo?: string | null; // "Nacional"/"Importado"/"Fabrica" (StkFer_Articulos.NacionalImportado, Magnus) o "" si no está cargado
 }
+// Fila cruda de GET /deposito/faltante-pedidos (indicadores-api/deposito.py,
+// fetch_faltante_pedidos) — fuente desde 2026-09-22: pedidos Cerrados/
+// Facturados de Magnus (VenFer_PedidoReng), YA NO Ven_PedRenPendientes. Cada
+// (NroMovVenta, Renglon) aparece UNA sola vez con fecha fija (FechaCierre del
+// pedido), a diferencia de FaltRow que venía de un snapshot diario. Se adapta
+// a FaltRow más abajo (mapFaltantePedido) para no tocar el resto del archivo
+// (buckets, extraordinarios, arribo, OC, stock siguen iguales). Un renglón
+// cancelado a nivel línea (EstadoRenglon=4) dentro de un pedido vivo llega acá
+// con CantCumplida=0 y cuenta ENTERO como faltante — a propósito, ver
+// [[faltante-pedidos-cerrados-vs-compras-consumo]] en memoria: "cancelado" en
+// esCancelado() de abajo es del PEDIDO (EstadoPedido), nunca del renglón.
+interface FaltantePedidoRow {
+  NroMovVenta: number;
+  Renglon: number;
+  Fecha: string | null;
+  CodArticulo: string;
+  Nombre: string;
+  CantPedida: number;
+  CantCumplida: number;
+  Diferencia: number;
+  Importe: number;
+  Cliente: string | number | null;
+  ClienteNombre: string | null;
+  EstadoPedido: number | null; // 3 Cerrado / 4 Facturado — el Cancelado (7) ya viene excluido por SQL
+  EstadoRenglon: number | null; // 4 = renglón cancelado dentro de un pedido vivo (no excluye, ver arriba)
+  TipoArticulo: string | null;
+  Proveedor: string | null;
+  Linea: string | null;
+}
+const ESTADO_PEDIDO_TXT: Record<number, string> = { 3: "Cerrado", 4: "Facturado" };
+/** FaltantePedidoRow (fuente nueva) -> FaltRow (forma que ya esperaba esta ruta). */
+function mapFaltantePedido(r: FaltantePedidoRow): FaltRow {
+  return {
+    NroPedOrigen: r.NroMovVenta,
+    NroRengOrigen: r.Renglon,
+    CodArticulo: r.CodArticulo,
+    Nombre: r.Nombre,
+    CantPend: r.Diferencia,
+    Importe: r.Importe,
+    Linea: r.Linea,
+    Proveedor: r.Proveedor,
+    Cliente: r.Cliente,
+    ClienteNombre: r.ClienteNombre,
+    Fecha: r.Fecha,
+    // No hay "snapshot" que se repita día a día en esta fuente (el renglón
+    // aparece una sola vez, con la fecha de cierre del pedido) -> PrimerDia
+    // es la misma Fecha, no hace falta reconstruir la primera aparición.
+    PrimerDia: r.Fecha,
+    // Un renglón de un pedido ya Cerrado/Facturado no "se resuelve solo" con
+    // un nuevo snapshot (no hay snapshots): sigue siendo demanda vigente
+    // hasta que la saque la OC / fechaArribo / extraordinario, igual que
+    // antes. Vivo=1 siempre.
+    Vivo: 1,
+    EstadoPedido:
+      r.EstadoPedido != null ? (ESTADO_PEDIDO_TXT[r.EstadoPedido] ?? String(r.EstadoPedido)) : null,
+    TipoArticulo: r.TipoArticulo,
+  };
+}
 // Lote = una OC puntual dentro del artículo (indicadores-api/compras.py,
 // fetch_ordenes_pendientes). Se usa para elegir, por cada BUCKET (artículo +
 // día del faltante), solo la OC hecha DESPUÉS de que ese faltante apareció —
@@ -207,16 +265,19 @@ export async function GET(req: NextRequest) {
   };
   const faltDesde = sp.get("faltDesde") || addDays(ocDesde, -1);
 
+  // Fuente 2026-09-22: /deposito/faltante-pedidos (pedidos Cerrados/Facturados
+  // de Magnus), no más /deposito/faltantes (Ven_PedRenPendientes) — ver
+  // mapFaltantePedido arriba y [[faltante-pedidos-cerrados-vs-compras-consumo]]
+  // en memoria. Cada renglón ya viene con fecha fija (FechaCierre), así que no
+  // hace falta pedir "histórico": no hay snapshots que reconstruir. "desde" se
+  // ancla al mismo corte que ya usaba el FIFO (desdeParam si vino del front, si
+  // no faltDesde) para que el backend no traiga de más; "hasta" solo si vino
+  // explícito (sin él, el backend resuelve solo hasta el último día cerrado
+  // antes de hoy).
   const qs = new URLSearchParams();
-  if (desdeParam) qs.set("desde", desdeParam);
+  qs.set("desde", desdeParam || faltDesde);
   if (hastaParam) qs.set("hasta", hastaParam);
-  // SIEMPRE histórico: los renglones faltantes salen de Ven_PedRenPendientes
-  // apenas se factura el pedido (viven ~1 snapshot). Sin histórico, la variante
-  // "viva" exige estar en la última foto y se pierden los faltantes de días
-  // anteriores. Lo marcado "sin existencia" es demanda vigente siempre (ver
-  // agrupado, punto 3) — el param ?historico= del front quedó sin efecto.
-  qs.set("historico", "1");
-  const faltUrl = `${API_URL}/deposito/faltantes${qs.toString() ? `?${qs}` : ""}`;
+  const faltUrl = `${API_URL}/deposito/faltante-pedidos?${qs}`;
   // fabril=1: incluye las OC de producción interna (PRODUCCION HIDRAULICA /
   // FUNDICION). Lo manda solo /fabrica/faltantes (ver app/api/fabrica/
   // faltantes/route.ts); en compras/ventas esas OC no son compra y quedan
@@ -249,15 +310,18 @@ export async function GET(req: NextRequest) {
     );
   }
   const faltJson = faltRes.value;
-  const fecha: string | null = faltJson.fecha ?? null;
+  const fecha: string | null = faltJson.hasta ?? faltJson.desde ?? null;
   // Universo del cruce: solo faltantes que aparecen (PrimerDia) desde el corte.
   // Así el FIFO no arrastra faltantes viejos que la OC nueva no debería cubrir.
-  // Fuera los renglones de pedidos CANCELADOS (o sin estado = pedido que ya no
-  // está en Magnus): no son demanda, y dejaban al cliente de ese pedido en la
-  // columna "Cliente" y su cantidad sumada al bucket. Mismo criterio que el
-  // recorte del mes (lib/compras/faltantesMes.ts, esCancelado). Solo se aplica
-  // si indicadores-api manda la columna EstadoPedido; sin ella no se filtra.
-  const rawRows: FaltRow[] = faltJson.rows ?? [];
+  // esCancelado()/hayEstadoPedido quedan de red de seguridad nada más: el
+  // pedido Cancelado (EstadoPedido=7) ya viene excluido por SQL en el origen
+  // (fetch_faltante_pedidos solo trae EstadoPedido 3/4), así que este filtro
+  // nunca debería sacar nada acá — se mantiene por si algún día se relaja esa
+  // condición en el backend. Mismo criterio que el recorte del mes
+  // (lib/compras/faltantesMes.ts, esCancelado): es sobre el PEDIDO, nunca
+  // sobre el renglón (un renglón cancelado dentro de un pedido vivo SÍ cuenta
+  // como faltante, ver mapFaltantePedido).
+  const rawRows: FaltRow[] = ((faltJson.rows ?? []) as FaltantePedidoRow[]).map(mapFaltantePedido);
   const hayEstadoPedido = rawRows.some((it) => it && "EstadoPedido" in it);
   const faltRows: FaltRow[] = rawRows.filter((it: FaltRow) => {
     if (hayEstadoPedido && esCancelado(it.EstadoPedido)) return false;

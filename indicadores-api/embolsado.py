@@ -5,16 +5,31 @@ Qué resuelve
 ------------
 En el pulmón de ingreso entra mercadería a granel que hay que fraccionar en
 bolsas antes de que sirva para vender. La pregunta operativa es *qué embolsar
-primero*: el artículo cuyo stock ya embolsado alcanza para menos tiempo.
+primero*: el artículo cuyo stock ya embolsado no le alcanza para el doble de
+lo que vende por mes en promedio.
 
-    cobertura (meses) = stock embolsado / venta máxima mensual
-    objetivo          = venta máxima mensual x MESES_COBERTURA (4)
-    a embolsar        = min(objetivo - stock embolsado, lo que hay en ingreso)
+    promedio (6 meses) = venta total de los últimos MESES_VENTA meses / MESES_VENTA
+    umbral             = promedio x MULTIPLICADOR_UMBRAL (2)
+    si stock embolsado >= umbral  -> no hace falta nada (cubierto)
+    si stock embolsado <  umbral  -> se recomienda embolsar
+                                      promedio x MULTIPLICADOR_RECOMENDACION (3),
+                                      topeado por lo que hay en el pulmón de ingreso
+                                      (si hacen falta 100 y sólo hay 5, se
+                                      recomiendan 5)
 
-Se ordena por cobertura ascendente y, a igual cobertura, por venta máxima
-descendente: entre dos artículos igual de descubiertos primero va el que más
-rota. Un artículo sin nada en el pulmón NO se recomienda (no hay con qué
-trabajar), y uno sin venta en la ventana tampoco (no hay contra qué medir).
+Se ordena por cobertura ascendente (stock / promedio) y, a igual cobertura,
+por promedio descendente: entre dos artículos igual de descubiertos primero
+va el que más rota. Un artículo sin nada en el pulmón NO se recomienda (no
+hay con qué trabajar), y uno sin venta en la ventana tampoco (no hay contra
+qué medir).
+
+NOTA (2026-09-22): esta regla reemplaza a la anterior (objetivo = venta
+MÁXIMA mensual x 4 meses de cobertura, a embolsar = objetivo - stock). La
+nueva regla usa el PROMEDIO de venta de los últimos 6 meses (no el máximo) y
+dos multiplicadores fijos en vez de un único "meses de cobertura objetivo": 2
+para decidir si hace falta actuar, 3 para cuánto recomendar. El "recomendado"
+ya NO es un déficit (objetivo - stock): es el monto objetivo completo
+(promedio x 3), topeado por el pulmón. Ver claude/deposito_embolsado.md.
 
 Las tres piezas
 ---------------
@@ -38,7 +53,7 @@ Las tres piezas
    `ventas.COMPROBANTES_VENTA`), acotado a los comprobantes que tienen
    renglón de artículo. Se agrupa por artículo y MES, se suman las DOS
    sub-empresas (MAGNUS + PRUEBA, ver `subempresas.py`) y recién entonces se
-   toma el máximo: el máximo de la suma, no la suma de los máximos.
+   promedia: el promedio de la suma, no la suma de los promedios.
 
 GOTCHAS que costaron encontrar
 ------------------------------
@@ -63,8 +78,8 @@ Performance
   parte barata (≈23 mil filas en el WMS).
 · La venta se acota al universo con un JOIN a `StkFer_Articulos` por PK: sin
   eso vuelven ~30 mil filas artículo x mes, con eso ~7 mil.
-· El agrupado por mes se hace EN SQL; el máximo y la unión de sub-empresas,
-  en Python (hay que sumar las dos sub-empresas ANTES de tomar el máximo).
+· El agrupado por mes se hace EN SQL; el promedio y la unión de sub-empresas,
+  en Python (hay que sumar las dos sub-empresas ANTES de promediar).
 · READ UNCOMMITTED en las dos conexiones: no bloquea a Magnus.
 """
 import re
@@ -78,9 +93,10 @@ from subempresas import sql_prueba
 from ventas import COMPROBANTES_VENTA, COMPROBANTES_AJUSTE
 
 # ── Perillas del cálculo ──────────────────────────────────────────────────
-MESES_VENTA = 6       # ventana de la que sale la venta máxima mensual
-MESES_COBERTURA = 4   # a cuántos meses se quiere llevar el stock embolsado
-TTL_VENTA = 6 * 3600  # segundos de cache de la consulta de venta
+MESES_VENTA = 6                  # ventana de la que sale el promedio mensual de venta
+MULTIPLICADOR_UMBRAL = 2         # si stock < promedio x esto, hace falta embolsar
+MULTIPLICADOR_RECOMENDACION = 3  # cuánto se recomienda embolsar cuando hace falta
+TTL_VENTA = 6 * 3600             # segundos de cache de la consulta de venta
 
 UBIC_INGRESO = "PULMON_INGRESO"
 DEPOSITO_CENTRAL = "1"          # WMS.UbicacionDepositoId (char)
@@ -304,14 +320,17 @@ GROUP BY r.CodArticu,
 # `ajuste` va vacío: esta consulta no tiene bloque de concepto.
 SQL_VENTA_MES_PRUEBA = sql_prueba(SQL_VENTA_MES, COMPROBANTES_ARTICULO, ())
 
-# Cache a nivel proceso de la venta: {(desde, hasta): (ts, {cod: ventaMax})}
+# Cache a nivel proceso de la venta: {(desde, hasta, meses_venta): (ts, {cod: prom})}
 _cache_venta: dict[tuple, tuple[float, dict]] = {}
 
 
-def _venta_maxima(desde: str, hasta: str) -> dict[str, float]:
-    """Venta máxima MENSUAL por artículo en la ventana, sumando las dos
-    sub-empresas ANTES de tomar el máximo. Cacheado TTL_VENTA."""
-    clave = (desde, hasta)
+def _venta_promedio(desde: str, hasta: str, meses_venta: int) -> dict[str, float]:
+    """Venta promedio MENSUAL por artículo en la ventana: se suman las dos
+    sub-empresas mes a mes y el total de la ventana se divide por
+    `meses_venta` (un mes sin venta cuenta como 0, no se saltea del
+    promedio: es el promedio de los últimos N meses, no de los meses con
+    venta). Cacheado TTL_VENTA."""
+    clave = (desde, hasta, meses_venta)
     hit = _cache_venta.get(clave)
     if hit and (time.time() - hit[0]) < TTL_VENTA:
         return hit[1]
@@ -329,13 +348,14 @@ def _venta_maxima(desde: str, hasta: str) -> dict[str, float]:
     finally:
         conn.close()
 
-    maximo: dict[str, float] = {}
+    total: dict[str, float] = {}
     for (cod, _mes), cant in por_mes.items():
-        if cant > maximo.get(cod, 0.0):
-            maximo[cod] = cant
+        total[cod] = total.get(cod, 0.0) + cant
 
-    _cache_venta[clave] = (time.time(), maximo)
-    return maximo
+    promedio = {cod: t / meses_venta for cod, t in total.items()}
+
+    _cache_venta[clave] = (time.time(), promedio)
+    return promedio
 
 
 def _universo_con_stock() -> list[dict]:
@@ -359,39 +379,45 @@ def _universo_con_stock() -> list[dict]:
 
 
 def fetch_embolsado(meses_venta: int = MESES_VENTA,
-                    meses_cobertura: int = MESES_COBERTURA,
                     incluir_cubiertos: bool = True):
     """Recomendación de embolsado, ordenada por menor cobertura.
 
-    incluir_cubiertos=False deja sólo los que están por debajo del objetivo
+    Regla (2026-09-22): se compara el promedio de venta mensual de los
+    últimos `meses_venta` meses x MULTIPLICADOR_UMBRAL (2) contra el stock ya
+    embolsado de CENTRAL. Si el stock alcanza, no hace falta nada (cubierto).
+    Si no alcanza, se recomienda embolsar promedio x MULTIPLICADOR_RECOMENDACION
+    (3), topeado por lo que haya a granel en el pulmón de ingreso (si hacen
+    falta 100 y sólo hay 5, se recomiendan 5).
+
+    incluir_cubiertos=False deja sólo los que están por debajo del umbral
     (los que hay que trabajar); True los trae todos, para que la vista pueda
     mostrar también lo que ya está cubierto sin pedir de nuevo.
     """
     meses_venta = max(1, min(int(meses_venta), 24))
-    meses_cobertura = max(1, min(int(meses_cobertura), 24))
 
     hoy = date.today()
     desde = _primer_dia(hoy, meses_venta)   # primer día de la ventana
     hasta = _primer_dia(hoy, 0)             # primer día del mes en curso (excl.)
 
-    venta_max = _venta_maxima(desde, hasta)
+    venta_prom = _venta_promedio(desde, hasta, meses_venta)
     filas = []
     for a in _universo_con_stock():
-        vmax = venta_max.get(a["cod"], 0.0)
-        if vmax <= 0:
+        vprom = venta_prom.get(a["cod"], 0.0)
+        if vprom <= 0:
             continue  # sin venta en la ventana no hay contra qué medir
 
         stk = a["stkSinIngreso"]
         ing = a["enIngreso"]
-        cobertura = stk / vmax
-        objetivo = vmax * meses_cobertura
-        faltante = max(0.0, objetivo - stk)
+        cobertura = stk / vprom
+        umbral = vprom * MULTIPLICADOR_UMBRAL
+        necesita = stk < umbral
+        recomendado = vprom * MULTIPLICADOR_RECOMENDACION if necesita else 0.0
         # Si no alcanza el granel del pulmón, se recomienda hasta donde da.
-        a_embolsar = min(faltante, ing)
+        a_embolsar = min(recomendado, ing)
         upb = unidades_por_bolsa(a["empaque"])
         bolsas = int(a_embolsar // upb) if upb else None
 
-        if not incluir_cubiertos and faltante <= 0:
+        if not incluir_cubiertos and not necesita:
             continue
 
         filas.append({
@@ -399,17 +425,17 @@ def fetch_embolsado(meses_venta: int = MESES_VENTA,
             "nombre": a["nombre"],
             "empaque": a["empaque"],
             "unidadesPorBolsa": upb,
-            "ventaMaxMes": round(vmax, 2),
+            "ventaMaxMes": round(vprom, 2),  # nombre histórico; ahora es el PROMEDIO 6 meses, no el máximo
             "stockSinIngreso": round(stk, 2),
             "enIngreso": round(ing, 2),
             "coberturaMeses": round(cobertura, 2),
-            "objetivo": round(objetivo, 2),
-            "faltante": round(faltante, 2),
+            "objetivo": round(umbral, 2),       # umbral = promedio x MULTIPLICADOR_UMBRAL
+            "faltante": round(recomendado, 2),  # recomendado sin topear = promedio x MULTIPLICADOR_RECOMENDACION
             "aEmbolsar": round(a_embolsar, 2),
             "bolsas": bolsas,
-            # true = el pulmón no alcanza para llegar al objetivo
-            "topeadoPorIngreso": faltante > ing,
-            "cubierto": faltante <= 0,
+            # true = el pulmón no alcanza para cubrir lo recomendado
+            "topeadoPorIngreso": recomendado > ing,
+            "cubierto": not necesita,
         })
 
     # Menor cobertura primero; a igual cobertura, primero el que más rota.
@@ -421,6 +447,7 @@ def fetch_embolsado(meses_venta: int = MESES_VENTA,
         "desde": desde,
         "hasta": hasta,
         "mesesVenta": meses_venta,
-        "mesesCobertura": meses_cobertura,
+        "multiplicadorUmbral": MULTIPLICADOR_UMBRAL,
+        "multiplicadorRecomendacion": MULTIPLICADOR_RECOMENDACION,
         "ubicacionIngreso": UBIC_INGRESO,
     }

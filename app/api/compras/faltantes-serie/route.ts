@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   agruparFaltantesMes,
   codigosPorOrigen,
-  type FilaFaltanteApi,
+  adaptarFilaFaltantePedido,
+  type FilaFaltantePedidoApi,
   type OrigenFunnel,
 } from "@/lib/compras/faltantesMes";
 
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
   const res = await Promise.allSettled(
     rangos.map((r) =>
       getJson(
-        `${API_URL}/deposito/faltantes?desde=${q(r.desde)}&hasta=${q(r.hasta)}&historico=1`,
+        `${API_URL}/deposito/faltante-pedidos?desde=${q(r.desde)}&hasta=${q(r.hasta)}`,
       ),
     ),
   );
@@ -108,7 +109,9 @@ export async function GET(req: NextRequest) {
         items: Object.fromEntries(CLAVES.map((k) => [k, 0])) as Record<string, number>,
       };
     }
-    const faltMes = agruparFaltantesMes((p.value.rows ?? []) as FilaFaltanteApi[]);
+    const faltMes = agruparFaltantesMes(
+      ((p.value.rows ?? []) as FilaFaltantePedidoApi[]).map(adaptarFilaFaltantePedido),
+    );
     return {
       mes: r.mes,
       error: false,

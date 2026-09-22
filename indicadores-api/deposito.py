@@ -1954,6 +1954,58 @@ def _nombres_articulos(codigos, conn=None):
             conn.close()
 
 
+def _info_articulos_faltante(codigos, conn=None):
+    """{CodArticulo trim -> {TipoArticulo, Proveedor, Linea, EstadoArticulo}}
+    por IN-list chunkeada. Mismos joins que SQL_FALTANTES (StkFer_Articulos ->
+    tipo real / proveedor habitual / linea Nivel1 / estado del articulo),
+    resueltos aparte por codigo (no en el JOIN de rango de
+    SQL_FALTANTE_PEDIDOS) para no repetir esos joins sobre cada renglon del
+    periodo -- se resuelve 1 vez por ARTICULO distinto. Usado por
+    fetch_faltante_pedidos para que /compras/faltantes-consumo (origen,
+    linea, proveedor) y el recorte del mes (lib/compras/faltantesMes.ts,
+    EstadoArticulo) puedan dejar de depender de la fuente vieja
+    (Ven_PedRenPendientes / SQL_FALTANTES)."""
+    out: dict[str, dict[str, str | None]] = {}
+    codigos = sorted({_txt(c) for c in codigos if c})
+    if not codigos:
+        return out
+    propia = conn is None
+    conn = conn or get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        col_est = _col_estado_articulo(cur)  # cacheado: 1 sola vez por proceso
+        col_est_sql = f"s.[{col_est}]" if col_est else "NULL"
+        CH = 1000
+        for i in range(0, len(codigos), CH):
+            chunk = codigos[i:i + CH]
+            ph = ",".join("?" for _ in chunk)
+            cur.execute(f"""
+                SELECT LTRIM(RTRIM(s.CodArticulo)) AS Cod,
+                       t.Descripcion              AS TipoArticulo,
+                       pr.RazonSocial             AS Proveedor,
+                       LTRIM(RTRIM(n1.Detalle))   AS Linea,
+                       {col_est_sql}              AS EstadoArticulo
+                FROM EVERWEAR.dbo.[StkFer_Articulos]   s
+                LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet]  ap ON ap.ArticuloPatron = s.ArticuloPatron
+                LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]         n1 ON n1.Nivel1         = ap.Nivel1
+                LEFT JOIN EVERWEAR.dbo.[Stk_TiposArticulos] t  ON t.CodigoTipo     = s.NacionalImportado
+                LEFT JOIN EVERWEAR.dbo.[Com_Proveedores]    pr ON pr.CodProveed    = s.CodProveedHabitual
+                WHERE s.CodArticulo IN ({ph})
+            """, chunk)
+            for cod, tipo, prov, linea, estado_art in cur.fetchall():
+                out[_txt(cod)] = {
+                    "TipoArticulo": (_txt(tipo).replace("Fabril", "Fabrica") or None),
+                    "Proveedor": _txt(prov) or None,
+                    "Linea": _txt(linea) or None,
+                    "EstadoArticulo": _estado_art_desc(estado_art),
+                }
+        return out
+    finally:
+        if propia:
+            conn.close()
+
+
 def _ultimo_dia_cierre() -> int:
     """Último día ANTERIOR a hoy con algún pedido cerrado/facturado (salta
     findes y feriados, igual que hacía la fuente de OT)."""
@@ -2001,6 +2053,7 @@ def fetch_faltante_pedidos(desde=None, hasta=None):
     pedidos = sorted({int(f["NroMovVenta"]) for f in filas if f.get("NroMovVenta") is not None})
     info = _info_pedidos(pedidos)
     nombres = _nombres_articulos([f.get("CodArticulo") for f in filas])
+    extra = _info_articulos_faltante([f.get("CodArticulo") for f in filas])
 
     rows = []
     for f in filas:
@@ -2031,6 +2084,10 @@ def fetch_faltante_pedidos(desde=None, hasta=None):
             "EstadoPedido":  _int(f.get("EstadoPedido")),
             "EstadoRenglon": _int(f.get("EstadoRenglon")),
             "CompCodigo":    _int(f.get("CompCodigo")),
+            "TipoArticulo":   extra.get(cod, {}).get("TipoArticulo"),
+            "Proveedor":      extra.get(cod, {}).get("Proveedor"),
+            "Linea":          extra.get(cod, {}).get("Linea"),
+            "EstadoArticulo": extra.get(cod, {}).get("EstadoArticulo"),
         })
 
     resumen = {

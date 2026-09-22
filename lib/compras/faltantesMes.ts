@@ -88,6 +88,52 @@ export const esCancelado = (estadoPedido: string | null | undefined) => {
   return PATRONES_CANCELADO.some((p) => e.includes(p));
 };
 
+// Fila cruda de GET /deposito/faltante-pedidos (indicadores-api/deposito.py,
+// fetch_faltante_pedidos) — fuente desde 2026-09-22: pedidos Cerrados/
+// Facturados de Magnus (VenFer_PedidoReng), YA NO Ven_PedRenPendientes/
+// SQL_FALTANTES. El pedido Cancelado (EstadoPedido=7) ya viene excluido por
+// SQL en el origen (acá solo puede llegar 3 Cerrado o 4 Facturado); un
+// renglón cancelado a nivel línea (EstadoRenglon=4) dentro de un pedido vivo
+// cuenta ENTERO como faltante, a propósito — ver
+// [[faltante-pedidos-cerrados-vs-compras-consumo]] en memoria: esCancelado()
+// de arriba es sobre el PEDIDO, nunca sobre el renglón.
+export interface FilaFaltantePedidoApi {
+  CodArticulo: string;
+  Nombre?: string | null;
+  Proveedor: string | null;
+  TipoArticulo: string | null;
+  EstadoArticulo: string | null;
+  EstadoPedido: number | null;
+  Diferencia: number;
+  Importe: number;
+  Linea: string | null;
+}
+
+/**
+ * Adapta una fila de /deposito/faltante-pedidos a FilaFaltanteApi, la forma
+ * que ya esperaba agruparFaltantesMes cuando la fuente era /deposito/faltantes
+ * (Ven_PedRenPendientes): solo cambia el nombre del campo de cantidad
+ * (Diferencia -> CantPend) y el tipo de EstadoPedido (numérico -> texto, para
+ * que esCancelado siga recibiendo lo que espera aunque acá nunca dispare,
+ * porque el Cancelado ya viene excluido por SQL). Nombre se conserva aparte
+ * para los consumidores que lo necesitan fuera del recorte (detalle-mes).
+ */
+export function adaptarFilaFaltantePedido(r: FilaFaltantePedidoApi): FilaFaltanteApi & {
+  Nombre?: string | null;
+} {
+  return {
+    CodArticulo: r.CodArticulo,
+    Nombre: r.Nombre ?? null,
+    Proveedor: r.Proveedor,
+    TipoArticulo: r.TipoArticulo,
+    EstadoArticulo: r.EstadoArticulo,
+    EstadoPedido: r.EstadoPedido == null ? null : String(r.EstadoPedido),
+    CantPend: r.Diferencia,
+    Importe: r.Importe,
+    Linea: r.Linea,
+  };
+}
+
 /**
  * Agrupa por artículo las filas de GET /deposito/faltantes de un mes.
  * Una sola pasada; el llamador después filtra con `pasaRecorte`.

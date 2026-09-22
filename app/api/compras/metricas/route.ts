@@ -3,7 +3,8 @@ import {
   agruparFaltantesMes,
   codigosPorOrigen,
   ORIGEN_LABEL,
-  type FilaFaltanteApi,
+  adaptarFilaFaltantePedido,
+  type FilaFaltantePedidoApi,
   type FaltantesMes,
   type OrigenFunnel,
 } from "@/lib/compras/faltantesMes";
@@ -265,7 +266,7 @@ export async function GET(req: NextRequest) {
   const [ocRes, ingRes, faltRes] = await Promise.allSettled([
     getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}`),
     getJson(`${API_URL}/compras/ingresos?desde=${q(desde)}&hasta=${q(hasta)}`),
-    getJson(`${API_URL}/deposito/faltantes?desde=${q(desde)}&hasta=${q(hasta)}&historico=1`),
+    getJson(`${API_URL}/deposito/faltante-pedidos?desde=${q(desde)}&hasta=${q(hasta)}`),
   ]);
 
   // Set B: artículos con OC hecha en el mes.
@@ -311,7 +312,9 @@ export async function GET(req: NextRequest) {
     console.error("GET /api/compras/metricas — deposito/faltantes", faltRes.reason);
   }
   const faltMes = agruparFaltantesMes(
-    clasifWarn ? [] : ((faltRes.value.rows ?? []) as FilaFaltanteApi[]),
+    clasifWarn
+      ? []
+      : ((faltRes.value.rows ?? []) as FilaFaltantePedidoApi[]).map(adaptarFilaFaltantePedido),
   );
 
   // Precio unitario por artículo (venta), para valorizar las etapas 2 y 3 sin
