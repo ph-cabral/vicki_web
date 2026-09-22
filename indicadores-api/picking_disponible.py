@@ -21,11 +21,12 @@ renglón, de qué posición hay que tomar (OTItem.OTItemUbicacionCodigo) y cuán
 
 Cuenta por renglón:
 
-    disponible = cantidad de (artículo, posición) en UbicacionDetalle
-                 − lo que las OT ANTERIORES en la cola ya tienen comprometido
-                   sobre esa misma posición (reparto FIFO por fecha de la OT)
-    pedido     = OTItemCantPedida − OTItemCantCumplida
-    a reponer  = max(0, pedido − disponible)
+    disponible    = cantidad de (artículo, posición) en UbicacionDetalle
+                    − lo que las OT ANTERIORES en la cola ya tienen comprometido
+                      sobre esa misma posición (reparto FIFO por fecha de la OT)
+    pedido        = OTItemCantPedida − OTItemCantCumplida
+    a reponer BRUTO = max(0, pedido − disponible)
+    a reponer       = max(0, a reponer BRUTO − lo que ya viene en camino)
 
 El reparto es FIFO y no "cada OT contra el total": con 80 en el estante y dos OT
 pidiendo 60 y 50, la primera se lleva las 60 y sólo la segunda queda corta. Si se
@@ -38,13 +39,24 @@ la cantidad sale de la posición). Lo que no está descontado, y es todo el
 aporte de este módulo, es lo que las otras OT abiertas tienen comprometido
 contra el mismo estante.
 
-El "a reponer" se abre en tres situaciones, porque el WMS YA genera OT de
+**"a reponer" ya resta lo que viene en camino (2026-09-22).** Si hay una OT de
+reposición viva hacia esa MISMA posición (armada desde este widget o a mano),
+su cantidad pendiente se resta del faltante ANTES de mirar guardado — no es
+todo o nada. Con 50 de faltante y una reposición ya pedida por 30, quedan 20
+por resolver (no 50): el cartel muestra 20 y, si se vuelve a armar una OT para
+ese pasillo, sólo se pide lo que sigue faltando — evita pedir dos veces el
+mismo faltante. Si la reposición en camino cubre el faltante entero, la
+cantidad neta llega a 0 y el artículo directamente NO entra a `porPasillo`
+("armar OT" ya no tiene nada que hacer con él).
+
+El "a reponer" (neto) se abre en tres situaciones, porque el WMS YA genera OT de
 reposición solo (CodotProcesoNegocio = 1; en la reposición OTItemTipo = 1 es la
 recolección desde la abastecedora y OTItemTipo = 2 el depósito en la posición
 de picking):
 
-    repo_pedida → ya hay OT de reposición viva hacia esa posición por >= el faltante
-    reponer     → no hay OT de repo, pero hay stock en guardado/abastecedora
+    repo_pedida → lo que ya viene en camino cubre TODO el faltante restante
+    reponer     → lo que queda después de la reposición en camino se puede
+                  bajar de guardado/abastecedora
     faltante    → no alcanza ni sumando guardado: no está en el depósito
 
 El guardado que habilita `reponer` se cuenta SÓLO en el depósito 1, el central
@@ -494,18 +506,28 @@ def fetch_picking_disponible(
             disp = libre_pos.get(k, en_pos)          # lo que queda cuando llega ESTA OT
             otras = max(0.0, en_pos - disp)          # lo que ya se comprometieron las anteriores
             libre_pos[k] = max(0.0, disp - pedido)
-            a_reponer = max(0.0, pedido - disp)
+            a_reponer_bruto = max(0.0, pedido - disp)
             en_camino = libre_repo.get(k, repo.get(k, 0.0))
             en_guard = libre_guard.get(cod, guardado.get(cod, 0.0))
             en_pulmon = pulmon.get(cod, 0.0)
             es_playa = pos.upper() == PLAYA
 
-            if a_reponer <= 0:
+            # Lo que ya viene en camino (una OT de reposición viva hacia esta
+            # MISMA posición — armada desde este widget o a mano) se resta del
+            # faltante ANTES de mirar guardado. Sin esto, un faltante de 50 con
+            # una OT de reposición ya pedida por 30 seguía avisando "faltan 50"
+            # en vez de "faltan 20", y "armar OT" de nuevo volvía a pedir las 50
+            # enteras — duplicando lo que ya se sacó de guardado.
+            cubierto_en_camino = 0.0 if es_playa else min(a_reponer_bruto, en_camino)
+            libre_repo[k] = max(0.0, en_camino - cubierto_en_camino)
+            a_reponer = max(0.0, a_reponer_bruto - cubierto_en_camino)
+
+            if a_reponer_bruto <= 0:
                 sit = "ok"
-            elif not es_playa and en_camino >= a_reponer:
+            elif a_reponer <= 0:
+                # la reposición en camino ya cubre TODO el faltante restante.
                 sit = "repo_pedida"
-                libre_repo[k] = max(0.0, en_camino - a_reponer)
-            elif not es_playa and en_guard >= a_reponer:
+            elif en_guard >= a_reponer:
                 sit = "reponer"
                 libre_guard[cod] = max(0.0, en_guard - a_reponer)
             else:

@@ -34,6 +34,15 @@ const API_URL =
 // cubrió este faltante puntual; si el artículo no tiene OC pendiente hoy,
 // sale vacío.
 //
+// v4 (2026-09-22): desde el cambio de fuente de /deposito/faltantes (pedidos
+// Cerrados/Facturados de Magnus en vez del pick de OT del WMS), las marcas
+// nuevas de preparado.faltante_existencia tienen nroRengOrigen = NroRenglon DE
+// MAGNUS, que NO es el renglón de la OT. Así que la cantidad se busca primero
+// en preparado.faltante_pedido (misma clave pedido+renglón de Magnus, escrita
+// por /api/deposito/faltantes) y recién si no está se cae a la cruza vieja
+// contra ot-diferencias / faltante_wms, que es lo que sigue sirviendo para los
+// meses anteriores al cambio.
+//
 // v3 (2026-07-31): mismo endpoint ahora se consume también desde
 // /compras/faltantes (botón "Excel (existencia)"), no solo desde
 // /deposito/faltantes. se excluyen acá los renglones cuyo
@@ -72,6 +81,21 @@ interface OtDifRow {
 // filtra por este criterio.
 const COMP_CODIGOS_EXCLUIDOS = new Set([70, 75]);
 
+interface PedidoRow {
+  nroMovVenta: number;
+  nroRenglon: number;
+  nombre: string | null;
+  cliente: number | null;
+  clienteNombre: string | null;
+  ubicacion: string | null;
+  vendedor: string | null;
+  cantPedida: unknown;
+  cantCumplida: unknown;
+  diferencia: unknown;
+  importe: unknown;
+  compCodigo: number | null;
+}
+
 interface WmsRow {
   nroPedOrigen: number | null;
   nroRengOrigen: number;
@@ -108,7 +132,7 @@ export async function GET(req: NextRequest) {
     .slice(0, 10);
 
   try {
-    const [existRows, wmsRows, otJson, ocJson] = await Promise.all([
+    const [existRows, pedRows, wmsRows, otJson, ocJson] = await Promise.all([
       prisma.faltante_existencia.findMany({
         where: {
           fecha: { gte: desde, lt: hasta },
@@ -125,6 +149,16 @@ export async function GET(req: NextRequest) {
           cantidad: true,
         },
       }),
+      // Fuente nueva: el detalle del faltante por pedido+renglón de Magnus, del
+      // mes pedido. 1 range scan sobre el índice de fecha. Best-effort: la
+      // tabla puede no estar creada todavía.
+      prisma.$queryRaw<PedidoRow[]>`
+        SELECT "nroMovVenta", "nroRenglon", nombre, cliente, "clienteNombre",
+               ubicacion, vendedor, "cantPedida", "cantCumplida", diferencia,
+               importe, "compCodigo"
+        FROM preparado.faltante_pedido
+        WHERE fecha >= ${desde} AND fecha < ${hasta}
+      `.catch(() => [] as PedidoRow[]),
       // Fallback (best-effort, puede no existir la tabla en algún ambiente).
       prisma.$queryRaw<WmsRow[]>`
         SELECT DISTINCT ON ("nroPedOrigen", "codArticulo")
@@ -148,6 +182,11 @@ export async function GET(req: NextRequest) {
         .then((r) => (r.ok ? r.json() : { rows: [] }))
         .catch(() => ({ rows: [] })),
     ]);
+
+    const pedByKey = new Map<string, PedidoRow>();
+    for (const r of pedRows) {
+      pedByKey.set(`${r.nroMovVenta}-${r.nroRenglon}`, r);
+    }
 
     const wmsByKey = new Map<
       string,
@@ -213,28 +252,40 @@ export async function GET(req: NextRequest) {
 
     const rows = existRows
       .filter((r: ExistRow) => {
-        const ot = otByKey.get(`${r.nroPedOrigen}-${r.nroRengOrigen}`);
-        return !(ot?.compCodigo != null && COMP_CODIGOS_EXCLUIDOS.has(ot.compCodigo));
+        const k = `${r.nroPedOrigen}-${r.nroRengOrigen}`;
+        const comp = pedByKey.get(k)?.compCodigo ?? otByKey.get(k)?.compCodigo;
+        return !(comp != null && COMP_CODIGOS_EXCLUIDOS.has(comp));
       })
       .map((r: ExistRow) => {
         const cod = (r.codArticulo ?? "").trim();
-        const ot = otByKey.get(`${r.nroPedOrigen}-${r.nroRengOrigen}`);
-        const w = ot ? undefined : wmsByKey.get(`${r.nroPedOrigen}-${cod}`);
+        const k = `${r.nroPedOrigen}-${r.nroRengOrigen}`;
+        // Orden de preferencia: faltante_pedido (fuente actual, clave de
+        // Magnus) → ot-diferencias en vivo → faltante_wms (meses viejos).
+        const p = pedByKey.get(k);
+        const ot = p ? undefined : otByKey.get(k);
+        const w = p || ot ? undefined : wmsByKey.get(`${r.nroPedOrigen}-${cod}`);
+        const num = (v: unknown) => (v == null ? null : Number(v));
         return {
           fecha: r.fecha.toISOString().slice(0, 10),
           nroPedOrigen: r.nroPedOrigen,
           nroRengOrigen: r.nroRengOrigen,
           codArticulo: cod,
-          nombre: ot?.nombre ?? w?.nombre ?? "",
-          ubicacion: ot?.ubicacion ?? w?.ubicacion ?? "",
-          cliente: ot?.cliente ?? w?.cliente ?? "",
-          vendedor: ot?.vendedor ?? w?.vendedor ?? "",
+          nombre: p?.nombre ?? ot?.nombre ?? w?.nombre ?? "",
+          ubicacion: p?.ubicacion ?? ot?.ubicacion ?? w?.ubicacion ?? "",
+          cliente:
+            p?.clienteNombre ??
+            (p?.cliente != null ? String(p.cliente) : undefined) ??
+            ot?.cliente ??
+            w?.cliente ??
+            "",
+          vendedor: p?.vendedor ?? ot?.vendedor ?? w?.vendedor ?? "",
           proveedor: proveedorPorArticulo.get(cod) ?? "",
           cantidad: r.cantidad, // cantidad tipeada a mano (opcional, puede venir vacía)
-          cantPedida: ot?.cantPedida ?? w?.cantPedida ?? null,
-          cantCumplida: ot?.cantCumplida ?? null,
-          diferencia: ot?.diferencia ?? null, // = lo que faltó de verdad ese renglón
-          importe: ot?.importe ?? w?.importe ?? 0,
+          cantPedida: num(p?.cantPedida) ?? ot?.cantPedida ?? w?.cantPedida ?? null,
+          cantCumplida: num(p?.cantCumplida) ?? ot?.cantCumplida ?? null,
+          // = lo que faltó de verdad ese renglón
+          diferencia: num(p?.diferencia) ?? ot?.diferencia ?? null,
+          importe: num(p?.importe) ?? ot?.importe ?? w?.importe ?? 0,
           existencia: r.existencia,
           malFacturado: r.malFacturado,
         };

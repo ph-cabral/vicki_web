@@ -91,6 +91,20 @@ export default function FaltantesPage() {
   const [transitioning, setTransitioning] = useState(false);
   const [mesExport, setMesExport] = useState(mesActual);
   const [exportLoading, setExportLoading] = useState(false);
+  // Acumulado del mes en curso — DOS series, según la marca de la mesa:
+  //   sinExistencia → faltante real (marcado "sin existencia")
+  //   enExistencia  → no se cumplió habiendo stock (marcado "en existencia")
+  // Lo pendiente y "mal facturado" no suman en ninguna. Las tablas las
+  // registra/recalcula el propio endpoint — acá solo se lee para el header.
+  interface MesResumenBloque {
+    unidades: number;
+    importe: number;
+    articulos: number;
+  }
+  const [mesResumen, setMesResumen] = useState<{
+    sinExistencia: MesResumenBloque;
+    enExistencia: MesResumenBloque;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -389,6 +403,34 @@ export default function FaltantesPage() {
     }
   }, [undoStack, fecha]);
 
+  // Acumulado del mes: se recarga cuando cambia el día en pantalla (o sea,
+  // después de cada load) porque esa misma llamada ya dejó el mes registrado.
+  useEffect(() => {
+    const mes = (fecha || new Date().toISOString().slice(0, 10)).slice(0, 7);
+    let vivo = true;
+    fetch(`/api/deposito/faltantes/mes?mes=${mes}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!vivo || (!j?.sinExistencia && !j?.enExistencia)) return;
+        const bloque = (b: unknown): MesResumenBloque => {
+          const r = (b as { resumen?: Record<string, number> })?.resumen ?? {};
+          return {
+            unidades: Number(r.unidades ?? 0),
+            importe: Number(r.importe ?? 0),
+            articulos: Number(r.articulos ?? 0),
+          };
+        };
+        setMesResumen({
+          sinExistencia: bloque(j.sinExistencia),
+          enExistencia: bloque(j.enExistencia),
+        });
+      })
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, [fecha]);
+
   // Exportar Excel del mes elegido (histórico completo de marcas, no el día
   // que está en pantalla). Trae nombre/ubicación/cliente vía el join
   // best-effort con preparado.faltante_wms que hace el endpoint.
@@ -592,6 +634,24 @@ export default function FaltantesPage() {
               <b className="text-yellow-400">{counts.pend}</b> pend. ·{" "}
               <b className="text-zinc-200">{counts.total}</b> total
             </span>
+            {mesResumen && (
+              <span
+                title={`Marcado SIN existencia en el mes (faltante real): ${fmtNum(mesResumen.sinExistencia.unidades)} unidades en ${fmtNum(mesResumen.sinExistencia.articulos)} artículos`}
+                className="px-2.5 py-1 rounded-lg border border-red-400/40 bg-red-400/10 text-red-300 whitespace-nowrap"
+              >
+                Faltó: <b>{fmtNum(mesResumen.sinExistencia.unidades)}</b> u. ·{" "}
+                <b>{fmtNum(mesResumen.sinExistencia.articulos)}</b> art.
+              </span>
+            )}
+            {mesResumen && mesResumen.enExistencia.articulos > 0 && (
+              <span
+                title={`Marcado EN existencia pero no cumplido en el mes (falla de proceso, no de stock): ${fmtNum(mesResumen.enExistencia.unidades)} unidades en ${fmtNum(mesResumen.enExistencia.articulos)} artículos`}
+                className="px-2.5 py-1 rounded-lg border border-zinc-600/50 bg-zinc-700/20 text-zinc-300 whitespace-nowrap"
+              >
+                No cumplido habiendo: <b>{fmtNum(mesResumen.enExistencia.unidades)}</b> u. ·{" "}
+                <b>{fmtNum(mesResumen.enExistencia.articulos)}</b> art.
+              </span>
+            )}
             <button
               onClick={undo}
               disabled={!undoStack.length}

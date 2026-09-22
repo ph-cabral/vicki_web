@@ -1829,6 +1829,282 @@ def fetch_ot_diferencias(desde=None, hasta=None):
     return {"desde": _iso(d), "hasta": _iso(h), "total": len(rows), "rows": rows, "resumen": resumen}
 
 
+# ── Faltante REAL por pedido cerrado/facturado (fuente de /deposito/faltantes)
+#
+# Reemplaza al pick de OT del WMS (fetch_ot_diferencias) como número oficial de
+# faltante. Criterio, decidido 2026-09-22:
+#   · Pedido de Magnus con EstadoPedido IN (3, 4) = Cerrados / Facturados.
+#     El Cancelado (7) NO entra: de un pedido cancelado no se trae nada.
+#   · Renglón con CantidadCumplida < CantidadPedida → faltó
+#     (CantidadPedida - CantidadCumplida).
+#   · Un renglón cancelado dentro de un pedido vivo (VenFer_PedidoReng.Estado
+#     = 4) queda con CantidadCumplida = 0, así que la misma regla ya lo cuenta
+#     entero. No hay filtro aparte por estado de renglón.
+#   · El día lo fija cab.FechaCierre (entero de días desde 1800-12-28): es el
+#     único campo siempre cargado en estados 3 y 4 (verificado sobre el último
+#     mes: 7.639 pedidos, todos con FechaCierre) y no se mueve después.
+#
+# Por qué no se hace un solo SQL con los joins de nombre/cliente/vendedor: la
+# consulta ancha (join a StkFer_Articulos + Clientes + Vendedores sobre el rango
+# entero) se cae por tiempo en rangos largos. Se mantiene el patrón que ya usa
+# fetch_ot_diferencias: una consulta angosta al rango + resolución por IN-list
+# chunkeada (_info_pedidos y el IN de artículos), que es lo que está medido.
+FALTANTE_ESTADOS_PEDIDO = (3, 4)  # Cerrados, Facturados (MAGNUS_SITD.Pedido_Estados)
+MAGNUS_EPOCH = date(1800, 12, 28)
+
+
+def _fecha_a_int(d: date) -> int:
+    """date → entero de días de Magnus. Los filtros van SIEMPRE por el entero:
+    comparar una fecha calculada (DATEADD) contra un parámetro filtra mal con
+    el driver viejo, sin dar error."""
+    return (d - MAGNUS_EPOCH).days
+
+
+def _int_a_fecha(n) -> str | None:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return (MAGNUS_EPOCH + timedelta(days=n)).isoformat()
+
+
+SQL_FALTANTE_ULTIMO_DIA = """
+SELECT MAX(cab.FechaCierre)
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+WHERE cab.EstadoPedido IN (3, 4)
+  AND cab.FechaCierre > 0
+  AND cab.FechaCierre < ?
+"""
+
+SQL_FALTANTE_PEDIDOS = """
+SELECT
+    cab.NroMovVenta,
+    r.NroRenglon,
+    cab.FechaCierre,
+    cab.EstadoPedido,
+    cab.CompCodigo,
+    LTRIM(RTRIM(r.CodArticu))  AS CodArticulo,
+    LTRIM(RTRIM(r.Ubicacion))  AS Ubicacion,
+    r.Estado                   AS EstadoRenglon,
+    r.CantidadPedida,
+    r.CantidadCumplida,
+    r.PrecioVenta
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoReng r
+        ON r.NroMovVenta = cab.NroMovVenta
+       AND r.CantidadCumplida < r.CantidadPedida
+WHERE cab.EstadoPedido IN (3, 4)
+  AND cab.FechaCierre BETWEEN ? AND ?
+ORDER BY cab.FechaCierre, cab.NroMovVenta, r.NroRenglon
+"""
+
+# Acumulado del rango agrupado por artículo, resuelto ENTERO en el motor (una
+# sola consulta, sin traer el detalle): es lo que alimenta el registro mensual.
+SQL_FALTANTE_AGRUPADO = """
+SELECT
+    LTRIM(RTRIM(r.CodArticu))                                AS CodArticulo,
+    SUM(r.CantidadPedida - r.CantidadCumplida)               AS Unidades,
+    SUM((r.CantidadPedida - r.CantidadCumplida) * r.PrecioVenta) AS Importe,
+    COUNT(*)                                                 AS Renglones,
+    COUNT(DISTINCT cab.NroMovVenta)                          AS Pedidos
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoReng r
+        ON r.NroMovVenta = cab.NroMovVenta
+       AND r.CantidadCumplida < r.CantidadPedida
+WHERE cab.EstadoPedido IN (3, 4)
+  AND cab.FechaCierre BETWEEN ? AND ?
+GROUP BY LTRIM(RTRIM(r.CodArticu))
+"""
+
+
+def _nombres_articulos(codigos, conn=None):
+    """{CodArticulo trim -> 'Patron Medida Unidad'} por IN-list chunkeada."""
+    out: dict[str, str] = {}
+    codigos = sorted({_txt(c) for c in codigos if c})
+    if not codigos:
+        return out
+    propia = conn is None
+    conn = conn or get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        CH = 1000
+        for i in range(0, len(codigos), CH):
+            chunk = codigos[i:i + CH]
+            ph = ",".join("?" for _ in chunk)
+            cur.execute(f"""
+                SELECT LTRIM(RTRIM(s.CodArticulo)) AS Cod,
+                       ap.Detalle      AS Patron,
+                       s.DetalleMedida AS Medida,
+                       s.UnidadMedida  AS Unidad
+                FROM EVERWEAR.dbo.[StkFer_Articulos]  s
+                LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap
+                       ON ap.ArticuloPatron = s.ArticuloPatron
+                WHERE s.CodArticulo IN ({ph})
+            """, chunk)
+            for cod, patron, medida, unidad in cur.fetchall():
+                out[_txt(cod)] = " ".join(
+                    " ".join(_txt(x) for x in (patron, medida, unidad)).split()
+                )
+        return out
+    finally:
+        if propia:
+            conn.close()
+
+
+def _ultimo_dia_cierre() -> int:
+    """Último día ANTERIOR a hoy con algún pedido cerrado/facturado (salta
+    findes y feriados, igual que hacía la fuente de OT)."""
+    hoy_int = _fecha_a_int(date.today())
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(SQL_FALTANTE_ULTIMO_DIA, (hoy_int,))
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] else hoy_int - 1
+    finally:
+        conn.close()
+
+
+def _rango_faltante_pedidos(desde=None, hasta=None):
+    """desde/hasta 'YYYY-MM-DD' | None → (int desde, int hasta) de Magnus.
+    Sin 'hasta', o con 'hasta' hoy/futuro, se resuelve al último día cerrado
+    anterior a hoy: mientras el día está en curso los pedidos se siguen
+    cerrando y el número no cerraría nunca."""
+    hoy = date.today()
+    h_d = datetime.strptime(hasta, "%Y-%m-%d").date() if hasta else None
+    h_i = _fecha_a_int(h_d) if (h_d and h_d < hoy) else _ultimo_dia_cierre()
+    d_i = _fecha_a_int(datetime.strptime(desde, "%Y-%m-%d").date()) if desde else h_i
+    if d_i > h_i:
+        d_i = h_i
+    return d_i, h_i
+
+
+def fetch_faltante_pedidos(desde=None, hasta=None):
+    """Renglones que faltaron: pedidos Cerrados/Facturados cuyo renglón se
+    cumplió por debajo de lo pedido. Sin params → último día cerrado."""
+    d_i, h_i = _rango_faltante_pedidos(desde, hasta)
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(SQL_FALTANTE_PEDIDOS, (d_i, h_i))
+        cols = [c[0] for c in cur.description]
+        filas = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    pedidos = sorted({int(f["NroMovVenta"]) for f in filas if f.get("NroMovVenta") is not None})
+    info = _info_pedidos(pedidos)
+    nombres = _nombres_articulos([f.get("CodArticulo") for f in filas])
+
+    rows = []
+    for f in filas:
+        nro = int(f["NroMovVenta"])
+        meta = info.get(nro, {})
+        cod = _txt(f.get("CodArticulo"))
+        pedida = float(_safe(f.get("CantidadPedida")) or 0)
+        cumplida = float(_safe(f.get("CantidadCumplida")) or 0)
+        precio = float(_safe(f.get("PrecioVenta")) or 0)
+        dif = round(pedida - cumplida, 3)
+        rows.append({
+            "NroMovVenta":   nro,
+            "Renglon":       _int(f.get("NroRenglon")),
+            "Fecha":         _int_a_fecha(f.get("FechaCierre")),
+            "Cliente":       meta.get("Cliente"),
+            "ClienteNombre": meta.get("ClienteNombre"),
+            "Vendedor":      _txt(meta.get("Vendedor")),
+            "Ubicacion":     _txt(f.get("Ubicacion")),
+            "CodArticulo":   cod,
+            "Nombre":        nombres.get(cod, ""),
+            "CantPedida":    pedida,
+            "CantCumplida":  cumplida,
+            "Diferencia":    dif,
+            "PrecioVenta":   precio,
+            # Importe = lo que faltó, no lo pedido (la fuente vieja valorizaba
+            # la cantidad pedida entera contra un precio aproximado).
+            "Importe":       round(dif * precio, 2),
+            "EstadoPedido":  _int(f.get("EstadoPedido")),
+            "EstadoRenglon": _int(f.get("EstadoRenglon")),
+            "CompCodigo":    _int(f.get("CompCodigo")),
+        })
+
+    resumen = {
+        "renglones": len(rows),
+        "pedidos":   len({r["NroMovVenta"] for r in rows}),
+        "articulos": len({r["CodArticulo"] for r in rows}),
+        "unidades":  round(sum(r["Diferencia"] for r in rows), 3),
+        "importe":   round(sum(r["Importe"] for r in rows), 2),
+    }
+    return {
+        "desde": _int_a_fecha(d_i),
+        "hasta": _int_a_fecha(h_i),
+        "total": len(rows),
+        "rows":  rows,
+        "resumen": resumen,
+    }
+
+
+def fetch_faltante_mes(mes: str):
+    """Acumulado de un mes agrupado por artículo (1 fila por artículo), para el
+    registro mensual. UNA consulta agregada al motor + los nombres por IN-list.
+    'mes' = 'YYYY-MM'. El mes en curso se corta en el último día cerrado."""
+    anio, mm = (int(x) for x in mes.split("-"))
+    primero = date(anio, mm, 1)
+    ultimo = date(anio + (mm == 12), (mm % 12) + 1, 1) - timedelta(days=1)
+    hoy = date.today()
+    tope = min(ultimo, hoy)
+    d_i = _fecha_a_int(primero)
+    h_i = _fecha_a_int(tope)
+    if tope >= hoy:
+        h_i = min(h_i, _ultimo_dia_cierre())
+    if h_i < d_i:
+        return {"mes": mes, "desde": primero.isoformat(), "hasta": None,
+                "total": 0, "rows": [], "resumen": {"articulos": 0, "unidades": 0,
+                                                    "importe": 0, "renglones": 0}}
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(SQL_FALTANTE_AGRUPADO, (d_i, h_i))
+        filas = cur.fetchall()
+    finally:
+        conn.close()
+
+    nombres = _nombres_articulos([f[0] for f in filas])
+    rows = []
+    for cod, unidades, importe, renglones, pedidos in filas:
+        c = _txt(cod)
+        rows.append({
+            "CodArticulo": c,
+            "Nombre":      nombres.get(c, ""),
+            "Unidades":    round(float(_safe(unidades) or 0), 3),
+            "Importe":     round(float(_safe(importe) or 0), 2),
+            "Renglones":   _int(renglones) or 0,
+            "Pedidos":     _int(pedidos) or 0,
+        })
+    rows.sort(key=lambda r: r["Unidades"], reverse=True)
+
+    return {
+        "mes":   mes,
+        "desde": _int_a_fecha(d_i),
+        "hasta": _int_a_fecha(h_i),
+        "total": len(rows),
+        "rows":  rows,
+        "resumen": {
+            "articulos": len(rows),
+            "unidades":  round(sum(r["Unidades"] for r in rows), 3),
+            "importe":   round(sum(r["Importe"] for r in rows), 2),
+            "renglones": sum(r["Renglones"] for r in rows),
+        },
+    }
+
+
 # Diagnóstico: confirmar el nombre real de la columna pedido en OT y qué estados
 # de Magnus aparecen (para ajustar OT_COL_PEDIDO y ESTADOS_VALIDOS).
 SQL_COLS_TABLA = """

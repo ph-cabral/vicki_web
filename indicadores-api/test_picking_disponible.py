@@ -33,6 +33,8 @@ DEMANDA_COLS = [
 # OT 9            → A-PARCIAL tiene en guardado MENOS de lo que falta: faltante,
 #                   pero algo se puede bajar → tiene que seguir mostrándose
 # OT 10           → A-OTRODEP sólo tiene guardado en el depósito 02: no cuenta
+# OT 11           → A-REPOPARCIAL: la reposición en camino cubre SÓLO PARTE del
+#                   faltante (30 de 50) → se resta, quedan 20, sigue "reponer"
 DEMANDA = [
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-SOBRA",  "01-10-01-01", 5),
     (1, 900001, 1, HOY, "CLIENTE UNO",  "Molina Martina", "A-FALTA",  "01-10-01-02", 3),
@@ -48,6 +50,7 @@ DEMANDA = [
     (8, 900008, 1, HOY, "CLIENTE OCHO", "Molina Martina", "A-PULMON", "01-14-01-01", 25),
     (9, 900009, 1, HOY, "CLIENTE NUEVE", "Molina Martina", "A-PARCIAL", "01-15-01-01", 100),
     (10, 900010, 1, HOY, "CLIENTE DIEZ", "Molina Martina", "A-OTRODEP", "01-16-01-01", 20),
+    (11, 900011, 1, HOY, "CLIENTE ONCE", "Molina Martina", "A-REPOPARCIAL", "01-17-01-01", 50),
 ]
 # (art, ubic, cant, es_pick, es_guard)
 STOCK = [
@@ -66,9 +69,14 @@ STOCK = [
     ("A-PARCIAL", "01-15-01-01-DER", 30, 0, 1),   # 30 para 100: alcanza para un viaje
     ("A-OTRODEP", "01-16-01-01", 0,  1, 0),
     ("A-OTRODEP", "02-22-06-04-izq", 500, 0, 1),  # otro depósito: no se baja acá
+    ("A-REPOPARCIAL", "01-17-01-01", 0, 1, 0),
+    ("A-REPOPARCIAL", "01-17-01-01-DER", 100, 0, 1),  # guardado de sobra
 ]
 # (art, ubic, en_camino)
-REPO = [("A-REPO", "01-13-01-01", 200)]
+REPO = [
+    ("A-REPO", "01-13-01-01", 200),
+    ("A-REPOPARCIAL", "01-17-01-01", 30),   # cubre 30 de los 50 que faltan
+]
 
 
 class FakeCursor:
@@ -117,6 +125,12 @@ dep.WMS_ESTADO_LABELS = {
     5: {"label": "En proceso", "bucket": "proceso"},
 }
 dep._es_operario_merca = lambda n: str(n or "").strip().lower().startswith("mercaderia x llegar")
+# picking_disponible.py pasó a usar es_operario_ignorado() (buzón + lista de
+# OPERARIOS_IGNORADOS) en vez de _es_operario_merca(); este stub se había
+# quedado atrás y rompía el import. Se mapea sólo al buzón (no a la lista de
+# ignorados de producción) porque este corpus de prueba usa "Carossio Jose"
+# como armador real de varias OT (A-COMPET, A-GUARD, A-REPO...).
+dep.es_operario_ignorado = dep._es_operario_merca
 dep._txt = lambda v: str(v).strip() if v is not None else ""
 dep._safe = lambda v, c="": v
 dep._int = lambda v: int(v) if v is not None else None
@@ -145,7 +159,7 @@ def fila(otid, cod):
     return next((r for r in ots[otid]["rows"] if r["CodArticulo"] == cod), None)
 
 print("\n=== qué OT entran ===")
-check("OT con problema", sorted(ots), [1, 2, 3, 7, 8, 9, 10])
+check("OT con problema", sorted(ots), [1, 2, 3, 7, 8, 9, 10, 11])
 check("OT 4 (pedido cancelado) descartada", 4 in ots, False)
 check("OT 5 (buzón mercadería) descartada", 5 in ots, False)
 check("OT 6 (todo ok) no aparece", 6 in ots, False)
@@ -183,11 +197,21 @@ check("A-GUARD pedido agrupado 40+10", g["Pedido"], 50.0)
 check("A-GUARD situación", g["Situacion"], "reponer")
 check("A-GUARD a reponer", g["AReponer"], 40.0)
 
-print("\n=== reposición ya generada ===")
+print("\n=== reposición ya generada: cubre TODO el faltante ===")
 r = fila(2, "A-REPO")
 check("A-REPO situación", r["Situacion"], "repo_pedida")
-check("A-REPO en camino", r["RepoEnCamino"], 200.0)
-check("A-REPO guardado no alcanzaba", r["EnGuardado"], 5.0)
+check("A-REPO se neutraliza del todo (a reponer neto)", r["AReponer"], 0.0)
+check("A-REPO en camino (informativo, sin descontar)", r["RepoEnCamino"], 200.0)
+check("A-REPO no toca el guardado (no hizo falta)", r["EnGuardado"], 5.0)
+
+print("\n=== reposición ya generada: cubre SÓLO PARTE del faltante ===")
+# Faltaban 50, hay una OT de reposición viva por 30 → quedan 20 por resolver
+# (no 50 de nuevo) y con guardado de sobra se resuelve como "reponer".
+rp = fila(11, "A-REPOPARCIAL")
+check("A-REPOPARCIAL resta lo que ya está en camino (50 - 30 = 20)", rp["AReponer"], 20.0)
+check("A-REPOPARCIAL en camino", rp["RepoEnCamino"], 30.0)
+check("A-REPOPARCIAL sigue mostrándose (no se oculta)", rp["Situacion"], "reponer")
+check("A-REPOPARCIAL guardado de sobra, sin consumir en el detalle", rp["EnGuardado"], 100.0)
 
 print("\n=== PLAYA_PEDIDOS nunca ofrece reposición ===")
 p = fila(7, "A-PLAYA")
@@ -225,7 +249,8 @@ check("deposito_de vacío", pd.deposito_de(""), None)
 print("\n=== resumen ===")
 check("faltantes reales", data["resumen"]["faltanteReal"], 5)
 check("faltantes sin nada para reponer", data["resumen"]["faltanteSinRepo"], 4)
-check("para bajar de guardado", data["resumen"]["hayParaReponer"], 2)
+check("para bajar de guardado (A-COMPET, A-GUARD, A-REPOPARCIAL)",
+      data["resumen"]["hayParaReponer"], 3)
 check("repo pedida", data["resumen"]["repoPedida"], 1)
 check("artículos ocultos en la vista por pasillo",
       data["resumen"]["articulosOcultosSinRepo"], 4)
@@ -255,12 +280,17 @@ check("orden: los numéricos antes que los con nombre",
 
 print("\n=== vista por pasillo: sólo lo que se puede reponer ===")
 pas = {g["Pasillo"]: g for g in data["porPasillo"]}
-check("pasillos con algo que reponer", sorted(pas), ["11", "12", "13", "15"])
+check("pasillos con algo que reponer", sorted(pas), ["11", "12", "15", "17"])
 check("A-FALTA (nada en ningún lado) no viaja", "10" in pas, False)
 check("PLAYA_PEDIDOS nunca viaja", "PLAYA_PEDIDOS" in pas, False)
 check("A-PULMON (sólo granel) no viaja", "14" in pas, False)
 check("A-OTRODEP (guardado en otro depósito) no viaja", "16" in pas, False)
+check("A-REPO (neutralizado del todo por la reposición en camino) no viaja",
+      "13" in pas, False)
 check("A-PARCIAL sí viaja", pas["15"]["rows"][0]["AReponer"], 100.0)
+check("A-REPOPARCIAL viaja con el faltante YA reducido", pas["17"]["AReponer"], 20.0)
+check("A-REPOPARCIAL sigue en 'reponer', no desaparece del todo",
+      pas["17"]["rows"][0]["Situacion"], "reponer")
 
 g11 = pas["11"]["rows"][0]
 check("A-COMPET: una sola fila aunque la pidan 2 OT", len(pas["11"]["rows"]), 1)
@@ -273,9 +303,7 @@ g12 = pas["12"]["rows"][0]
 check("A-GUARD suma los 2 renglones de la misma OT", g12["Pedido"], 50.0)
 check("A-GUARD una sola OT", g12["OTs"], 1)
 
-check("totales del pasillo", pas["13"]["AReponer"], 80.0)
-check("situación peor del artículo", pas["13"]["rows"][0]["Situacion"], "repo_pedida")
-check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]][:3], ["11", "12", "13"])
+check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]], ["11", "12", "15", "17"])
 
 print("\n=== todos los renglones (cartel de una OT) ===")
 uno = pd.fetch_picking_disponible_ot(6)["ot"]

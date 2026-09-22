@@ -9,6 +9,7 @@ from deposito import (
     fetch_wms, fetch_tiempo, fetch_ingresados, fetch_pedidos_hora, fetch_faltantes,
     fetch_faltantes_fechas, fetch_vivo, fetch_faltantes_ot, fetch_faltantes_ot_diag,
     fetch_ot_diferencias, fetch_pedidos_cumplido_real,
+    fetch_faltante_pedidos, fetch_faltante_mes,
     fetch_wms_estados, fetch_wms_estados_diag,
     fetch_articulo_ubicaciones, fetch_articulos_multi_ubicacion,
     fetch_stock_deposito1, fetch_stock_por_articulos, fetch_stock_export,
@@ -516,6 +517,32 @@ def deposito_ot_diferencias(
     Sin params → último día Cumplido antes de hoy."""
     try:
         return fetch_ot_diferencias(desde, hasta)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/faltante-pedidos")
+def deposito_faltante_pedidos(
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
+):
+    """Faltante REAL: renglones de pedidos Cerrados/Facturados (Magnus) que se
+    cumplieron por debajo de lo pedido. Fuente de /deposito/faltantes desde
+    2026-09-22 (reemplaza al pick de OT del WMS, /deposito/ot-diferencias).
+    De un pedido Cancelado no se trae nada; un renglón cancelado dentro de un
+    pedido vivo queda con cumplida = 0 y cuenta entero.
+    Sin params → último día cerrado anterior a hoy."""
+    try:
+        return fetch_faltante_pedidos(desde, hasta)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/faltante-mes")
+def deposito_faltante_mes(mes: str = Query(..., pattern=r"^\d{4}-\d{2}$")):
+    """Acumulado del mes agrupado por artículo (1 fila por artículo) con el
+    mismo criterio que /deposito/faltante-pedidos. UNA consulta agregada: es lo
+    que persiste el registro mensual en preparado.faltante_mes."""
+    try:
+        return fetch_faltante_mes(mes)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

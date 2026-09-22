@@ -1,7 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { mesDeFecha, registrarFaltanteMes } from "@/lib/deposito/faltanteMes";
 
 export const dynamic = "force-dynamic";
+
+// Recalcula el acumulado mensual del artículo marcado (join contra
+// faltante_pedido, ver lib/deposito/faltanteMes.ts) para que el chip del
+// header refleje la marca apenas se guarda, no recién en el próximo refresh
+// de la vista. Best-effort: si falla, la marca ya quedó guardada igual — el
+// próximo GET de /api/deposito/faltantes la recalcula de todos modos.
+async function recalcularMes(fechaIso: string) {
+  const mes = mesDeFecha(fechaIso);
+  if (!mes) return;
+  try {
+    await registrarFaltanteMes(mes);
+  } catch (e) {
+    console.error("recalcularMes tras marca", e);
+  }
+}
 
 // GET ?fecha=YYYY-MM-DD → marcas ya guardadas de ese día (para retomar).
 export async function GET(req: NextRequest) {
@@ -77,6 +93,11 @@ export async function POST(req: NextRequest) {
           : null,
       },
     });
+    // Solo si la marca es lo que cambió el resultado del mes (existencia o
+    // malFacturado); tipear cantidad sola no mueve el acumulado.
+    if (tieneExistencia || tieneMalFacturado) {
+      await recalcularMes(b.fecha);
+    }
     return NextResponse.json({ ok: true, id: row.id });
   } catch (error) {
     console.error("POST /api/deposito/faltantes/check", error);
@@ -98,6 +119,7 @@ export async function DELETE(req: NextRequest) {
         nroRengOrigen: b.nroRengOrigen,
       },
     });
+    await recalcularMes(b.fecha);
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/deposito/faltantes/check", error);
