@@ -200,3 +200,16 @@ export function tieneObjetivo(objetivos: ObjetivosLinea, vendedor: number | stri
     objetivoDelRango(objetivos, vendedor, meses, "unidades") != null
   );
 }
+
+/**
+ * Clave de línea con la que se guardan los objetivos (everwear.ventas_objetivo.linea)
+ * — 2026-09-23, cuando la vista pasó a tener selector de línea.
+ *
+ * Bulones conserva "BULONERIA" (la clave con la que ya hay objetivos
+ * cargados); el resto de las líneas usa `LINEA_<id>` del catálogo, porque
+ * hay nombres repetidos ("Varios" dos veces) y el nombre puede cambiar al
+ * recargar el DePara, el id no.
+ */
+export function claveObjetivoLinea(linea: { id: number; nombre: string }): string {
+  return /^bulon/i.test(linea.nombre.trim()) ? "BULONERIA" : `LINEA_${linea.id}`;
+}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolverAccesoBulones } from "@/lib/ventas/bulonesAcceso";
+import { resolverLineaPedida } from "@/lib/ventas/lineasAcceso";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -11,7 +12,7 @@ export const maxDuration = 60;
 // mismo contrato y MISMA resolución de acceso por vendedor (admin = toda la
 // empresa; no-admin = sólo su cartera, resuelto server-side y nunca tomado
 // del query string). Lo único distinto es que el backend acota todo a la
-// línea BULONERÍA y corta por código patrón. Ver bulones.py.
+// línea elegida (catálogo, `?linea=`) y corta por código patrón. Ver bulones.py.
 function aniosPorDefecto(): { anioAnterior: number; anioActual: number } {
   const y = new Date().getFullYear();
   return { anioAnterior: y - 1, anioActual: y };
@@ -52,8 +53,14 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  // Línea del catálogo (2026-09-23): validada contra lo que el usuario
+  // tiene habilitado; sin `?linea=` = su línea por defecto (Bulones).
+  const lin = await resolverLineaPedida(sp);
+  if (!lin.ok) return NextResponse.json({ error: lin.error }, { status: lin.status });
+
   try {
     const qs = new URLSearchParams();
+    qs.set("linea", String(lin.lineaId));
     if (!acceso.isAdmin) qs.set("vendedor", String(acceso.vendedorCodigo));
     qs.set("cliente", cliente);
     const res = await fetch(`${API_URL}/ventas/bulones/patrones-por-cliente?${qs.toString()}`, {

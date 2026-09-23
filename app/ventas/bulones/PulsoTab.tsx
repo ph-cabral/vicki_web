@@ -14,6 +14,7 @@ import {
 import { abrirPicker } from "@/components/ui/abrirPicker";
 import {
   aTexto,
+  claveObjetivoLinea,
   mesesEntre,
   objetivoDelRango,
   tieneObjetivo,
@@ -58,8 +59,10 @@ import {
 // para cargar meses futuros o pasados.
 // ──────────────────────────────────────────────────────────────────────────────
 
-/** Línea de venta de esta pestaña. Cuando se sumen otras, esto pasa a ser un selector. */
-const LINEA = "BULONERIA";
+// La línea ya no es fija (2026-09-23): llega por prop desde el selector de
+// la página y viaja como `?linea=<id>` a los endpoints. Los objetivos se
+// guardan por clave de línea — ver claveObjetivoLinea (lib/ventas/objetivos.ts):
+// Bulones conserva "BULONERIA" para no perder lo ya cargado.
 
 type TopVista = "vendedores" | "patrones" | "clientes";
 type Modo = "pesos" | "unidades";
@@ -135,7 +138,7 @@ function tipoAMostrar(
 /** Valor vendido en el mes en curso, en la unidad del tipo dado. */
 const valorMesSegunTipo = (i: TopItem, tipo: TipoObjetivo) => (tipo === "pesos" ? i.montoMes : i.unidadesMes);
 
-export default function PulsoTab() {
+export default function PulsoTab({ linea }: { linea: { id: number; nombre: string } }) {
   const [desde, setDesde] = useState(mesActual);
   const [hasta, setHasta] = useState(mesActual);
   const [rangoAbierto, setRangoAbierto] = useState(false);
@@ -151,7 +154,7 @@ export default function PulsoTab() {
   // la métrica se fuerza y el toggle queda deshabilitado.
   const modo: Modo = vista === "clientes" ? "pesos" : metrica;
 
-  const obj = useObjetivosVentas(LINEA);
+  const obj = useObjetivosVentas(claveObjetivoLinea(linea));
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -159,7 +162,7 @@ export default function PulsoTab() {
     try {
       const ruta =
         vista === "vendedores" ? "top-vendedores" : vista === "patrones" ? "top-patrones" : "top-clientes";
-      const res = await fetch(`/api/ventas/bulones/${ruta}?desde=${desde}&hasta=${hasta}`, {
+      const res = await fetch(`/api/ventas/bulones/${ruta}?desde=${desde}&hasta=${hasta}&linea=${linea.id}`, {
         cache: "no-store",
       });
       const json = await res.json();
@@ -190,7 +193,7 @@ export default function PulsoTab() {
     } finally {
       setCargando(false);
     }
-  }, [desde, hasta, vista, modo]);
+  }, [desde, hasta, vista, modo, linea.id]);
 
   useEffect(() => {
     void cargar();
@@ -341,7 +344,7 @@ export default function PulsoTab() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-yellow-400 font-bold uppercase tracking-wide text-sm md:text-base flex items-center gap-2">
           <Trophy size={18} />
-          Ventas de bulonería · {periodoLabel}
+          Ventas de {linea.nombre} · {periodoLabel}
         </h3>
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
@@ -400,7 +403,7 @@ export default function PulsoTab() {
         <div className={`rounded-xl border border-zinc-800 overflow-hidden ${cargando ? "opacity-50" : ""}`}>
           {!cargando && items.length === 0 ? (
             <p className="px-5 py-10 text-center text-sm text-zinc-600">
-              Sin ventas de bulonería registradas en el período.
+              Sin ventas de {linea.nombre} registradas en el período.
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -590,6 +593,7 @@ export default function PulsoTab() {
 
       {modal && (
         <ObjetivoModal
+          lineaNombre={linea.nombre}
           vendedores={items
             .filter((i) => i.codigo != null)
             .map((i) => ({ codigo: i.codigo as number, nombre: i.etiqueta }))}
@@ -653,6 +657,7 @@ function primerVendedorSinObjetivo(
 }
 
 function ObjetivoModal({
+  lineaNombre,
   vendedores,
   objetivos,
   desdeInicial,
@@ -661,6 +666,7 @@ function ObjetivoModal({
   onBorrarRango,
   onCerrar,
 }: {
+  lineaNombre: string;
   vendedores: { codigo: number; nombre: string }[];
   objetivos: ObjetivosLinea;
   desdeInicial: string;
@@ -785,7 +791,7 @@ function ObjetivoModal({
       >
         <div className="border-b border-zinc-800 px-5 py-4">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-zinc-100">Objetivos de venta · bulonería</h3>
+            <h3 className="text-sm font-semibold text-zinc-100">Objetivos de venta · {lineaNombre}</h3>
             <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-xs divide-x divide-zinc-700 shrink-0">
               {(["pesos", "unidades"] as TipoObjetivo[]).map((t) => (
                 <button

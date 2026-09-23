@@ -14,11 +14,27 @@ import {
   UserRound,
   Info,
   Activity,
+  Settings2,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
 import PulsoTab from "./PulsoTab";
+import ConfigLineas from "./ConfigLineas";
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 2026-09-23 — VISTA DE LÍNEAS (en el menú: "Líneas"; la URL sigue siendo
+// /ventas/bulones para no romper permisos de sector ni accesos guardados).
+// Ya no está clavada a Bulonería: arriba hay un selector con las líneas del
+// catálogo (el mismo de /ventas/vendedor) y todo — rankings, modal y Pulso —
+// se pide con `?linea=<id>`. Acá cualquier línea se abre entera (no se mira
+// "apertura comercial" como en /ventas/vendedor).
+//   · Las líneas que ofrece el selector salen de /api/ventas/lineas: ADMIN
+//     todas; el resto, las que tenga habilitadas (sin configurar = sólo
+//     Bulones). Las rutas proxy vuelven a validar la línea server-side.
+//   · ADMIN tiene el botón de engranaje → ConfigLineas.tsx, para elegir qué
+//     líneas ve cada usuario (everwear.usuario_linea_venta).
+// Lo de abajo es la nota original; donde dice BULONERÍA hoy es "la línea
+// elegida".
 // ──────────────────────────────────────────────────────────────────────────────
 // /ventas/bulones — la MISMA vista que /ventas/vendedor, acotada a la línea
 // BULONERÍA (2026-08-26: "una vista igual a la de
@@ -356,6 +372,41 @@ export default function VentasBulonesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qCliente]);
 
+  // ── Línea elegida (2026-09-23) ──────────────────────────────────────────
+  // Se piden UNA vez las líneas que el usuario puede ver; hasta tenerlas no se
+  // dispara ningún ranking (lineaId en null). Si tiene una sola, el selector
+  // queda fijo (deshabilitado) mostrando cuál es.
+  const [lineas, setLineas] = useState<{ id: number; nombre: string }[]>([]);
+  const [lineaId, setLineaId] = useState<number | null>(null);
+  const [esAdmin, setEsAdmin] = useState(false);
+  const [lineasError, setLineasError] = useState<string | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelado = false;
+    fetch("/api/ventas/lineas", { cache: "no-store" })
+      .then(async (res) => {
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        if (cancelado) return;
+        const ls = Array.isArray(j.lineas) ? j.lineas : [];
+        setLineas(ls);
+        setEsAdmin(!!j.esAdmin);
+        if (!ls.length) setLineasError("No tenés ninguna línea habilitada");
+        else setLineaId(typeof j.defecto === "number" ? j.defecto : ls[0].id);
+      })
+      .catch((e) => {
+        if (!cancelado) setLineasError(e instanceof Error ? e.message : "Error al cargar las líneas");
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  const lineaSel = lineas.find((l) => l.id === lineaId) ?? null;
+  const lineaNombre = lineaSel?.nombre ?? "línea";
+  const qLinea = lineaId != null ? `&linea=${lineaId}` : "";
+
   // ── Ranking del pie ─────────────────────────────────────────────────────
   const [topVista, setTopVista] = useState<TopVista>("clientes");
   // Pestaña "Pulso" (2026-09-09): el ranking del período elegido con objetivo
@@ -434,11 +485,11 @@ export default function VentasBulonesPage() {
       setModalOpen(true);
       setFiltroVisible(true);
       pedirDetalle(
-        `/api/ventas/bulones/patrones-por-cliente?cliente=${c.numero}`,
+        `/api/ventas/bulones/patrones-por-cliente?cliente=${c.numero}${qLinea}`,
         (j) => setDetCliente(j as RespPatronesPorCliente),
       );
     },
-    [limpiarDetalle, pedirDetalle],
+    [limpiarDetalle, pedirDetalle, qLinea],
   );
 
   const abrirPatron = useCallback(
@@ -452,11 +503,11 @@ export default function VentasBulonesPage() {
       setModalOpen(true);
       setFiltroVisible(true);
       pedirDetalle(
-        `/api/ventas/bulones/clientes-por-patron?patron=${encodeURIComponent(patron)}`,
+        `/api/ventas/bulones/clientes-por-patron?patron=${encodeURIComponent(patron)}${qLinea}`,
         (j) => setDetPatron(j as RespClientesPorPatron),
       );
     },
-    [limpiarDetalle, pedirDetalle],
+    [limpiarDetalle, pedirDetalle, qLinea],
   );
 
   const abrirVendedor = useCallback(
@@ -470,11 +521,11 @@ export default function VentasBulonesPage() {
       setModalOpen(true);
       setFiltroVisible(true);
       pedirDetalle(
-        `/api/ventas/bulones/clientes-por-vendedor?codigo=${v.codigo}`,
+        `/api/ventas/bulones/clientes-por-vendedor?codigo=${v.codigo}${qLinea}`,
         (j) => setDetVendedor(j as RespClientesPorVendedor),
       );
     },
-    [limpiarDetalle, pedirDetalle],
+    [limpiarDetalle, pedirDetalle, qLinea],
   );
 
   // Abre el modal vacío, listo para buscar cualquier cliente (no sólo los
@@ -502,11 +553,13 @@ export default function VentasBulonesPage() {
   const [topError, setTopError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (lineaId == null) return;
     let cancelado = false;
     setTopLoading(true);
     setTopError(null);
+    setTopGrupoAbierto(0);
     const pedir = async (ruta: string) => {
-      const res = await fetch(`/api/ventas/bulones/${ruta}`, { cache: "no-store" });
+      const res = await fetch(`/api/ventas/bulones/${ruta}?linea=${lineaId}`, { cache: "no-store" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       return j;
@@ -527,7 +580,7 @@ export default function VentasBulonesPage() {
     return () => {
       cancelado = true;
     };
-  }, []);
+  }, [lineaId]);
 
   // La tarjeta de bonificación prorrateada se sacó de la vista. El cálculo
   // sigue vivo en /api/ventas/bulones/bonificacion + bonificaciones.py por si
@@ -628,7 +681,7 @@ export default function VentasBulonesPage() {
           : "";
   const subtituloNivel =
     modalMode === "cliente"
-      ? "Patrones de bulonería que compró este cliente"
+      ? `Patrones de ${lineaNombre} que compró este cliente`
       : modalMode === "patron"
         ? "Clientes que compraron este patrón"
         : "Clientes de este vendedor";
@@ -780,7 +833,7 @@ export default function VentasBulonesPage() {
             ) : (
               <UserRound size={18} />
             )}
-            bulonería ·{" "}
+            {lineaNombre} ·{" "}
             {vistaPulso
               ? "pulso"
               : topVista === "clientes"
@@ -798,6 +851,42 @@ export default function VentasBulonesPage() {
             <Search size={14} className="text-yellow-400" />
             Buscar cliente
           </button>
+
+          {/* Selector de línea (2026-09-23). Con una sola línea habilitada
+              queda fijo: se ve cuál es pero no se puede cambiar. El engranaje
+              (sólo ADMIN) abre la configuración de líneas por usuario. */}
+          <div className="flex items-center gap-2 min-w-0 md:order-2">
+            <select
+              value={lineaId ?? ""}
+              onChange={(e) => {
+                const id = Number(e.target.value);
+                if (!Number.isInteger(id) || id === lineaId) return;
+                setModalOpen(false);
+                setLineaId(id);
+              }}
+              disabled={lineas.length <= 1}
+              title={lineas.length <= 1 ? "Línea habilitada para tu usuario" : "Elegí la línea a ver"}
+              className="min-w-0 flex-1 md:flex-none md:w-56 rounded-md border border-zinc-700 bg-[#111111] px-3 py-2 text-sm text-zinc-100 focus:border-yellow-400 focus:outline-none disabled:opacity-80 disabled:cursor-not-allowed"
+            >
+              {lineaId == null && <option value="">Cargando líneas…</option>}
+              {lineas.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.nombre}
+                </option>
+              ))}
+            </select>
+            {esAdmin && (
+              <button
+                type="button"
+                onClick={() => setConfigOpen(true)}
+                title="Configurar qué líneas ve cada usuario"
+                aria-label="Configurar líneas por usuario"
+                className="btn-anim inline-flex items-center justify-center rounded-md border border-zinc-700 p-2 text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+              >
+                <Settings2 size={16} />
+              </button>
+            )}
+          </div>
 
           <div className="col-span-2 justify-self-end inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700 md:col-auto md:order-4">
             {(["clientes", "patrones", "vendedores"] as TopVista[]).map((v) => (
@@ -844,6 +933,8 @@ export default function VentasBulonesPage() {
           <UsuarioActual className="col-span-2 justify-self-end md:col-auto md:order-5 md:ml-auto" />
         </div>
       </header>
+
+      {configOpen && <ConfigLineas onCerrar={() => setConfigOpen(false)} />}
 
       <main className="max-w-[1400px] mx-auto px-4 md:px-8 py-8 space-y-6">
         {/* Modal de UN SOLO NIVEL. Anclado arriba con `dvh` (en el teléfono
@@ -1068,7 +1159,7 @@ export default function VentasBulonesPage() {
                   <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                     <Table2 size={40} className="text-zinc-700" />
                     <p className="text-zinc-500 text-sm">
-                      Sin bulonería registrada para {tituloNivel} en {fuenteTabla!.anioAnterior}–
+                      Sin ventas de {lineaNombre} para {tituloNivel} en {fuenteTabla!.anioAnterior}–
                       {fuenteTabla!.anioActual}.
                     </p>
                   </div>
@@ -1450,7 +1541,7 @@ export default function VentasBulonesPage() {
             modal. Cambiar de métrica NO refetchea (el back manda las dos
             listas ya ordenadas, con las dos ventanas adentro), pero sí
             resetea el acordeón: el orden es distinto. */}
-        {vistaPulso && <PulsoTab />}
+        {vistaPulso && lineaSel && <PulsoTab key={lineaSel.id} linea={lineaSel} />}
 
         {!vistaPulso && topVista !== "clientes" && !topError && (
           <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
@@ -1474,6 +1565,12 @@ export default function VentasBulonesPage() {
           </div>
         )}
 
+        {lineasError && (
+          <div className="rounded-xl border border-red-400/40 bg-zinc-900/40 px-5 py-4 flex items-center gap-3 text-sm text-red-300">
+            <AlertTriangle size={16} className="text-red-400" /> {lineasError}
+          </div>
+        )}
+
         {!vistaPulso && topError && (
           <div className="rounded-xl border border-red-400/40 bg-zinc-900/40 px-5 py-4 flex items-center gap-3 text-sm text-red-300">
             <AlertTriangle size={16} className="text-red-400" /> {topError}
@@ -1488,7 +1585,7 @@ export default function VentasBulonesPage() {
               <div className="px-5 py-12 flex flex-col items-center gap-3 text-center">
                 <Trophy size={32} className="text-zinc-700" />
                 <p className="text-zinc-500 text-sm">
-                  Sin ventas de bulonería registradas en el rango.
+                  Sin ventas de {lineaNombre} registradas en el rango.
                 </p>
               </div>
             ) : (

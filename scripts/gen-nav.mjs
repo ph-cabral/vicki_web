@@ -31,6 +31,8 @@ const LABELS = {
   legajos: "Legajos",
   relojes: "Relojes",
   telefono: "Teléfono",
+  // /ventas/bulones es la vista de LÍNEAS desde 2026-09-23 (la URL no cambió).
+  bulones: "Líneas",
 };
 const label = (seg) =>
   LABELS[seg] ?? seg.charAt(0).toUpperCase() + seg.slice(1);

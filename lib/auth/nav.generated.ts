@@ -32,6 +32,10 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/deposito/deposito"
     },
     {
+      "label": "Embolsado",
+      "href": "/deposito/embolsado"
+    },
+    {
       "label": "Evaluación",
       "href": "/deposito/evaluacion"
     },
@@ -83,6 +87,10 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/rrhh/legajos"
     },
     {
+      "label": "Premios",
+      "href": "/rrhh/premios"
+    },
+    {
       "label": "Puestos",
       "href": "/rrhh/puestos"
     },
@@ -97,6 +105,14 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
   ],
   "sistema": [
     {
+      "label": "Bloqueos",
+      "href": "/sistema/bloqueos"
+    },
+    {
+      "label": "Clientes",
+      "href": "/sistema/clientes"
+    },
+    {
       "label": "Edit",
       "href": "/sistema/edit"
     }
@@ -105,11 +121,15 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
     {
       "label": "Armar",
       "href": "/sorteo/armar"
+    },
+    {
+      "label": "Teléfono",
+      "href": "/sorteo/telefono"
     }
   ],
   "ventas": [
     {
-      "label": "Bulones",
+      "label": "Líneas",
       "href": "/ventas/bulones"
     },
     {

@@ -1,5 +1,25 @@
 """
-Ventas de BULONERÍA (Magnus, SOLO LECTURA) — para /ventas/bulones.
+Ventas POR LÍNEA (Magnus, SOLO LECTURA) — para /ventas/bulones, que en el
+menú se llama "Líneas".
+
+2026-09-23 — LA VISTA SE ABRIÓ A TODAS LAS LÍNEAS. Hasta acá todo estaba
+clavado a BULONERÍA vía Stk_Nivel1 (catálogo de Magnus). Ahora cada consulta
+recibe `linea` = `catalogo.linea.id` de Postgres (el MISMO catálogo Pool >
+Línea > Sub Línea > Patrón que usa /ventas/vendedor, ver catalogo_pg.py) y se
+acota a los códigos de artículo de esa línea con `r.CodArticu IN (...)` +
+`r.FecMovim BETWEEN` (seek por el índice V_REN_Cla_Articu, en chunks de
+_CHUNK_CODIGOS — mismo mecanismo que fetch_clientes_por_linea de ventas.py).
+`linea=None` = la línea por defecto (Bulones). NO se mira apertura
+comercial: acá cualquier línea se abre entera. Qué líneas puede pedir cada
+usuario lo resuelve el front (everwear.usuario_linea_venta, ver
+lib/ventas/lineasAcceso.ts); este módulo no valida permisos.
+
+Consecuencia: Bulones ahora es la línea "Bulones" del catálogo (≈361
+artículos) y no Stk_Nivel1 = BULONERÍA (377). El total puede moverse un poco
+respecto de lo que se veía antes; queda alineado con /ventas/vendedor.
+
+Lo que sigue es el docstring original (sigue valiendo, cambiando
+"BULONERÍA" por "la línea elegida"):
 
  2026-08-26: "una vista igual a /ventas/vendedor pero con
 agregados". Las diferencias con ventas.py son TRES y sólo tres:
@@ -45,8 +65,11 @@ from db import get_connection
 from vendedores import (MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor,
                         dueno_de)
 from subempresas import filas_dos, sql_prueba, unir
+from catalogo_pg import codigos_de_linea_id, linea_por_defecto, linea_por_id
 from ventas import (
     BASE_DATE,
+    _CHUNK_CODIGOS,
+    _MARGEN_FECHA_RENGLON,
     COMPROBANTES_AJUSTE,
     COMPROBANTES_VENTA,
     _anio_vacio,
@@ -68,19 +91,48 @@ _COMP = "cc.EvitaInformesYListados <> 1 AND cc.CompCodigo IN (%s)" % ",".join(
     str(c) for c in COMPROBANTES_VENTA
 )
 
-# La línea a la que está acotada TODA esta vista. Se compara con LIKE contra
-# Stk_Nivel1.Detalle: 'BULON%' matchea BULONERIA y BULONERÍA sin depender de
-# cómo esté escrito en el catálogo. Overrideable por env por si algún día se
-# quiere la misma vista para otra línea.
-LINEA_LIKE = os.getenv("BULONES_LINEA_LIKE", "BULON%")
+# Filtro de línea (2026-09-23). Reemplaza al viejo COND_BULON (Stk_Nivel1
+# LIKE 'BULON%'). La marca se reemplaza por los `?` de un chunk de códigos en
+# _filas_linea; los códigos van como PARÁMETROS (no inlineados) porque son
+# texto. Tiene que ser lo ÚLTIMO del WHERE en el texto: sus params van al
+# final de la lista.
+_PH_CODIGOS = "/*@@CODIGOS@@*/"
+COND_LINEA = (f"r.CodArticu IN ({_PH_CODIGOS})\n"
+              "  AND r.FecMovim BETWEEN ? AND ?")
 
-# Filtro de línea. Va sobre ap.Nivel1 (columna entera, sargable) resolviendo
-# el nombre adentro de una subconsulta contra Stk_Nivel1 (82 filas) — mismo
-# truco que _LINEA_COND_EXACTA en ventas.py.
-COND_BULON = (
-    "ap.Nivel1 IN (SELECT n.Nivel1 FROM Stk_Nivel1 n "
-    f"WHERE LTRIM(RTRIM(n.Detalle)) LIKE '{LINEA_LIKE}')"
-)
+
+def resolver_linea(linea: int | None) -> dict:
+    """{id, nombre} de la línea pedida, o la de defecto (Bulones) si viene
+    None. ValueError si el id no existe en el catálogo."""
+    info = linea_por_id(linea) if linea is not None else linea_por_defecto()
+    if info is None:
+        raise ValueError("Línea inexistente en el catálogo")
+    return info
+
+
+def _filas_linea(cur, sql: str, params_antes: tuple, linea_id: int,
+                 d1: int, d2: int) -> list:
+    """Corre `sql` (con COND_LINEA al final del WHERE) contra las DOS
+    sub-empresas, en chunks de códigos de la línea. Las filas de todos los
+    chunks se devuelven juntas: como los chunks son conjuntos DISJUNTOS de
+    artículos, sumarlas en Python (unir / acumuladores) da el mismo total que
+    una sola consulta. `d1`/`d2` es el rango de vc.FecMovim; el de
+    r.FecMovim va con ±_MARGEN_FECHA_RENGLON (sólo habilita el seek, la fecha
+    que manda es la de la cabecera)."""
+    codigos = codigos_de_linea_id(linea_id)
+    m = _MARGEN_FECHA_RENGLON
+    filas: list = []
+    for i in range(0, len(codigos), _CHUNK_CODIGOS):
+        chunk = tuple(codigos[i:i + _CHUNK_CODIGOS])
+        q = sql.replace(_PH_CODIGOS, ",".join("?" for _ in chunk))
+        filas += filas_dos(cur, q, _prueba(q),
+                           tuple(params_antes) + chunk + (d1 - m, d2 + m))
+    return filas
+
+
+def _linea_payload(info: dict) -> dict:
+    return {"id": info["id"], "nombre": info["nombre"]}
+
 
 SIN_PATRON = "(Sin código patrón)"
 
@@ -109,11 +161,12 @@ def _nombre_vendedor(codigo, nombre):
     return n or "(sin nombre) {}".format(codigo)
 
 
-# Los joins que agregan artículo + parámetros; son INNER porque el filtro de
-# línea ya excluye lo que no matchea (un LEFT no sumaría filas útiles).
+# Join al artículo — SÓLO donde hace falta el patrón (ranking de patrones y
+# modales que cortan por patrón). Desde 2026-09-23 el filtro de línea ya no
+# pasa por acá (es COND_LINEA sobre r.CodArticu), así que el join es LEFT: un
+# código que no esté en StkFer_Articulos suma igual, en "(Sin código patrón)".
 _JOIN_ART = """
-JOIN StkFer_Articulos  s  ON s.CodArticulo    = r.CodArticu
-JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+LEFT JOIN StkFer_Articulos s ON s.CodArticulo = r.CodArticu
 """
 
 # Para AGRUPAR por vendedor (ranking): acá el vendedor de cada venta sale
@@ -220,7 +273,7 @@ def _mes_cuenta(desde: str | None, hasta: str | None) -> bool:
     return desde is None and hasta is None
 def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
                        desde: str | None = None, hasta: str | None = None,
-                       forzar: bool = False) -> dict:
+                       forzar: bool = False, linea: int | None = None) -> dict:
     """Clientes que compraron BULONERÍA, por monto ($) — gemelo de
     ventas.fetch_top_clientes pero acotado a la línea. `monto` es el
     acumulado del año y `montoMes` el mes en curso, en columnas aparte."""
@@ -228,7 +281,8 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    key = ("cli", vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea)
+    key = ("cli", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -245,8 +299,8 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
 SELECT c.CodCliente, MAX(LTRIM(RTRIM(c.Cliente_Nombre))) AS Nombre,
        {_ventana(_MONTO)} AS MontoNeto,
        {_ventana(_MONTO)} AS MontoMes
-{joins}{_JOIN_ART}{where}
-  AND {COND_BULON}
+{joins}{where}
+  AND {COND_LINEA}
 GROUP BY c.CodCliente
 """
     sql = recortar_vendedor(sql, vendedor)
@@ -263,7 +317,8 @@ GROUP BY c.CodCliente
                 "montoMes": round(float(_safe(monto_mes) or 0), 2),
             }
             for cod, nom, monto, monto_mes in unir(
-                filas_dos(cur, sql, _prueba(sql), params), (0,), (2, 3))
+                _filas_linea(cur, sql, params, lin["id"], *dias_total),
+                (0,), (2, 3))
             if cod is not None
         ]
         # Entra el que tuvo movimiento en CUALQUIERA de las dos ventanas: un
@@ -281,6 +336,7 @@ GROUP BY c.CodCliente
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "linea": _linea_payload(lin),
             "totalClientes": len(clientes),
             "porMonto": clientes[:limit_i],
         })
@@ -290,7 +346,7 @@ GROUP BY c.CodCliente
 
 def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
                        desde: str | None = None, hasta: str | None = None,
-                       forzar: bool = False) -> dict:
+                       forzar: bool = False, linea: int | None = None) -> dict:
     """Ranking de CÓDIGOS PATRÓN de bulonería en el rango. Reemplaza al
     ranking de líneas de /ventas/vendedor (acá la línea es una sola, así que
     el corte útil es el patrón). Devuelve las dos listas ya ordenadas
@@ -304,7 +360,8 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    key = ("pat", vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea)
+    key = ("pat", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -328,15 +385,15 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
        {_ventana(_MONTO)} AS MontoNeto,
        {_ventana(_MONTO)} AS MontoMes
 {joins}{_JOIN_ART}{where}
-  AND {COND_BULON}
+  AND {COND_LINEA}
 GROUP BY s.ArticuloPatron
 """
     sql = recortar_vendedor(sql, vendedor)
     conn, cur = _conn()
     try:
         acum: dict[str, list] = {}
-        for patron, detalle, unid, unid_mes, monto, monto_mes in filas_dos(
-            cur, sql, _prueba(sql), params
+        for patron, detalle, unid, unid_mes, monto, monto_mes in _filas_linea(
+            cur, sql, params, lin["id"], *dias_total
         ):
             codigo = (str(patron or "").strip()) or SIN_PATRON
             a = acum.setdefault(codigo, [0.0, 0.0, 0.0, 0.0, None])
@@ -375,6 +432,7 @@ GROUP BY s.ArticuloPatron
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "linea": _linea_payload(lin),
             "totalPatrones": len(por_u),
             "totalPatronesMonto": len(por_m),
             "porUnidades": por_u[:limit_i],
@@ -386,7 +444,7 @@ GROUP BY s.ArticuloPatron
 
 def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
                          desde: str | None = None, hasta: str | None = None,
-                         forzar: bool = False) -> dict:
+                         forzar: bool = False, linea: int | None = None) -> dict:
     """Ranking de VENDEDORES por bulonería vendida (el agregado propio de
     esta vista). Un no-admin se ve a sí mismo y a sus antecesores.
 
@@ -414,7 +472,8 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    key = ("ven", vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea)
+    key = ("ven", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -436,8 +495,8 @@ SELECT vc.vendedor AS Codigo,
        {_ventana(_CANT)} AS UnidadesMes,
        {_ventana(_MONTO)} AS MontoNeto,
        {_ventana(_MONTO)} AS MontoMes
-{_JOIN_VENTA_VENDEDOR}{_JOIN_ART}{where}
-  AND {COND_BULON}
+{_JOIN_VENTA_VENDEDOR}{where}
+  AND {COND_LINEA}
 GROUP BY vc.vendedor
 """
     sql = recortar_vendedor(sql, vendedor)
@@ -451,7 +510,8 @@ GROUP BY vc.vendedor
         # antecesor no se usa aunque llegue primero.
         acum: dict[int, list] = {}
         for cod, nom, unid, unid_mes, monto, monto_mes in unir(
-            filas_dos(cur, sql, _prueba(sql), params), (0,), (2, 3, 4, 5)
+            _filas_linea(cur, sql, params, lin["id"], *dias_total),
+            (0,), (2, 3, 4, 5)
         ):
             if cod is None:
                 continue
@@ -526,6 +586,7 @@ GROUP BY vc.vendedor
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "linea": _linea_payload(lin),
             "totalVendedores": len(por_u),
             "totalVendedoresMonto": len(por_m),
             "porUnidades": por_u[:limit_i],
@@ -556,17 +617,19 @@ GROUP BY Clave, AnioMes
 """
 
 
-def _matriz(sub: str, params: tuple, anio_anterior: int, anio_actual: int):
+def _matriz(sub: str, params: tuple, anio_anterior: int, anio_actual: int,
+            linea_id: int, d1: int, d2: int):
     """Corre la subconsulta (que devuelve Clave/Nombre/AnioMes/Cant/Monto) y
-    la vuelca en {clave: {nombre, anioAnterior, anioActual}} + totales."""
+    la vuelca en {clave: {nombre, anioAnterior, anioActual}} + totales.
+    `sub` lleva COND_LINEA al final: se corre en chunks de códigos de la
+    línea (_filas_linea) y las filas de todos los chunks caen en el mismo
+    acumulador de abajo."""
     conn, cur = _conn()
     try:
-        sql_m = _WRAP.format(sub=sub)
-        sql_p = _WRAP.format(sub=_prueba(sub))
         filas: dict = {}
         tot_ant, tot_act = _anio_vacio(), _anio_vacio()
-        for clave, nombre, anio_mes, cant, monto in filas_dos(
-            cur, sql_m, sql_p, params
+        for clave, nombre, anio_mes, cant, monto in _filas_linea(
+            cur, _WRAP.format(sub=sub), params, linea_id, d1, d2
         ):
             if clave is None or anio_mes is None:
                 continue
@@ -610,7 +673,8 @@ def _anios_y_rango():
 
 
 def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
-                              limit: int = 1_000_000, forzar: bool = False) -> dict:
+                              limit: int = 1_000_000, forzar: bool = False,
+                              linea: int | None = None) -> dict:
     """Ranking de clientes que compraron UN código patrón de bulonería, con
     los 2 años y el desglose mensual completo (el filtro YTD/Meses lo hace
     el front sobre lo ya traído, sin refetch)."""
@@ -618,7 +682,8 @@ def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
     if not patron_norm:
         raise ValueError("Falta 'patron'")
     a_ant, a_act, d1, d2 = _anios_y_rango()
-    key = ("cxp", patron_norm, vendedor, int(limit), a_ant, a_act)
+    lin = resolver_linea(linea)
+    key = ("cxp", lin["id"], patron_norm, vendedor, int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -627,24 +692,32 @@ def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
     # en SQL Server la comparación de char/varchar ignora los espacios de
     # cola, así que 'ABC   ' = 'ABC'.
     joins = _JOIN_CLIENTE
+    if patron_norm == SIN_PATRON:
+        # La fila "(Sin código patrón)" del ranking: artículos sin patrón o
+        # sin fila en StkFer_Articulos (el join es LEFT).
+        cond_patron, params = ("(s.ArticuloPatron IS NULL "
+                               "OR LTRIM(RTRIM(s.ArticuloPatron)) = '')"), (d1, d2)
+    else:
+        cond_patron, params = "s.ArticuloPatron = ?", (d1, d2, patron_norm)
     where = (f"WHERE {_COMP} "
-             "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?\n"
+             f"AND vc.FecMovim BETWEEN ? AND ? AND {cond_patron}\n"
              + MARCA_VENDEDOR)
-    params = (d1, d2, patron_norm)
     sub = f"""
 SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
 {joins}{_JOIN_ART}{where}
-  AND {COND_BULON}
+  AND {COND_LINEA}
 """
-    filas, totales = _matriz(recortar_vendedor(sub, vendedor), params, a_ant, a_act)
+    filas, totales = _matriz(recortar_vendedor(sub, vendedor), params, a_ant, a_act,
+                             lin["id"], d1, d2)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}
         for f in filas
     ]
     return _guardar(key, {
+        "linea": _linea_payload(lin),
         "patron": patron_norm,
         "detalle": fetch_detalle_patron(patron_norm),
         "anioAnterior": a_ant,
@@ -657,7 +730,8 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
 
 
 def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
-                                forzar: bool = False) -> dict:
+                                forzar: bool = False,
+                                linea: int | None = None) -> dict:
     """Ranking de clientes de UN vendedor, en bulonería — lo que abre el
     modal al clickear un vendedor del ranking.
 
@@ -673,7 +747,8 @@ def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
     De paso es más barata: se va el UNION sobre Clientes/Vendedor_Zona y queda
     un filtro sargable sobre una columna del comprobante."""
     a_ant, a_act, d1, d2 = _anios_y_rango()
-    key = ("cxv", int(cod_vendedor), int(limit), a_ant, a_act)
+    lin = resolver_linea(linea)
+    key = ("cxv", lin["id"], int(cod_vendedor), int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -682,22 +757,23 @@ def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
 SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
-{_JOIN_CLIENTE}{_JOIN_ART}WHERE {_COMP}
+{_JOIN_CLIENTE}WHERE {_COMP}
   AND vc.FecMovim BETWEEN ? AND ?
-  AND {COND_BULON}
 {MARCA_VENDEDOR}
+  AND {COND_LINEA}
 """
     # El modal se abre desde una fila del ranking, que ya viene colapsada al
     # sucesor: tiene que traer también lo emitido por sus antecesores o el
     # detalle no sumaría lo que muestra la fila.
     sub = recortar_vendedor(sub, int(cod_vendedor))
-    filas, totales = _matriz(sub, (d1, d2), a_ant, a_act)
+    filas, totales = _matriz(sub, (d1, d2), a_ant, a_act, lin["id"], d1, d2)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}
         for f in filas
     ]
     return _guardar(key, {
+        "linea": _linea_payload(lin),
         "vendedor": {"codigo": int(cod_vendedor), "nombre": fetch_vendedor_nombre(cod_vendedor)},
         "anioAnterior": a_ant,
         "anioActual": a_act,
@@ -709,7 +785,8 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
 
 
 def fetch_patrones_por_cliente(cod_cliente: int, vendedor: int | None = None,
-                               limit: int = 1_000_000, forzar: bool = False) -> dict:
+                               limit: int = 1_000_000, forzar: bool = False,
+                               linea: int | None = None) -> dict:
     """Ranking de códigos patrón de bulonería que compró UN cliente, más el
     VENDEDOR ASIGNADO a ese cliente (2026-08-26: "en la
     vista de clientes … arriba agregar el vendedor asignado a ese cliente").
@@ -728,7 +805,8 @@ def fetch_patrones_por_cliente(cod_cliente: int, vendedor: int | None = None,
             "totales": {"anioAnterior": _anio_vacio(), "anioActual": _anio_vacio()},
         }
 
-    key = ("pxc", int(cod_cliente), int(limit), a_ant, a_act)
+    lin = resolver_linea(linea)
+    key = ("pxc", lin["id"], int(cod_cliente), int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -737,16 +815,17 @@ def fetch_patrones_por_cliente(cod_cliente: int, vendedor: int | None = None,
     # —el cliente es uno solo y su nombre ya viene de fetch_cliente_y_vendedor—.
     # Es lo que se muestra en la primera columna del modal.
     sub = f"""
-SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Clave,
+SELECT ISNULL(LTRIM(RTRIM(s.ArticuloPatron)), '') AS Clave,
        LTRIM(RTRIM(s.DetallePatron)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
 {_JOIN_CLIENTE}{_JOIN_ART}WHERE c.CodCliente = ?
   AND {_COMP}
   AND vc.FecMovim BETWEEN ? AND ?
-  AND {COND_BULON}
+  AND {COND_LINEA}
 """
-    filas, totales = _matriz(sub, (int(cod_cliente), d1, d2), a_ant, a_act)
+    filas, totales = _matriz(sub, (int(cod_cliente), d1, d2), a_ant, a_act,
+                             lin["id"], d1, d2)
     patrones = [
         {"patron": (f["clave"] or SIN_PATRON),
          "detalle": f["nombre"],
@@ -754,6 +833,7 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Clave,
         for f in filas
     ]
     return _guardar(key, {
+        "linea": _linea_payload(lin),
         "cliente": {"codigo": int(cod_cliente), "nombre": nombre_cliente},
         "vendedorAsignado": asignado,
         "anioAnterior": a_ant,

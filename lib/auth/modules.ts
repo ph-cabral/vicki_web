@@ -247,7 +247,10 @@ export function isAdminPath(pathname: string): boolean {
     pathname === "/admin" ||
     pathname.startsWith("/admin/") ||
     pathname.startsWith("/api/admin") ||
-    pathname.startsWith("/api/db")
+    pathname.startsWith("/api/db") ||
+    pathname === "/sistema/clientes" ||
+    pathname.startsWith("/sistema/clientes/") ||
+    pathname.startsWith("/api/sistema/clientes")
   );
 }
 

@@ -664,6 +664,19 @@ model vendedor_antecesor {
   @@schema("everwear")
 }
 
+// Líneas del catálogo que puede elegir cada usuario en la vista de líneas
+// (/ventas/bulones), 2026-09-23 — ver sql/usuario_linea_venta.sql y
+// lib/ventas/lineasAcceso.ts. Sin filas = sólo Bulones; ADMIN ve todas.
+model usuario_linea_venta {
+  usuarioId Int
+  lineaId   Int
+  creadoPor Int?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([usuarioId, lineaId])
+  @@schema("everwear")
+}
+
 model sector_permiso {
   id        Int      @id @default(autoincrement())
   sector    String   @unique @db.VarChar(80)
