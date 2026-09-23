@@ -107,9 +107,26 @@ export async function resolverLineasPermitidas(): Promise<LineasPermitidas> {
   return { ok: true, esAdmin, lineas, defecto };
 }
 
+/**
+ * "Todas las líneas" (2026-09-23): id reservado 0 — el catálogo arranca en 1.
+ * Se ofrece a quien tiene MÁS DE UNA línea habilitada:
+ *   · ADMIN → el back no filtra por artículo (toda la venta, igual que el
+ *     total de /ventas/vendedor).
+ *   · no-admin → la unión de SUS líneas (`lineas` viaja al back como
+ *     `?lineas=1,5,9`); nunca ve venta de una línea que no tiene.
+ */
+export const LINEA_TODAS = 0;
+export const NOMBRE_TODAS = "Todas las líneas";
+
 export type LineaResuelta =
-  | { ok: true; lineaId: number }
+  | { ok: true; lineaId: number; lineas: number[] | null }
   | { ok: false; status: number; error: string };
+
+/** Query string para indicadores-api: `linea` + (si corresponde) `lineas`. */
+export function aplicarLineaQs(qs: URLSearchParams, lin: { lineaId: number; lineas: number[] | null }) {
+  qs.set("linea", String(lin.lineaId));
+  if (lin.lineas && lin.lineas.length > 0) qs.set("lineas", lin.lineas.join(","));
+}
 
 /**
  * Valida el `?linea=` de una request contra lo que el usuario puede ver.
@@ -124,12 +141,21 @@ export async function resolverLineaPedida(sp: URLSearchParams): Promise<LineaRes
   if (!crudo) {
     if (perm.defecto == null)
       return { ok: false, status: 403, error: "No tenés ninguna línea habilitada" };
-    return { ok: true, lineaId: perm.defecto };
+    return { ok: true, lineaId: perm.defecto, lineas: null };
   }
   const id = Number(crudo);
-  if (!Number.isInteger(id) || id <= 0)
+  if (!Number.isInteger(id) || id < 0)
     return { ok: false, status: 400, error: "Parámetro 'linea' inválido" };
+  if (id === LINEA_TODAS) {
+    if (perm.lineas.length <= 1)
+      return { ok: false, status: 403, error: "No tenés habilitada la vista de todas las líneas" };
+    return {
+      ok: true,
+      lineaId: LINEA_TODAS,
+      lineas: perm.esAdmin ? null : perm.lineas.map((l) => l.id),
+    };
+  }
   if (!perm.lineas.some((l) => l.id === id))
     return { ok: false, status: 403, error: "No tenés habilitada esa línea" };
-  return { ok: true, lineaId: id };
+  return { ok: true, lineaId: id, lineas: null };
 }

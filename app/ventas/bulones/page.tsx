@@ -260,6 +260,11 @@ const labelCliente = (c: Cliente) => (c.nombre ? `${c.nombre} (${c.numero})` : S
 // abierto a la vez.
 const GROUP_SIZE = 50;
 
+// "Todas las líneas" (2026-09-23) — mismo id reservado que
+// lib/ventas/lineasAcceso.ts (LINEA_TODAS) y bulones.py.
+const LINEA_TODAS = 0;
+const NOMBRE_TODAS = "Todas las líneas";
+
 function agrupar<T>(items: T[]): T[][] {
   const grupos: T[][] = [];
   for (let i = 0; i < items.length; i += GROUP_SIZE) {
@@ -379,6 +384,10 @@ export default function VentasBulonesPage() {
   const [lineas, setLineas] = useState<{ id: number; nombre: string }[]>([]);
   const [lineaId, setLineaId] = useState<number | null>(null);
   const [esAdmin, setEsAdmin] = useState(false);
+  // "Todas las líneas" (id 0, 2026-09-23): vista general, sólo si el usuario
+  // tiene más de una línea habilitada. ADMIN = toda la venta; el resto = la
+  // unión de sus líneas (lo resuelve el proxy, ver lib/ventas/lineasAcceso.ts).
+  const [hayTodas, setHayTodas] = useState(false);
   const [lineasError, setLineasError] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
 
@@ -392,6 +401,7 @@ export default function VentasBulonesPage() {
         const ls = Array.isArray(j.lineas) ? j.lineas : [];
         setLineas(ls);
         setEsAdmin(!!j.esAdmin);
+        setHayTodas(!!j.todas && ls.length > 1);
         if (!ls.length) setLineasError("No tenés ninguna línea habilitada");
         else setLineaId(typeof j.defecto === "number" ? j.defecto : ls[0].id);
       })
@@ -403,7 +413,9 @@ export default function VentasBulonesPage() {
     };
   }, []);
 
-  const lineaSel = lineas.find((l) => l.id === lineaId) ?? null;
+  const esTodas = lineaId === LINEA_TODAS;
+  const lineaSel =
+    esTodas ? { id: LINEA_TODAS, nombre: NOMBRE_TODAS } : lineas.find((l) => l.id === lineaId) ?? null;
   const lineaNombre = lineaSel?.nombre ?? "línea";
   const qLinea = lineaId != null ? `&linea=${lineaId}` : "";
 
@@ -767,6 +779,29 @@ export default function VentasBulonesPage() {
   const colTop =
     topVista === "clientes" ? "Cliente" : topVista === "patrones" ? "Patrón" : "Vendedor";
 
+  // Totales del pie (2026-09-23, igual que /ventas/vendedor): suman TODAS las
+  // filas del ranking, estén o no en el grupo abierto del acordeón — es el
+  // total del período, no el de lo que hay a la vista. Misma métrica que las
+  // filas ($ o unidades, acumulado y mes en curso).
+  const topSumas = useMemo(() => {
+    let acum = 0;
+    let mes = 0;
+    for (const it of topItems) {
+      if (topVista === "clientes") {
+        const c = it as TopCliente;
+        acum += c.monto;
+        mes += c.montoMes;
+      } else {
+        const x = it as TopPatron | TopVendedor;
+        acum += topMetrica === "pesos" ? x.monto : x.unidades;
+        mes += topMetrica === "pesos" ? x.montoMes : x.unidadesMes;
+      }
+    }
+    return { acum, mes };
+  }, [topItems, topVista, topMetrica]);
+  const nombreFilasTop =
+    topVista === "clientes" ? "clientes" : topVista === "patrones" ? "patrones" : "vendedores";
+
   // Etiquetas de los dos encabezados. Salen del BACK (`desde`/`hasta`/
   // `mesActual`) para que el título no pueda contradecir a los datos: las
   // tres respuestas traen el mismo rango, así que alcanza con la de la vista
@@ -862,6 +897,8 @@ export default function VentasBulonesPage() {
                 const id = Number(e.target.value);
                 if (!Number.isInteger(id) || id === lineaId) return;
                 setModalOpen(false);
+                // Pulso no aplica a "Todas": los objetivos son por línea.
+                if (id === LINEA_TODAS) setVistaPulso(false);
                 setLineaId(id);
               }}
               disabled={lineas.length <= 1}
@@ -869,6 +906,7 @@ export default function VentasBulonesPage() {
               className="min-w-0 flex-1 md:flex-none md:w-56 rounded-md border border-zinc-700 bg-[#111111] px-3 py-2 text-sm text-zinc-100 focus:border-yellow-400 focus:outline-none disabled:opacity-80 disabled:cursor-not-allowed"
             >
               {lineaId == null && <option value="">Cargando líneas…</option>}
+              {hayTodas && <option value={LINEA_TODAS}>{NOMBRE_TODAS}</option>}
               {lineas.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.nombre}
@@ -917,6 +955,7 @@ export default function VentasBulonesPage() {
             ))}
             {/* Cuarto botón: no es otro eje del mismo ranking, cambia toda la
                 vista por la del período elegido + objetivos (ver PulsoTab). */}
+            {!esTodas && (
             <button
               type="button"
               onClick={() => setVistaPulso(true)}
@@ -928,6 +967,7 @@ export default function VentasBulonesPage() {
               <Activity size={14} />
               Pulso
             </button>
+            )}
           </div>
 
           <UsuarioActual className="col-span-2 justify-self-end md:col-auto md:order-5 md:ml-auto" />
@@ -1541,7 +1581,7 @@ export default function VentasBulonesPage() {
             modal. Cambiar de métrica NO refetchea (el back manda las dos
             listas ya ordenadas, con las dos ventanas adentro), pero sí
             resetea el acordeón: el orden es distinto. */}
-        {vistaPulso && lineaSel && <PulsoTab key={lineaSel.id} linea={lineaSel} />}
+        {vistaPulso && lineaSel && !esTodas && <PulsoTab key={lineaSel.id} linea={lineaSel} />}
 
         {!vistaPulso && topVista !== "clientes" && !topError && (
           <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
@@ -1728,6 +1768,23 @@ export default function VentasBulonesPage() {
                         })}
                     </tbody>
                   ))}
+                  <tfoot className="bg-[#1A1A1A] border-t-2 border-zinc-700">
+                    <tr>
+                      <td className="px-1.5 py-2 w-8" />
+                      <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap">
+                        Total{" "}
+                        <span className="text-zinc-500 font-normal">
+                          ({fmtNum(topItems.length)} {nombreFilasTop})
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                        {fmtTop(topSumas.acum)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                        {fmtTop(topSumas.mes)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}

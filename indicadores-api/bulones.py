@@ -101,16 +101,42 @@ COND_LINEA = (f"r.CodArticu IN ({_PH_CODIGOS})\n"
               "  AND r.FecMovim BETWEEN ? AND ?")
 
 
-def resolver_linea(linea: int | None) -> dict:
-    """{id, nombre} de la línea pedida, o la de defecto (Bulones) si viene
-    None. ValueError si el id no existe en el catálogo."""
+# "Todas las líneas" (2026-09-23): `linea=0`. Dos sabores:
+#   · sin `lineas` (ADMIN) → SIN filtro de artículo: toda la venta, incluidos
+#     los artículos que no están en el catálogo — así el total cierra con el
+#     de /ventas/vendedor. COND_LINEA se reemplaza por `1=1` (no consume
+#     parámetros) y la consulta es UNA por sub-empresa, sin chunks.
+#   · con `lineas` (no-admin con varias líneas habilitadas) → la UNIÓN de
+#     los códigos de esas líneas, por el mismo camino de chunks de siempre.
+#     Las líneas son conjuntos disjuntos de artículos, así que no hay doble
+#     conteo.
+LINEA_TODAS = 0
+NOMBRE_TODAS = "Todas las líneas"
+
+
+def resolver_linea(linea: int | None, lineas: list[int] | None = None) -> dict:
+    """{id, nombre, ids} de la línea pedida, o la de defecto (Bulones) si viene
+    None. `linea=0` = todas (ver LINEA_TODAS); `ids` es el subconjunto de
+    líneas a unir (None = sin filtro). ValueError si algún id no existe."""
+    if linea == LINEA_TODAS:
+        ids = None
+        if lineas:
+            ids = tuple(sorted({int(x) for x in lineas}))
+            if any(linea_por_id(i) is None for i in ids):
+                raise ValueError("Línea inexistente en el catálogo")
+        return {"id": LINEA_TODAS, "nombre": NOMBRE_TODAS, "ids": ids}
     info = linea_por_id(linea) if linea is not None else linea_por_defecto()
     if info is None:
         raise ValueError("Línea inexistente en el catálogo")
-    return info
+    return {**info, "ids": None}
 
 
-def _filas_linea(cur, sql: str, params_antes: tuple, linea_id: int,
+def _clave_linea(lin: dict):
+    """Parte de la clave de cache que identifica la línea (o el conjunto)."""
+    return (lin["id"], lin.get("ids"))
+
+
+def _filas_linea(cur, sql: str, params_antes: tuple, lin: dict,
                  d1: int, d2: int) -> list:
     """Corre `sql` (con COND_LINEA al final del WHERE) contra las DOS
     sub-empresas, en chunks de códigos de la línea. Las filas de todos los
@@ -118,8 +144,17 @@ def _filas_linea(cur, sql: str, params_antes: tuple, linea_id: int,
     artículos, sumarlas en Python (unir / acumuladores) da el mismo total que
     una sola consulta. `d1`/`d2` es el rango de vc.FecMovim; el de
     r.FecMovim va con ±_MARGEN_FECHA_RENGLON (sólo habilita el seek, la fecha
-    que manda es la de la cabecera)."""
-    codigos = codigos_de_linea_id(linea_id)
+    que manda es la de la cabecera).
+
+    "Todas" sin subconjunto: COND_LINEA → `1=1` y una sola consulta por
+    sub-empresa (el recorte lo hace vc.FecMovim, igual que /ventas/vendedor)."""
+    if lin["id"] == LINEA_TODAS and not lin.get("ids"):
+        q = sql.replace(COND_LINEA, "1=1")
+        return filas_dos(cur, q, _prueba(q), tuple(params_antes))
+    if lin["id"] == LINEA_TODAS:
+        codigos = [c for i in lin["ids"] for c in codigos_de_linea_id(i)]
+    else:
+        codigos = codigos_de_linea_id(lin["id"])
     m = _MARGEN_FECHA_RENGLON
     filas: list = []
     for i in range(0, len(codigos), _CHUNK_CODIGOS):
@@ -273,7 +308,8 @@ def _mes_cuenta(desde: str | None, hasta: str | None) -> bool:
     return desde is None and hasta is None
 def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
                        desde: str | None = None, hasta: str | None = None,
-                       forzar: bool = False, linea: int | None = None) -> dict:
+                       forzar: bool = False, linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Clientes que compraron BULONERÍA, por monto ($) — gemelo de
     ventas.fetch_top_clientes pero acotado a la línea. `monto` es el
     acumulado del año y `montoMes` el mes en curso, en columnas aparte."""
@@ -281,8 +317,8 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    lin = resolver_linea(linea)
-    key = ("cli", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea, lineas)
+    key = ("cli", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -317,7 +353,7 @@ GROUP BY c.CodCliente
                 "montoMes": round(float(_safe(monto_mes) or 0), 2),
             }
             for cod, nom, monto, monto_mes in unir(
-                _filas_linea(cur, sql, params, lin["id"], *dias_total),
+                _filas_linea(cur, sql, params, lin, *dias_total),
                 (0,), (2, 3))
             if cod is not None
         ]
@@ -346,7 +382,8 @@ GROUP BY c.CodCliente
 
 def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
                        desde: str | None = None, hasta: str | None = None,
-                       forzar: bool = False, linea: int | None = None) -> dict:
+                       forzar: bool = False, linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Ranking de CÓDIGOS PATRÓN de bulonería en el rango. Reemplaza al
     ranking de líneas de /ventas/vendedor (acá la línea es una sola, así que
     el corte útil es el patrón). Devuelve las dos listas ya ordenadas
@@ -360,8 +397,8 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    lin = resolver_linea(linea)
-    key = ("pat", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea, lineas)
+    key = ("pat", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -393,7 +430,7 @@ GROUP BY s.ArticuloPatron
     try:
         acum: dict[str, list] = {}
         for patron, detalle, unid, unid_mes, monto, monto_mes in _filas_linea(
-            cur, sql, params, lin["id"], *dias_total
+            cur, sql, params, lin, *dias_total
         ):
             codigo = (str(patron or "").strip()) or SIN_PATRON
             a = acum.setdefault(codigo, [0.0, 0.0, 0.0, 0.0, None])
@@ -444,7 +481,8 @@ GROUP BY s.ArticuloPatron
 
 def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
                          desde: str | None = None, hasta: str | None = None,
-                         forzar: bool = False, linea: int | None = None) -> dict:
+                         forzar: bool = False, linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Ranking de VENDEDORES por bulonería vendida (el agregado propio de
     esta vista). Un no-admin se ve a sí mismo y a sus antecesores.
 
@@ -472,8 +510,8 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
         desde, hasta
     )
     limit_i = int(limit)
-    lin = resolver_linea(linea)
-    key = ("ven", lin["id"], vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    lin = resolver_linea(linea, lineas)
+    key = ("ven", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -510,7 +548,7 @@ GROUP BY vc.vendedor
         # antecesor no se usa aunque llegue primero.
         acum: dict[int, list] = {}
         for cod, nom, unid, unid_mes, monto, monto_mes in unir(
-            _filas_linea(cur, sql, params, lin["id"], *dias_total),
+            _filas_linea(cur, sql, params, lin, *dias_total),
             (0,), (2, 3, 4, 5)
         ):
             if cod is None:
@@ -618,7 +656,7 @@ GROUP BY Clave, AnioMes
 
 
 def _matriz(sub: str, params: tuple, anio_anterior: int, anio_actual: int,
-            linea_id: int, d1: int, d2: int):
+            lin: dict, d1: int, d2: int):
     """Corre la subconsulta (que devuelve Clave/Nombre/AnioMes/Cant/Monto) y
     la vuelca en {clave: {nombre, anioAnterior, anioActual}} + totales.
     `sub` lleva COND_LINEA al final: se corre en chunks de códigos de la
@@ -629,7 +667,7 @@ def _matriz(sub: str, params: tuple, anio_anterior: int, anio_actual: int,
         filas: dict = {}
         tot_ant, tot_act = _anio_vacio(), _anio_vacio()
         for clave, nombre, anio_mes, cant, monto in _filas_linea(
-            cur, _WRAP.format(sub=sub), params, linea_id, d1, d2
+            cur, _WRAP.format(sub=sub), params, lin, d1, d2
         ):
             if clave is None or anio_mes is None:
                 continue
@@ -674,7 +712,8 @@ def _anios_y_rango():
 
 def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
                               limit: int = 1_000_000, forzar: bool = False,
-                              linea: int | None = None) -> dict:
+                              linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Ranking de clientes que compraron UN código patrón de bulonería, con
     los 2 años y el desglose mensual completo (el filtro YTD/Meses lo hace
     el front sobre lo ya traído, sin refetch)."""
@@ -682,8 +721,8 @@ def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
     if not patron_norm:
         raise ValueError("Falta 'patron'")
     a_ant, a_act, d1, d2 = _anios_y_rango()
-    lin = resolver_linea(linea)
-    key = ("cxp", lin["id"], patron_norm, vendedor, int(limit), a_ant, a_act)
+    lin = resolver_linea(linea, lineas)
+    key = ("cxp", _clave_linea(lin), patron_norm, vendedor, int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -710,7 +749,7 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
   AND {COND_LINEA}
 """
     filas, totales = _matriz(recortar_vendedor(sub, vendedor), params, a_ant, a_act,
-                             lin["id"], d1, d2)
+                             lin, d1, d2)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}
@@ -731,7 +770,8 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
 
 def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
                                 forzar: bool = False,
-                                linea: int | None = None) -> dict:
+                                linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Ranking de clientes de UN vendedor, en bulonería — lo que abre el
     modal al clickear un vendedor del ranking.
 
@@ -747,8 +787,8 @@ def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
     De paso es más barata: se va el UNION sobre Clientes/Vendedor_Zona y queda
     un filtro sargable sobre una columna del comprobante."""
     a_ant, a_act, d1, d2 = _anios_y_rango()
-    lin = resolver_linea(linea)
-    key = ("cxv", lin["id"], int(cod_vendedor), int(limit), a_ant, a_act)
+    lin = resolver_linea(linea, lineas)
+    key = ("cxv", _clave_linea(lin), int(cod_vendedor), int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -766,7 +806,7 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
     # sucesor: tiene que traer también lo emitido por sus antecesores o el
     # detalle no sumaría lo que muestra la fila.
     sub = recortar_vendedor(sub, int(cod_vendedor))
-    filas, totales = _matriz(sub, (d1, d2), a_ant, a_act, lin["id"], d1, d2)
+    filas, totales = _matriz(sub, (d1, d2), a_ant, a_act, lin, d1, d2)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}
@@ -786,7 +826,8 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
 
 def fetch_patrones_por_cliente(cod_cliente: int, vendedor: int | None = None,
                                limit: int = 1_000_000, forzar: bool = False,
-                               linea: int | None = None) -> dict:
+                               linea: int | None = None,
+                       lineas: list[int] | None = None) -> dict:
     """Ranking de códigos patrón de bulonería que compró UN cliente, más el
     VENDEDOR ASIGNADO a ese cliente (2026-08-26: "en la
     vista de clientes … arriba agregar el vendedor asignado a ese cliente").
@@ -805,8 +846,8 @@ def fetch_patrones_por_cliente(cod_cliente: int, vendedor: int | None = None,
             "totales": {"anioAnterior": _anio_vacio(), "anioActual": _anio_vacio()},
         }
 
-    lin = resolver_linea(linea)
-    key = ("pxc", lin["id"], int(cod_cliente), int(limit), a_ant, a_act)
+    lin = resolver_linea(linea, lineas)
+    key = ("pxc", _clave_linea(lin), int(cod_cliente), int(limit), a_ant, a_act)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -825,7 +866,7 @@ SELECT ISNULL(LTRIM(RTRIM(s.ArticuloPatron)), '') AS Clave,
   AND {COND_LINEA}
 """
     filas, totales = _matriz(sub, (int(cod_cliente), d1, d2), a_ant, a_act,
-                             lin["id"], d1, d2)
+                             lin, d1, d2)
     patrones = [
         {"patron": (f["clave"] or SIN_PATRON),
          "detalle": f["nombre"],

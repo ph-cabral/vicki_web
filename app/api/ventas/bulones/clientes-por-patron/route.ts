@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolverAccesoBulones } from "@/lib/ventas/bulonesAcceso";
-import { resolverLineaPedida } from "@/lib/ventas/lineasAcceso";
+import { aplicarLineaQs, resolverLineaPedida } from "@/lib/ventas/lineasAcceso";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const qs = new URLSearchParams();
-    qs.set("linea", String(lin.lineaId));
+    aplicarLineaQs(qs, lin);
     if (!acceso.isAdmin) qs.set("vendedor", String(acceso.vendedorCodigo));
     qs.set("patron", patron);
     const res = await fetch(`${API_URL}/ventas/bulones/clientes-por-patron?${qs.toString()}`, {

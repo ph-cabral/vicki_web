@@ -33,6 +33,8 @@ from ot_reposicion import (
     fetch_armado,
     fetch_repositores,
 )
+# OT de reposición vivas y no cumplidas — marca en /picking (sólo lectura).
+from repo_en_curso import fetch_repo_en_curso
 from compras import (
     fetch_ordenes_pendientes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
     fetch_compras_valorizado,
@@ -694,6 +696,17 @@ def deposito_repo_ot(body: OTRepoIn):
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
+@app.get("/deposito/repo/en-curso")
+def deposito_repo_en_curso(dias: int = Query(default=30, ge=1, le=120)):
+    """OT de reposición (OT1R) vivas con algún destino todavía sin cumplir, con
+    sus renglones agrupados por artículo (orígenes, destinos, pedido/cumplido),
+    la hora de alta y el repositor. `articulos` = {código: [OTId…]} para cruzar
+    rápido. Lo consume /picking para marcar lo que ya tiene reposición."""
+    try:
+        return fetch_repo_en_curso(dias=dias)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
 # ── Compras: OC pendientes de recibir por artículo (lo que "va a llegar") ─────
 @app.get("/compras/ordenes-pendientes")
 def compras_ordenes_pendientes(
@@ -1344,6 +1357,18 @@ def ventas_vendedor_antecesores_invalidar():
 # con "línea" reemplazada por "código patrón". El modal del front es de UN
 # SOLO nivel, así que estos endpoints se llaman siempre desde el ranking del
 # pie y nunca uno desde otro. Ver bulones.py.
+def _ids_lineas(crudo: str | None) -> list[int] | None:
+    """`?lineas=1,5,9` → [1, 5, 9] (subconjunto de "Todas las líneas" en
+    /ventas/bulones/*). None/vacío = sin subconjunto. ValueError → 400."""
+    if not crudo or not crudo.strip():
+        return None
+    try:
+        return [int(x) for x in crudo.split(",") if x.strip()]
+    except ValueError:
+        # Se llama adentro del try de cada endpoint: ValueError → 400.
+        raise ValueError("Parámetro 'lineas' inválido")
+
+
 @app.get("/ventas/lineas/catalogo")
 def ventas_lineas_catalogo():
     """Todas las líneas del catálogo (Postgres `catalogo.linea`) — alimenta el
@@ -1364,10 +1389,11 @@ def bulones_top_clientes(
     desde: str | None = Query(default=None, description="Mes desde, 'YYYY-MM'"),
     hasta: str | None = Query(default=None, description="Mes hasta, 'YYYY-MM'"),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Clientes que compraron BULONERÍA en el rango, por $ vendidos."""
     try:
-        return fetch_bulones_top_clientes(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea)
+        return fetch_bulones_top_clientes(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1381,11 +1407,12 @@ def bulones_top_patrones(
     desde: str | None = Query(default=None),
     hasta: str | None = Query(default=None),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Ranking de códigos patrón de bulonería — reemplaza al top de líneas
     (la línea es una sola). Trae porUnidades y porMonto ya ordenadas."""
     try:
-        return fetch_bulones_top_patrones(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea)
+        return fetch_bulones_top_patrones(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1399,12 +1426,13 @@ def bulones_top_vendedores(
     desde: str | None = Query(default=None),
     hasta: str | None = Query(default=None),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Ranking de vendedores por bulonería facturada, tomando el vendedor del
     comprobante tal cual está en la base: incluye los canales que no son
     personas (MOSTRADOR, ECOMMERCE …) y los dados de baja. Ver bulones.py."""
     try:
-        return fetch_bulones_top_vendedores(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea)
+        return fetch_bulones_top_vendedores(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1467,11 +1495,12 @@ def bulones_clientes_por_patron(
     vendedor: int | None = Query(default=None),
     limit: int = Query(default=1_000_000, ge=1),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Clientes que compraron ese código patrón, con los 2 años y desglose
     mensual (el front filtra YTD/Meses sin refetch)."""
     try:
-        return fetch_bulones_clientes_por_patron(patron, vendedor=vendedor, limit=limit, linea=linea)
+        return fetch_bulones_clientes_por_patron(patron, vendedor=vendedor, limit=limit, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1483,11 +1512,12 @@ def bulones_clientes_por_vendedor(
     codigo: int = Query(..., description="VendedorCodigo (Ven_CompCabecera.vendedor)"),
     limit: int = Query(default=1_000_000, ge=1),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Clientes que ese vendedor FACTURÓ en bulonería (por vc.vendedor, igual
     que el ranking — no por cartera), mismo desglose año/mes."""
     try:
-        return fetch_bulones_clientes_por_vendedor(codigo, limit=limit, linea=linea)
+        return fetch_bulones_clientes_por_vendedor(codigo, limit=limit, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1500,11 +1530,12 @@ def bulones_patrones_por_cliente(
     vendedor: int | None = Query(default=None),
     limit: int = Query(default=1_000_000, ge=1),
     linea: int | None = Query(default=None, description="catalogo.linea.id (default: Bulones)"),
+    lineas: str | None = Query(default=None, description="Con linea=0 (todas): ids a unir, separados por coma. Sin esto = toda la venta"),
 ):
     """Códigos patrón de bulonería que compró un cliente + el vendedor
     asignado a ese cliente (se muestra arriba del modal)."""
     try:
-        return fetch_bulones_patrones_por_cliente(cliente, vendedor=vendedor, limit=limit, linea=linea)
+        return fetch_bulones_patrones_por_cliente(cliente, vendedor=vendedor, limit=limit, linea=linea, lineas=_ids_lineas(lineas))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

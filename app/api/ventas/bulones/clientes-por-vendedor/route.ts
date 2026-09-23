@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolverAccesoBulones } from "@/lib/ventas/bulonesAcceso";
-import { resolverLineaPedida } from "@/lib/ventas/lineasAcceso";
+import { aplicarLineaQs, resolverLineaPedida } from "@/lib/ventas/lineasAcceso";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const qs = new URLSearchParams({ codigo });
-    qs.set("linea", String(lin.lineaId));
+    aplicarLineaQs(qs, lin);
     const res = await fetch(`${API_URL}/ventas/bulones/clientes-por-vendedor?${qs.toString()}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(55000),
