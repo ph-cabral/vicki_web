@@ -223,6 +223,11 @@ check_error("origen que no es un rack (playa)",
                                  [{**L_OK[0], "origen": "PLAYA_PEDIDOS"}], simular=True)
             if con(CursorFalso(ubic={**UBIC_OK, "PLAYA_PEDIDOS": (1, 1, 0, 1)})) else None,
             "no es un rack")
+# PLAYA_PEDIDOS como DESTINO sí vale: es el picking de lo que no tiene estante.
+con(CursorFalso(ubic={**UBIC_OK, "PLAYA_PEDIDOS": (0, 0, 1, 1)}))
+plan = otr.crear_ot("PLAYA_PEDIDOS", "289",
+                    [{**L_OK[0], "destino": "PLAYA_PEDIDOS"}], simular=True)
+check("destino PLAYA_PEDIDOS se acepta", plan["articulos"], 1)
 
 print("\n=== stock: el pozo se relee en el alta ===")
 check_error("no alcanza el stock",

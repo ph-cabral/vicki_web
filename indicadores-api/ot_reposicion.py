@@ -46,6 +46,7 @@ from picking_disponible import (
     SQL_ORIGENES,
     UBIC_NO_RACK,
     VENTANA_DIAS,
+    _art,
     _chunked_query,
     _num,
     _r3,
@@ -175,10 +176,10 @@ def _candidatos(codigos: list[str]) -> dict[str, list[dict]]:
         for art, ubic, cant in _chunked_query(
             cur, SQL_ORIGEN_COMPROMETIDO, codigos, vivos=vivos
         ):
-            k = (_txt(art), _txt(ubic))
+            k = (_art(art), _txt(ubic))
             tomado[k] = tomado.get(k, 0.0) + _num(cant)
         for art, ubic, cant, desde in _chunked_query(cur, SQL_ORIGENES, codigos):
-            art, ubic = _txt(art), _txt(ubic)
+            art, ubic = _art(art), _txt(ubic)
             if ubic.upper() in UBIC_NO_RACK or deposito_de(ubic) != DEPOSITO_CENTRAL:
                 continue
             libre = _num(cant) - tomado.get((art, ubic), 0.0)
@@ -399,7 +400,7 @@ def _normalizar_lineas(lineas) -> list[dict]:
         raise OTReposicionError("No hay renglones para cargar.")
     out = []
     for i, l in enumerate(lineas, 1):
-        art = _txt((l or {}).get("articulo"))
+        art = _art((l or {}).get("articulo"))
         origen = _txt((l or {}).get("origen")).upper()
         destino = _txt((l or {}).get("destino")).upper()
         try:
@@ -480,7 +481,7 @@ def _validar_contra_base(cur, lineas: list[dict], forzar: bool) -> dict:
     cur.execute(SQL_STOCK_ORIGEN.format(ph_art=ph_art, ph_ubi=ph_ubi), arts + ubis)
     stock, fifo = {}, {}
     for art, ubic, cant, desde in cur.fetchall():
-        k = (_txt(art), _txt(ubic).upper())
+        k = (_art(art), _txt(ubic).upper())
         stock[k] = _num(cant)
         fifo[k] = desde
 
@@ -489,7 +490,7 @@ def _validar_contra_base(cur, lineas: list[dict], forzar: bool) -> dict:
         SQL_COMPROMETIDO_UBI.format(vivos=vivos, ph_art=ph_art, ph_ubi=ph_ubi),
         arts + ubis,
     )
-    tomado = {(_txt(a), _txt(u).upper()): _num(t) for a, u, t in cur.fetchall()}
+    tomado = {(_art(a), _txt(u).upper()): _num(t) for a, u, t in cur.fetchall()}
 
     for l in lineas:
         k = (l["articulo"], l["origen"])
@@ -507,7 +508,7 @@ def _validar_contra_base(cur, lineas: list[dict], forzar: bool) -> dict:
             SQL_REPO_VIVA_DESTINO.format(vivos=vivos, ph_art=ph_art, ph_ubi=ph_ubi),
             arts + ubis,
         )
-        ya = {(_txt(a), _txt(u).upper()): _num(p) for a, u, p in cur.fetchall()}
+        ya = {(_art(a), _txt(u).upper()): _num(p) for a, u, p in cur.fetchall()}
         for l in lineas:
             p = ya.get((l["articulo"], l["destino"]), 0.0)
             if p > 0:

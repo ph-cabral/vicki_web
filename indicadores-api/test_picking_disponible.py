@@ -28,7 +28,11 @@ DEMANDA_COLS = [
 # OT 4            → pedido CANCELADO en Magnus, se descarta entera
 # OT 5            → buzón "Mercaderia X Llegar", se descarta entera
 # OT 6            → todo OK, no tiene que aparecer
-# OT 7            → PLAYA_PEDIDOS sin stock: faltante, nunca "reponer"
+# OT 7            → PLAYA_PEDIDOS sin stock ni guardado: faltante sin repo
+#                   (tiene en OTRO picking, pero no es la posición del pedido)
+# OT 21           → PLAYA_PEDIDOS con 5 en la playa, pide 20, hay guardado:
+#                   la playa se repone como cualquier picking → reponer 15
+# OT 22           → PLAYA_PEDIDOS con reposición en camino HACIA la playa
 # OT 8            → A-PULMON sólo tiene material a granel: faltante, no "reponer"
 # OT 9            → A-PARCIAL tiene en guardado MENOS de lo que falta: faltante,
 #                   pero algo se puede bajar → tiene que seguir mostrándose
@@ -43,6 +47,10 @@ DEMANDA_COLS = [
 # OT 16           → pedido cod.10 ya Cerrado en Magnus: no entra
 # OT 17           → sin armador, MÁS VIEJA que la 2 y la 3, sobre A-COMPET: no
 #                   les puede sacar el estante a las asignadas
+# OT 19           → A-MAYUS: el WMS guarda el stock como "a-mayus" (minúsculas)
+#                   y la OT lo pide como "A-MAYUS". Hay 2100 en el estante:
+#                   no tiene que aparecer (caso real NC2000010, 23/09/2026)
+# OT 20           → al revés: la OT pide "b-minus" y el stock está en "B-MINUS"
 # Pedido 900020   → abierto SIN OT: A-SINOT contra su posición de UbicacionItem
 # Pedido 900021   → abierto SIN OT: A-SINPOS no tiene posición de picking
 # Pedido 900022   → abierto "sin OT" en Magnus pero el WMS ya tiene su OT: afuera
@@ -69,6 +77,10 @@ DEMANDA = [
     (16, 900016, 0, 1, HOY, "CLIENTE CERRADO", "Molina Martina", "A-FALTA", "01-10-01-02", 8),
     (17, 900017, 0, 1, HOY - timedelta(days=1), "CLIENTE VIEJO", None, "A-COMPET", "01-11-01-01", 50),
     (18, 900018, 0, 1, HOY, "CLIENTE APARTADO", None, "A-FALTA", "01-10-01-02", 5),
+    (19, 900019, 0, 1, HOY, "CLIENTE MAYUS", "Molina Martina", "A-MAYUS", "01-21-01-01", 100),
+    (20, 900023, 0, 1, HOY, "CLIENTE MINUS", "Molina Martina", "b-minus", "01-22-01-01", 10),
+    (21, 900024, 0, 1, HOY, "CLIENTE PLAYA", "Molina Martina", "A-PLAYAREP", "PLAYA_PEDIDOS", 20),
+    (22, 900025, 0, 1, HOY, "CLIENTE PLAYA2", "Molina Martina", "A-PLAYACAM", "PLAYA_PEDIDOS", 8),
 ]
 # (art, ubic, cant, es_pick, es_guard)
 STOCK = [
@@ -94,6 +106,13 @@ STOCK = [
     ("A-SINOT", "01-18-01-01", 2, 1, 0),
     ("A-SINOT", "01-18-02-01-IZQ", 50, 0, 1),
     ("A-SINPOS", "01-20-01-01-DER", 20, 0, 1),     # hay guardado pero no hay estante
+    ("a-mayus", "01-21-01-01", 2100, 1, 0),         # mismo artículo, otra caja de letra
+    ("a-mayus", "01-21-01-01-DER", 500, 0, 1),
+    ("B-MINUS", "01-22-01-01", 50, 1, 0),
+    ("A-PLAYAREP", "PLAYA_PEDIDOS", 5, 1, 0),
+    ("A-PLAYAREP", "01-23-01-01-DER", 100, 0, 1),
+    ("A-PLAYACAM", "PLAYA_PEDIDOS", 2, 1, 0),
+    ("A-PLAYACAM", "01-24-01-01-DER", 3, 0, 1),
 ]
 # Magnus: (CompCodigo, EstadoPedido) por pedido. Todo 10/Abierto salvo:
 PEDIDOS = {n: (10, 2) for n in range(900001, 900030)}
@@ -121,6 +140,7 @@ POS_PICK = [
 REPO = [
     ("A-REPO", "01-13-01-01", 200),
     ("A-REPOPARCIAL", "01-17-01-01", 30),   # cubre 30 de los 50 que faltan
+    ("A-PLAYACAM", "PLAYA_PEDIDOS", 6),     # repo viva hacia la playa: cubre todo
 ]
 
 
@@ -134,9 +154,9 @@ class FakeCursor:
             self.description = None
             self._rows = [(n,) for n in (params or []) if n in CON_OT]
         elif "UbicacionItem" in sql:
-            arts = set(params or [])
+            arts = {str(p).upper() for p in (params or [])}      # collation CI
             self.description = None
-            self._rows = [r for r in POS_PICK if r[0] in arts]
+            self._rows = [r for r in POS_PICK if r[0].upper() in arts]
         elif "VenFer_PedidoReng" in sql:
             self.description = [(c,) for c in SIN_OT_COLS]
             self._rows = list(SIN_OT)
@@ -151,13 +171,13 @@ class FakeCursor:
             self.description = [(c,) for c in DEMANDA_COLS]
             self._rows = list(DEMANDA)
         elif "UbicacionDetalle" in sql:
-            pedidos = set(params or [])
+            pedidos = {str(p).upper() for p in (params or [])}   # collation CI
             self.description = None
-            self._rows = [r for r in STOCK if r[0] in pedidos]
+            self._rows = [r for r in STOCK if r[0].upper() in pedidos]
         elif "CodotProcesoNegocio = 1" in sql:
-            pedidos = set(params or [])
+            pedidos = {str(p).upper() for p in (params or [])}   # collation CI
             self.description = None
-            self._rows = [r for r in REPO if r[0] in pedidos]
+            self._rows = [r for r in REPO if r[0].upper() in pedidos]
         else:
             self._rows = []
 
@@ -222,7 +242,7 @@ def fila(otid, cod):
 
 print("\n=== qué OT entran ===")
 check("OT con problema", sorted(ots),
-      [-900021, -900020, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 17])
+      [-900021, -900020, 1, 2, 3, 7, 8, 9, 10, 11, 12, 13, 17, 21, 22])
 check("OT 4 (pedido cancelado) descartada", 4 in ots, False)
 check("OT 5 (buzón mercadería) descartada", 5 in ots, False)
 check("OT 6 (todo ok) no aparece", 6 in ots, False)
@@ -237,6 +257,11 @@ check("renglones sin asignar (OT 12, OT 17, 2 pedidos sin OT)",
       data["resumen"]["renglonesSinAsignar"], 4)
 check("A-FALTA de la asignada no se ve afectada", fila(1, "A-FALTA")["AReponer"], 3.0)
 check("A-FALTA de la OT 12 anticipa su faltante", fila(12, "A-FALTA")["AReponer"], 6.0)
+
+print("\n=== código de artículo en mayúsculas / minúsculas ===")
+check("OT 19: stock guardado en minúsculas se reconoce (hay 2100)", 19 in ots, False)
+check("OT 20: pedido en minúsculas contra stock en mayúsculas", 20 in ots, False)
+check("_art normaliza", pd._art("  nc2000010 "), "NC2000010")
 
 print("\n=== acopio 70/75: sólo la vuelta con remito vivo ===")
 check("OT 13 (acopio con remito) entra", 13 in ots, True)
@@ -264,10 +289,10 @@ check("pedido sin OT marcado", ots[-900020]["SinOT"], True)
 check("pedido sin OT trae su NroMovVenta", ots[-900020]["NroMovVenta"], 900020)
 check("hora de registro en centésimas", ots[-900020]["Registrada"], "2026-09-23 08:50")
 sp = fila(-900021, "A-SINPOS")
-check("A-SINPOS sin posición", sp["Posicion"], pd.SIN_POSICION)
-check("A-SINPOS faltante (no hay estante al que reponer)", sp["Situacion"], "faltante")
-check("A-SINPOS se oculta del widget", sp["SinRepo"], True)
-check("A-SINPOS flag", sp["SinPosicion"], True)
+check("A-SINPOS sin estante propio va a la playa", sp["Posicion"], "PLAYA_PEDIDOS")
+check("A-SINPOS se repone a la playa desde guardado", sp["Situacion"], "reponer")
+check("A-SINPOS no se oculta del widget", sp["SinRepo"], False)
+check("A-SINPOS flag SinPosicion ya no se usa", sp["SinPosicion"], False)
 check("pedido que ya tiene OT en el WMS no se duplica", -900022 in ots, False)
 check("resumen pedidos sin OT", data["resumen"]["pedidosSinOT"], 2)
 
@@ -318,12 +343,20 @@ check("A-REPOPARCIAL en camino", rp["RepoEnCamino"], 30.0)
 check("A-REPOPARCIAL sigue mostrándose (no se oculta)", rp["Situacion"], "reponer")
 check("A-REPOPARCIAL guardado de sobra, sin consumir en el detalle", rp["EnGuardado"], 100.0)
 
-print("\n=== PLAYA_PEDIDOS nunca ofrece reposición ===")
+print("\n=== PLAYA_PEDIDOS es un picking más ===")
 p = fila(7, "A-PLAYA")
 check("A-PLAYA marcada", p["EsPlaya"], True)
-check("A-PLAYA situación", p["Situacion"], "faltante")
+check("A-PLAYA sin guardado: faltante", p["Situacion"], "faltante")
 check("A-PLAYA no cuenta el estante como disponible", p["Disponible"], 0.0)
 check("A-PLAYA ve el otro picking", p["OtroPicking"], 300.0)
+check("A-PLAYA sin guardado se oculta", p["SinRepo"], True)
+pr = fila(21, "A-PLAYAREP")
+check("A-PLAYAREP disponible = stock de la playa", pr["Disponible"], 5.0)
+check("A-PLAYAREP a reponer 20 - 5", pr["AReponer"], 15.0)
+check("A-PLAYAREP reponer desde guardado", pr["Situacion"], "reponer")
+check("A-PLAYAREP no se oculta", pr["SinRepo"], False)
+check("A-PLAYACAM la repo en camino hacia la playa cubre todo",
+      ots[22]["rows"][0]["Situacion"], "repo_pedida")
 
 print("\n=== pulmón y ubicaciones especiales no son guardado ===")
 u = fila(8, "A-PULMON")
@@ -352,13 +385,14 @@ check("deposito_de PLAYA_PEDIDOS", pd.deposito_de("PLAYA_PEDIDOS"), None)
 check("deposito_de vacío", pd.deposito_de(""), None)
 
 print("\n=== resumen ===")
-check("faltantes reales", data["resumen"]["faltanteReal"], 7)
-check("faltantes sin nada para reponer", data["resumen"]["faltanteSinRepo"], 6)
-check("para bajar de guardado (A-COMPET x2, A-GUARD, A-REPOPARCIAL, A-ACOPIO, A-SINOT)",
-      data["resumen"]["hayParaReponer"], 6)
-check("repo pedida", data["resumen"]["repoPedida"], 1)
+check("faltantes reales", data["resumen"]["faltanteReal"], 6)   # A-SINPOS pasó a reponer (playa)
+check("faltantes sin nada para reponer", data["resumen"]["faltanteSinRepo"], 5)
+check("para bajar de guardado (A-COMPET x2, A-GUARD, A-REPOPARCIAL, A-ACOPIO, A-SINOT, "
+      "A-SINPOS y A-PLAYAREP a la playa)",
+      data["resumen"]["hayParaReponer"], 8)
+check("repo pedida", data["resumen"]["repoPedida"], 2)   # A-REPO + A-PLAYACAM
 check("artículos ocultos en la vista por pasillo",
-      data["resumen"]["articulosOcultosSinRepo"], 5)
+      data["resumen"]["articulosOcultosSinRepo"], 4)   # A-SINPOS ya no se oculta
 check("orden: primero las que tienen faltante", data["ots"][0]["Faltantes"] > 0, True)
 
 print("\n=== pasillo_de: el 2º segmento, con las trampas de la base ===")
@@ -385,11 +419,14 @@ check("orden: los numéricos antes que los con nombre",
 
 print("\n=== vista por pasillo: sólo lo que se puede reponer ===")
 pas = {g["Pasillo"]: g for g in data["porPasillo"]}
-check("pasillos con algo que reponer", sorted(pas), ["11", "12", "15", "17", "18", "19"])
+check("pasillos con algo que reponer", sorted(pas),
+      ["11", "12", "15", "17", "18", "19", "PLAYA_PEDIDOS"])
 check("SIN_POSICION nunca viaja", pd.SIN_POSICION in pas, False)
 check("A-SINOT: 1 pedido sin asignar", pas["18"]["rows"][0]["SinAsignar"], 1)
 check("A-FALTA (nada en ningún lado) no viaja", "10" in pas, False)
-check("PLAYA_PEDIDOS nunca viaja", "PLAYA_PEDIDOS" in pas, False)
+check("PLAYA_PEDIDOS viaja con lo que se puede reponer",
+      sorted(r["CodArticulo"] for r in pas["PLAYA_PEDIDOS"]["rows"]),
+      ["A-PLAYAREP", "A-SINPOS"])
 check("A-PULMON (sólo granel) no viaja", "14" in pas, False)
 check("A-OTRODEP (guardado en otro depósito) no viaja", "16" in pas, False)
 check("A-REPO (neutralizado del todo por la reposición en camino) no viaja",
@@ -411,8 +448,8 @@ g12 = pas["12"]["rows"][0]
 check("A-GUARD suma los 2 renglones de la misma OT", g12["Pedido"], 50.0)
 check("A-GUARD una sola OT", g12["OTs"], 1)
 
-check("pasillos ordenados", [g["Pasillo"] for g in data["porPasillo"]],
-      ["11", "12", "15", "17", "18", "19"])
+check("pasillos ordenados (la playa al final)", [g["Pasillo"] for g in data["porPasillo"]],
+      ["11", "12", "15", "17", "18", "19", "PLAYA_PEDIDOS"])
 
 print("\n=== todos los renglones (cartel de una OT) ===")
 uno = pd.fetch_picking_disponible_ot(6)["ot"]

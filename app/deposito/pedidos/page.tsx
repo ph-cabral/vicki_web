@@ -483,9 +483,7 @@ function PickingDisponiblePanel() {
               ? `viene ${fmtNum(r.RepoEnCamino)}`
               : r.Situacion === "reponer"
                 ? `${fmtNum(r.EnGuardado)} en guardado`
-                : r.EsPlaya
-                  ? "acopio en playa"
-                  : r.OtroPicking > 0
+                : r.OtroPicking > 0
                     ? `${fmtNum(r.OtroPicking)} en otra posición de picking`
                     : r.EnPulmon > 0
                       ? `${fmtNum(r.EnPulmon)} a granel sin embolsar`

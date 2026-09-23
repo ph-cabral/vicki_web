@@ -1140,6 +1140,7 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     viejas de pedidos ya cerrados se quedaban en la cola y se seguían
     entregando."""
     purgar_cola_obsoleta()
+    completar_historial()
     candidatos = fetch_pedidos_listos_para_control(limit) + fetch_acopio_vueltas_espera_control(limit)
     if not candidatos:
         return 0
@@ -1352,6 +1353,16 @@ CREATE INDEX IF NOT EXISTS idx_control_reserva_operario
     ON deposito.control_reserva_cliente ("nroOperario");
 CREATE INDEX IF NOT EXISTS idx_control_asignacion_cliente
     ON deposito.control_asignacion ("codCliente");
+ALTER TABLE deposito.control_asignacion ADD COLUMN IF NOT EXISTS "armadoEn" timestamp;
+ALTER TABLE deposito.control_asignacion ADD COLUMN IF NOT EXISTS "cerradoEn" timestamp;
+ALTER TABLE deposito.control_asignacion ADD COLUMN IF NOT EXISTS "usuarioCierre" integer;
+ALTER TABLE deposito.control_asignacion ADD COLUMN IF NOT EXISTS lineas integer;
+ALTER TABLE deposito.control_asignacion ADD COLUMN IF NOT EXISTS unidades numeric(13,3);
+CREATE INDEX IF NOT EXISTS idx_control_asignacion_asignadoen
+    ON deposito.control_asignacion ("asignadoEn") WHERE "asignadoEn" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_control_asignacion_sin_cierre
+    ON deposito.control_asignacion ("asignadoEn")
+    WHERE "asignadoEn" IS NOT NULL AND "cerradoEn" IS NULL;
 """
 _reserva_ddl_ok = False
 
@@ -1915,39 +1926,168 @@ def asignar_siguiente(nro_operario: int) -> dict:
     return out
 
 
-# ── Historial: "Pedidos asignados" (vista /deposito/deposito → Mesas) ────────
-# (2026-07-31, mismo día que se armó la cola): el "próximo
-# paso" anotado en deposito_control_asignacion.sql ("listar qué se le asignó
-# a X controlador") — vista de detalle, 1 fila por pedido YA reclamado
-# ("asignadoEn" IS NOT NULL), para ver qué hizo cada operario.
+# ── Historial de control: "Pedidos asignados" (vista /deposito/deposito → Mesas) ──
+# Cada fila de deposito.control_asignacion con "asignadoEn" IS NOT NULL es un
+# registro permanente de qué operario tomó qué unidad (pedido, o vuelta de
+# acopio si "nroRemito" > 0); nada del código de la cola las borra (la purga
+# sólo toca filas SIN asignar). Para el control de fin de mes cada fila guarda,
+# además, una foto tomada cuando Magnus registra el cierre en mesa:
 #
-# "Fecha"/"Hora" salen de "asignadoEn" (el momento real en que ESE operario
-# reclamó el pedido), no de `fecha` (FechaPedido de Magnus, que puede ser
-# muy anterior si el pedido esperó en la cola) — así son comparables contra
-# "horaCierre" (mismo reloj).
+#   "armadoEn"      fin de armado (Magnus FechaArmado/HoraArmado) — para medir
+#                   la espera entre armado y toma
+#   "cerradoEn"     cierre en mesa (FechaCierre/HoraCierre) — tiempo de control
+#                   real, reemplaza al viejo proxy "próxima asignación"
+#   "usuarioCierre" UsuarioCierre de Magnus (en acopio es el puesto de mesa)
+#   lineas          renglones no anulados de la unidad
+#   unidades        suma de CantidadCumplida (pedido) / Cantidad (remito)
 #
-# "horaCierre": no hay un cierre explícito por pedido (el widget no tiene un
-# botón "Terminé"), así que se aproxima con la PRÓXIMA vez que ESE MISMO
-# operario reclamó otro pedido (LEAD("asignadoEn") particionado por
-# "nroOperarioAsignado", ordenado por "asignadoEn"). Es un proxy: si el
-# operario todavía no reclamó uno nuevo (última fila de su partición),
-# "horaCierre" viene NULL — se interpreta como "en curso" en la vista, no
-# como dato faltante. Ver "UN PEDIDO POR OPERARIO A LA VEZ" arriba: mientras
-# el pedido activo no cierra en Magnus, un reclamo repetido devuelve LA MISMA
-# fila (no pisa "asignadoEn"), así que esta cuenta no se contamina con
-# reclamos repetidos del mismo pedido.
-#
-# "cantidadItems": no vive en Postgres — se resuelve en un segundo paso contra
-# Magnus (dbo.venfer_pedidoReng, mismo origen que mesa_control.py), COUNT(*)
-# por NroMovVenta, en lote (IN) para toda la lista de pedidos del resultado.
+# La foto la completa `completar_historial()` (al refrescar la cola y al abrir
+# la vista): sólo mira filas asignadas sin cierre, con seeks por PK en Magnus
+# (NroMovVenta) en lotes; no recorre historial.
+_MAGNUS_BASE = datetime(1800, 12, 28)
+_HIST_VENTANA_DIAS = 60      # filas asignadas sin cierre más viejas no se reintentan
+_HIST_MIN_INTERVALO_S = 60   # como mucho una pasada por minuto por proceso
+_hist_ultima = 0.0
+
+
+def _magnus_dt(fecha, hora) -> datetime | None:
+    """FechaXxx (días desde 1800-12-28) + HoraXxx (centésimas de segundo desde
+    medianoche) → datetime. None si la fecha es 0/NULL."""
+    try:
+        f = int(fecha or 0)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return None
+    try:
+        h = int(hora or 0)
+    except (TypeError, ValueError):
+        h = 0
+    return _MAGNUS_BASE + timedelta(days=f, seconds=h / 100.0)
+
+
+def _fetch_cierre_y_lineas(nros_pedido: list[int], nros_remito: list[int]) -> dict:
+    """Datos de Magnus para un conjunto de unidades, en lotes por PK.
+    Devuelve {"pedido": {nro: {...}}, "remito": {nro: {...}}} con
+    armadoEn, cerradoEn, usuarioCierre, lineas, unidades. Sólo lectura."""
+    out: dict = {"pedido": {}, "remito": {}}
+    if not nros_pedido and not nros_remito:
+        return out
+    CH = 1000
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+
+        def _lotes(nros, sql_cab, sql_reng, dest):
+            for i in range(0, len(nros), CH):
+                chunk = nros[i : i + CH]
+                ph = ",".join("?" for _ in chunk)
+                cur.execute(sql_cab.format(ph=ph), chunk)
+                for nro, f_arm, h_arm, f_cie, h_cie, u_cie in cur.fetchall():
+                    dest[int(nro)] = {
+                        "armadoEn": _magnus_dt(f_arm, h_arm),
+                        "cerradoEn": _magnus_dt(f_cie, h_cie),
+                        "usuarioCierre": int(u_cie) if u_cie is not None else None,
+                        "lineas": 0,
+                        "unidades": 0.0,
+                    }
+                cur.execute(sql_reng.format(ph=ph), chunk)
+                for nro, n, u in cur.fetchall():
+                    d = dest.get(int(nro))
+                    if d is not None:
+                        d["lineas"] = int(n or 0)
+                        d["unidades"] = float(u or 0)
+
+        _lotes(
+            nros_pedido,
+            "SELECT NroMovVenta, FechaArmado, HoraArmado, FechaCierre, HoraCierre, UsuarioCierre "
+            "FROM dbo.VenFer_PedidoCabecera WHERE NroMovVenta IN ({ph})",
+            "SELECT NroMovVenta, COUNT(*), SUM(CantidadCumplida) FROM dbo.VenFer_PedidoReng "
+            "WHERE NroMovVenta IN ({ph}) AND Estado <> 4 GROUP BY NroMovVenta",
+            out["pedido"],
+        )
+        _lotes(
+            nros_remito,
+            "SELECT NroMovVenta, FechaArmado, HoraArmado, FechaCierre, HoraCierre, UsuarioCierre "
+            "FROM dbo.VenFer_RmtoCabecera WHERE NroMovVenta IN ({ph})",
+            "SELECT NroMovVenta, COUNT(*), SUM(Cantidad) FROM dbo.VenFer_RmtoReng "
+            "WHERE NroMovVenta IN ({ph}) GROUP BY NroMovVenta",
+            out["remito"],
+        )
+    finally:
+        conn.close()
+    return out
+
+
+def completar_historial(forzar: bool = False) -> int:
+    """Completa la foto de cierre (ver bloque de arriba) de las filas asignadas
+    que Magnus ya cerró. Devuelve cuántas completó. No falla hacia afuera: es
+    un registro auxiliar, la cola sigue funcionando si esto tira error."""
+    import time
+
+    global _hist_ultima
+    ahora = time.monotonic()
+    if not forzar and ahora - _hist_ultima < _HIST_MIN_INTERVALO_S:
+        return 0
+    _hist_ultima = ahora
+    try:
+        _asegurar_tabla_reserva()
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT id, "nroPedido", "nroRemito" FROM deposito.control_asignacion '
+                'WHERE "asignadoEn" IS NOT NULL AND "cerradoEn" IS NULL '
+                "  AND \"asignadoEn\" > now() - (%s * interval '1 day')",
+                (_HIST_VENTANA_DIAS,),
+            )
+            pend = cur.fetchall()
+        finally:
+            conn.close()
+        if not pend:
+            return 0
+
+        datos = _fetch_cierre_y_lineas(
+            sorted({int(p) for _i, p, r in pend if not r}),
+            sorted({int(r) for _i, _p, r in pend if r}),
+        )
+        upd = []
+        for fid, nro_ped, nro_rem in pend:
+            d = datos["remito"].get(int(nro_rem)) if nro_rem else datos["pedido"].get(int(nro_ped))
+            if not d or d["cerradoEn"] is None:
+                continue          # todavía en curso (o no está en Magnus)
+            upd.append((d["armadoEn"], d["cerradoEn"], d["usuarioCierre"],
+                        d["lineas"], d["unidades"], fid))
+        if not upd:
+            return 0
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.executemany(
+                'UPDATE deposito.control_asignacion SET "armadoEn" = %s, "cerradoEn" = %s, '
+                '"usuarioCierre" = %s, lineas = %s, unidades = %s '
+                'WHERE id = %s AND "cerradoEn" IS NULL',
+                upd,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return len(upd)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def fetch_pedidos_asignados(desde: str | None = None, hasta: str | None = None) -> dict:
-    """Historial de pedidos asignados (deposito.control_asignacion), con
-    cantidad de ítems (Magnus) y "horaCierre" (próxima asignación del mismo
-    operario). `desde`/`hasta` = 'YYYY-MM-DD', filtran por la FECHA de
-    "asignadoEn". Sin ninguno de los dos: HOY. Excluye acopios (CompCodigo 75
-    siempre; CompCodigo 70 salvo Prioridad 1/3, mismo criterio que
-    SQL_MAGNUS_ABIERTOS_TODOS desde el FIX 2026-08-18) en vivo contra Magnus
-    — ver comentario junto al filtro más abajo. Solo lectura."""
+    """Historial de control (deposito.control_asignacion, filas asignadas).
+    `desde`/`hasta` = 'YYYY-MM-DD', filtran por la FECHA de "asignadoEn". Sin
+    ninguno: HOY. Por fila: operario asignado, asignadoEn, armadoEn, cerradoEn,
+    usuarioCierre, lineas, unidades y los minutos (espera armado→toma y
+    control toma→cierre). Las filas todavía en curso traen lineas/unidades en
+    vivo desde Magnus y cerradoEn NULL. Excluye la basura vieja de acopio sin
+    vuelta (CompCodigo 70/75 con "nroRemito" = 0)."""
+    completar_historial(forzar=True)
+    _asegurar_tabla_reserva()
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
@@ -1965,13 +2105,12 @@ def fetch_pedidos_asignados(desde: str | None = None, hasta: str | None = None) 
             cond = '"asignadoEn"::date = CURRENT_DATE'
         cur.execute(
             f"""
-            SELECT "nroPedido", "nroRemito", "codCliente", cliente,
+            SELECT "nroPedido", "nroRemito", "tipoPedido", "compCodigo", "codCliente", cliente,
                    "nroOperarioAsignado", "asignadoA", "asignadoEn",
-                   LEAD("asignadoEn") OVER (
-                       PARTITION BY "nroOperarioAsignado" ORDER BY "asignadoEn"
-                   ) AS "horaCierre"
+                   "armadoEn", "cerradoEn", "usuarioCierre", lineas, unidades
             FROM deposito.control_asignacion
             WHERE "asignadoEn" IS NOT NULL AND {cond}
+              AND NOT (COALESCE("compCodigo", 0) IN (70, 75) AND "nroRemito" = 0)
             ORDER BY "asignadoEn" DESC
             """,
             params,
@@ -1981,82 +2120,39 @@ def fetch_pedidos_asignados(desde: str | None = None, hasta: str | None = None) 
     finally:
         conn.close()
 
-    for r in rows:
-        if r.get("asignadoEn") is not None:
-            r["asignadoEn"] = r["asignadoEn"].isoformat()
-        if r.get("horaCierre") is not None:
-            r["horaCierre"] = r["horaCierre"].isoformat()
-
-    # Excluye acopios (2026-08-03: CompCodigo 70 y 75 —
-    # mismo criterio que SQL_MAGNUS_ABIERTOS_TODOS). Esa exclusión en la cola solo
-    # frena pedidos NUEVOS al refrescar — pedidos que ya habían quedado
-    # guardados en deposito.control_asignacion (de antes del fix, o insertados
-    # por otra vía) seguían apareciendo acá porque este historial no
-    # filtraba nada, solo leía la tabla. Se filtra en vivo contra
-    # VenFer_PedidoCabecera.CompCodigo ANTES de calcular cantidadItems, así
-    # ni "Desglose por operario" ni "Detalle por pedido" (ambos salen de
-    # `rows`) lo cuentan — ej. pedido 748595 (CompCodigo 70, Flores Marcos).
-    #
-    # FIX 2026-08-18: CompCodigo 70 deja de excluirse
-    # entero — ahora entra al historial si Prioridad IN (1, 3), mismo
-    # criterio que SQL_MAGNUS_ABIERTOS_TODOS (ver ese comentario para el
-    # motivo). CompCodigo 75 se sigue excluyendo siempre, sin cambios. Por
-    # eso ahora también se trae Prioridad, no solo CompCodigo.
-    nros = sorted({r["nroPedido"] for r in rows if r.get("nroPedido") is not None})
-    meta_pedido: dict[int, tuple[int | None, int | None]] = {}  # nro -> (CompCodigo, Prioridad)
-    items_por_pedido: dict[int, int] = {}
-    if nros:
-        conn = get_connection("EVERWEAR")
+    # En curso (sin cierre): renglones/unidades en vivo, así la vista no muestra 0.
+    en_curso = [r for r in rows if r["cerradoEn"] is None]
+    if en_curso:
         try:
-            cur = conn.cursor()
-            cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-            CH = 1000
-            for i in range(0, len(nros), CH):
-                chunk = nros[i : i + CH]
-                ph = ",".join("?" for _ in chunk)
-                cur.execute(
-                    f"SELECT NroMovVenta, CompCodigo, Prioridad FROM dbo.VenFer_PedidoCabecera "
-                    f"WHERE NroMovVenta IN ({ph})",
-                    chunk,
-                )
-                for nro, comp, prioridad in cur.fetchall():
-                    meta_pedido[int(nro)] = (
-                        int(comp) if comp is not None else None,
-                        int(prioridad) if prioridad is not None else None,
-                    )
+            vivo = _fetch_cierre_y_lineas(
+                sorted({int(r["nroPedido"]) for r in en_curso if not r["nroRemito"]}),
+                sorted({int(r["nroRemito"]) for r in en_curso if r["nroRemito"]}),
+            )
+        except Exception:  # noqa: BLE001
+            vivo = {"pedido": {}, "remito": {}}
+        for r in en_curso:
+            d = vivo["remito"].get(int(r["nroRemito"])) if r["nroRemito"] else vivo["pedido"].get(int(r["nroPedido"]))
+            if d:
+                r["lineas"] = d["lineas"]
+                r["unidades"] = d["unidades"]
 
-            # 2026-08-21: una fila de acopio con "nroRemito" > 0 es una VUELTA
-            # controlada de verdad (el operario la trabajó y la mesa la cerró)
-            # — tiene que contar en el historial. Lo que se sigue excluyendo
-            # es la basura vieja: filas de acopio SIN remito, que son las que
-            # entraron por error antes del FIX 2026-08-04 y trababan el
-            # puesto (ej. pedido 748595, CompCodigo 70, Flores Marcos). El
-            # criterio "Prioridad 1/3" del FIX 2026-08-18 se descarta: era un
-            # workaround de que el pedido de acopio no cierra nunca.
-            def _es_acopio_sin_vuelta(r: dict) -> bool:
-                comp, _prioridad = meta_pedido.get(r["nroPedido"], (None, None))
-                if comp not in (70, 75):
-                    return False
-                return not (r.get("nroRemito") or 0)
-
-            rows = [r for r in rows if not _es_acopio_sin_vuelta(r)]
-            nros = sorted({r["nroPedido"] for r in rows if r.get("nroPedido") is not None})
-
-            for i in range(0, len(nros), CH):
-                chunk = nros[i : i + CH]
-                ph = ",".join("?" for _ in chunk)
-                cur.execute(
-                    f"SELECT NroMovVenta, COUNT(*) FROM dbo.venfer_pedidoReng "
-                    f"WHERE NroMovVenta IN ({ph}) GROUP BY NroMovVenta",
-                    chunk,
-                )
-                for nro, cnt in cur.fetchall():
-                    items_por_pedido[int(nro)] = int(cnt)
-        finally:
-            conn.close()
+    def _min(a, b):
+        if a is None or b is None:
+            return None
+        m = (b - a).total_seconds() / 60.0
+        return round(m, 1) if m >= 0 else None
 
     for r in rows:
-        r["cantidadItems"] = items_por_pedido.get(r["nroPedido"], 0)
+        r["esperaMin"] = _min(r["armadoEn"], r["asignadoEn"])
+        r["controlMin"] = _min(r["asignadoEn"], r["cerradoEn"])
+        for k in ("asignadoEn", "armadoEn", "cerradoEn"):
+            if r.get(k) is not None:
+                r[k] = r[k].isoformat()
+        r["unidades"] = float(r["unidades"]) if r.get("unidades") is not None else None
+        r["lineas"] = int(r["lineas"] or 0)
+        # Compatibilidad con la vista anterior.
+        r["cantidadItems"] = r["lineas"]
+        r["horaCierre"] = r["cerradoEn"]
 
     return {"pedidos": rows}
 

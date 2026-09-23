@@ -19,13 +19,22 @@ import { DateRangeField } from "@/components/ui/date-range-field";
 // vía /api/deposito/control-asignacion/pedidos (→ indicadores-api →
 // control_asignacion.py::fetch_pedidos_asignados). Solo lectura.
 //
-// "Hora cierre" = próxima vez que ESE MISMO operario reclamó otro pedido
-// (no hay un cierre explícito por pedido) — proxy del tiempo de control.
-// Sin próxima asignación todavía → "En curso".
+// "Cierre" = cierre en mesa registrado en Magnus (FechaCierre/HoraCierre), que
+// indicadores-api guarda en cada fila cuando el pedido cierra. "Control" =
+// minutos entre que se le asignó al operario y el cierre. "Espera" = minutos
+// entre fin de armado y toma. Sin cierre todavía → "En curso".
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface PedidoAsignado {
   nroPedido: number;
+  nroRemito: number;
+  armadoEn: string | null;
+  cerradoEn: string | null;
+  usuarioCierre: number | null;
+  lineas: number;
+  unidades: number | null;
+  esperaMin: number | null;
+  controlMin: number | null;
   codCliente: number | null;
   cliente: string | null;
   nroOperarioAsignado: number | null;
@@ -48,16 +57,22 @@ const fmtFecha = (iso: string) =>
 const fmtHora = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 
-// Duración entre 2 timestamps ISO, en "Xh Ym" / "Xm". null = "hasta" ausente
-// (todavía en curso, no es un error).
-function fmtDuracion(desde: string, hasta: string | null): string | null {
-  if (!hasta) return null;
-  const ms = new Date(hasta).getTime() - new Date(desde).getTime();
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  const mins = Math.round(ms / 60000);
+const fmtMin = (m: number | null | undefined): string => {
+  if (m == null || !Number.isFinite(m)) return "—";
+  const mins = Math.round(m);
   if (mins < 60) return `${mins} min`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-}
+};
+
+const fmtUni = (n: number | null | undefined) =>
+  n == null ? "—" : n.toLocaleString("es-AR", { maximumFractionDigits: 1 });
+
+const rangoMes = (offset: number): [string, string] => {
+  const hoy = new Date();
+  const ini = new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
+  const fin = offset === 0 ? hoy : new Date(hoy.getFullYear(), hoy.getMonth() + offset + 1, 0);
+  return [isoLocal(ini), isoLocal(fin)];
+};
 
 export function PedidosAsignadosTab() {
   const [desde, setDesde] = useState("");
@@ -112,15 +127,27 @@ export function PedidosAsignadosTab() {
 
   // Desglose: cantidad de pedidos + items controlados, por operario.
   const desglose = useMemo(() => {
-    const m = new Map<string, { operario: string; pedidos: number; items: number }>();
+    const m = new Map<
+      string,
+      { operario: string; pedidos: number; items: number; unidades: number; cerrados: number; minTotal: number; minPromedio: number | null }
+    >();
     for (const p of pedidos) {
       const nombre = p.asignadoA || "—";
-      const e = m.get(nombre) ?? { operario: nombre, pedidos: 0, items: 0 };
+      const e =
+        m.get(nombre) ??
+        { operario: nombre, pedidos: 0, items: 0, unidades: 0, cerrados: 0, minTotal: 0, minPromedio: null };
       e.pedidos += 1;
-      e.items += p.cantidadItems || 0;
+      e.items += p.lineas || 0;
+      e.unidades += p.unidades || 0;
+      if (p.controlMin != null) {
+        e.cerrados += 1;
+        e.minTotal += p.controlMin;
+      }
       m.set(nombre, e);
     }
-    return Array.from(m.values()).sort((a, b) => b.items - a.items);
+    const out = Array.from(m.values());
+    for (const e of out) e.minPromedio = e.cerrados ? e.minTotal / e.cerrados : null;
+    return out.sort((a, b) => b.items - a.items);
   }, [pedidos]);
 
   const totalItems = desglose.reduce((s, d) => s + d.items, 0);
@@ -133,8 +160,14 @@ export function PedidosAsignadosTab() {
       label: "Cliente",
       render: (r) => r.cliente || "—",
     },
+    {
+      key: "nroRemito",
+      label: "Vuelta",
+      num: true,
+      render: (r) => (r.nroRemito ? String(r.nroRemito) : "—"),
+    },
     { key: "fecha", label: "Fecha", render: (r) => fmtFecha(r.asignadoEn) },
-    { key: "hora", label: "Hora", render: (r) => fmtHora(r.asignadoEn) },
+    { key: "hora", label: "Asignado", render: (r) => fmtHora(r.asignadoEn) },
     {
       key: "operario",
       label: "Operario",
@@ -151,27 +184,16 @@ export function PedidosAsignadosTab() {
         );
       },
     },
+    { key: "lineas", label: "Líneas", num: true, render: (r) => fmtNum(r.lineas) },
+    { key: "unidades", label: "Unidades", num: true, render: (r) => fmtUni(r.unidades) },
     {
-      key: "cantidadItems",
-      label: "Items",
-      num: true,
-      render: (r) => fmtNum(r.cantidadItems),
-    },
-    {
-      key: "horaCierre",
-      label: "Hora cierre",
+      key: "cerradoEn",
+      label: "Cierre",
       render: (r) =>
-        r.horaCierre ? (
-          fmtHora(r.horaCierre)
-        ) : (
-          <Tag tone="amber">En curso</Tag>
-        ),
+        r.cerradoEn ? fmtHora(r.cerradoEn) : <Tag tone="amber">En curso</Tag>,
     },
-    {
-      key: "duracion",
-      label: "Duración",
-      render: (r) => fmtDuracion(r.asignadoEn, r.horaCierre) ?? "—",
-    },
+    { key: "espera", label: "Espera", render: (r) => fmtMin(r.esperaMin) },
+    { key: "control", label: "Control", render: (r) => fmtMin(r.controlMin) },
   ];
 
   const desgloseCols: Col<(typeof desglose)[number]>[] = [
@@ -189,7 +211,10 @@ export function PedidosAsignadosTab() {
       ),
     },
     { key: "pedidos", label: "Pedidos", num: true, render: (r) => fmtNum(r.pedidos) },
-    { key: "items", label: "Items controlados", num: true, render: (r) => fmtNum(r.items) },
+    { key: "items", label: "Líneas", num: true, render: (r) => fmtNum(r.items) },
+    { key: "unidades", label: "Unidades", num: true, render: (r) => fmtUni(r.unidades) },
+    { key: "minTotal", label: "Tiempo de control", num: true, render: (r) => fmtMin(r.minTotal) },
+    { key: "minPromedio", label: "Promedio por pedido", num: true, render: (r) => fmtMin(r.minPromedio) },
   ];
 
   return (
@@ -197,9 +222,21 @@ export function PedidosAsignadosTab() {
       <div className="sticky top-16 z-40 -mx-8 px-8 py-3 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap">
         <PageTitle
           title="Pedidos asignados"
-          sub="Quién controló cada pedido y cuándo — deposito.control_asignacion"
+          sub="Pedidos, líneas, unidades y tiempos que controló cada operario"
         />
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => { const [d, h] = rangoMes(0); setDesde(d); setHasta(h); }}
+            className="text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 text-sm"
+          >
+            Este mes
+          </button>
+          <button
+            onClick={() => { const [d, h] = rangoMes(-1); setDesde(d); setHasta(h); }}
+            className="text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 text-sm"
+          >
+            Mes anterior
+          </button>
           <DateRangeField desde={desde} hasta={hasta} onChange={(d, h) => { setDesde(d); setHasta(h); }} align="end" />
           <button
             onClick={() => load(desde, hasta)}
@@ -231,19 +268,18 @@ export function PedidosAsignadosTab() {
         </div>
       ) : (
         <>
-          <SectionTitle>👷 Desglose por operario ({fmtNum(totalItems)} items en total)</SectionTitle>
+          <SectionTitle>👷 Desglose por operario ({fmtNum(totalItems)} líneas en total)</SectionTitle>
           <Table cols={desgloseCols} rows={desglose} empty="Sin datos" />
 
           <SectionTitle>📋 Detalle por pedido ({fmtNum(pedidos.length)})</SectionTitle>
           <Table cols={cols} rows={pedidos} maxH={560} />
 
           <p className="text-[11px] text-zinc-600 mt-4 leading-relaxed">
-            "Hora cierre" no es un cierre explícito del pedido (el widget no
-            tiene un botón para eso): es el momento en que ESE MISMO operario
-            reclamó su próximo pedido — se usa como aproximación del tiempo
-            de control. "En curso" = todavía no reclamó uno nuevo. Items =
-            renglones del pedido (Magnus venfer_pedidoReng, mismo origen que
-            "Resumen"). Solo lectura.
+            "Cierre" es el cierre en mesa registrado en Magnus. "Control" son
+            los minutos entre la asignación y ese cierre; "Espera", entre el
+            fin de armado y la asignación. Líneas = renglones no anulados;
+            unidades = cantidad cumplida. "En curso" = todavía sin cierre.
+            Vuelta = remito de acopio. Solo lectura.
           </p>
         </>
       )}

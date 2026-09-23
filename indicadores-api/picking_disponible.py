@@ -94,8 +94,10 @@ manos de alguien. Ahora se anticipa lo que va a faltar cuando se asignen:
     pedido abierto sin OT        (el WMS todavía no la generó) → renglones CP1
                                  de Magnus, contra la posición de picking que el
                                  WMS tiene asignada al artículo (UbicacionItem
-                                 sobre ubicación EsPicking). Sin posición →
-                                 SIN_POSICION, nunca se ofrece reposición.
+                                 sobre ubicación EsPicking, prefiriendo un
+                                 estante de rack). Sin posición de rack →
+                                 PLAYA_PEDIDOS, que es donde el WMS manda a
+                                 pickear lo que no tiene lugar propio.
 
 Reparto FIFO por escalones: primero las OT con armador (ya están consumiendo
 el estante), después las OT sin armador y al final los pedidos sin OT; dentro
@@ -107,8 +109,13 @@ Gotchas (medidos 2026-09-21, ver claude/picking_disponible_al_asignar_armador.md
 - OT zombi: de 37 OT en estado 1, 9 eran de meses anteriores (una de 2025). Sin
   el filtro de VENTANA_DIAS inflan la demanda comprometida y generan alarmas
   falsas.
-- PLAYA_PEDIDOS está marcada UbicacionEsPicking = 1 pero no es un estante (es
-  acopio ya preparado): se marca `EsPlaya` y nunca se le ofrece reposición.
+- PLAYA_PEDIDOS (UbicacionEsPicking = 1) es un picking grande, el de todos los
+  artículos sin posición de picking propia: el WMS ya no deja asignar más
+  artículos a la playa en UbicacionItem, pero igual manda ahí los que no tienen
+  lugar. Se trata como cualquier posición de picking: su stock es el
+  disponible, se repone desde guardado y la reposición en camino hacia la playa
+  cuenta. `EsPlaya` queda sólo como marca informativa (desde 2026-09-23; antes
+  se la trataba como acopio sin reposición).
 - 3,6 % de los renglones cierran con CantCumplida > CantPedida (artículos que
   se toman por bolsa/paquete entero). No rompe el cálculo.
 - Una OT puede repetir (artículo, posición) en varios renglones: se agrupa
@@ -156,12 +163,14 @@ PEDIDO_SIN_OT_VENTANA_DIAS = 30
 # cuya OT todavía no tiene ese armador o que todavía no tiene OT.
 COD_ARMADOR_ESPERA_MERCA = 239
 
-# Posición para un artículo sin ubicación de picking asignada en el WMS.
+# Marca histórica de "artículo sin posición de picking". Desde 2026-09-23 ya
+# no se produce: sin estante propio el picking es PLAYA_PEDIDOS. Se deja el
+# nombre porque el flag SinPosicion sigue viajando en la respuesta.
 SIN_POSICION = "SIN_POSICION"
 _BASE_MAGNUS = datetime(1800, 12, 28)
 
-# Ubicación que el WMS marca como picking pero no es un estante (acopio ya
-# preparado). No admite reposición.
+# Picking general de los artículos sin posición propia. Es destino válido de
+# reposición; NO es origen (está en UBIC_NO_RACK: no se baja de la playa).
 PLAYA = "PLAYA_PEDIDOS"
 
 # OJO: varias ubicaciones ESPECIALES traen EsGuardado/EsAbastecedora en 1 y no
@@ -374,6 +383,21 @@ WHERE Codot.CodotProcesoNegocio = 1              -- Reposición
   AND i.OTItemArticuloId IN ({ph})
 GROUP BY i.OTItemArticuloId, i.OTItemUbicacionCodigo
 """
+
+
+
+def _art(v) -> str:
+    """Código de artículo normalizado para usar como CLAVE.
+
+    El WMS guarda el mismo artículo con mayúsculas o minúsculas según quién lo
+    cargó (`nc2000010` en UbicacionDetalle, `NC2000010` en OTItem). SQL Server
+    los iguala (collation CI) y por eso el IN los trae, pero los dicts de
+    Python no: sin esto el stock de la posición quedaba bajo otra clave y el
+    renglón salía con HAY = 0. Relevado 23/09/2026: 226 filas de
+    UbicacionDetalle (217 artículos, todas con stock), 4.630 de OTItem y 511
+    de UbicacionItem tienen minúsculas.
+    """
+    return _txt(v).upper()
 
 
 def pasillo_de(ubic) -> str:
@@ -617,13 +641,13 @@ def fetch_picking_disponible(
         } if cand else set()
         sin_ot = [f for f in sin_ot if _int(f["NroMovVenta"]) not in con_ot]
 
-        arts_sin_ot = sorted({_txt(f["CodArticulo"]) for f in sin_ot if _txt(f["CodArticulo"])})
+        arts_sin_ot = sorted({_art(f["CodArticulo"]) for f in sin_ot if _art(f["CodArticulo"])})
         if arts_sin_ot:
             mejor: dict[str, float] = {}
             for art, ubic, mx in _chunked_query(cur, SQL_POS_PICKING, arts_sin_ot):
-                art, ubic, mx = _txt(art), _txt(ubic), _num(mx)
+                art, ubic, mx = _art(art), _txt(ubic), _num(mx)
                 if ubic.upper() == PLAYA:
-                    continue
+                    continue          # la playa es el último recurso (abajo)
                 # Si hay más de una, la de mayor capacidad (StkMaximo) es la
                 # que el WMS usa como principal.
                 if art not in pos_pick or mx > mejor[art] or (
@@ -632,13 +656,13 @@ def fetch_picking_disponible(
                     pos_pick[art], mejor[art] = ubic, mx
 
         codigos = sorted(
-            {_txt(f["CodArticulo"]) for f in demanda if _txt(f["CodArticulo"])}
+            {_art(f["CodArticulo"]) for f in demanda if _art(f["CodArticulo"])}
             | set(arts_sin_ot)
         )
 
         if codigos:
             for art, ubic, cant, es_pick, es_guard in _chunked_query(cur, SQL_STOCK_UBIC, codigos):
-                art, ubic, cant = _txt(art), _txt(ubic), _num(cant)
+                art, ubic, cant = _art(art), _txt(ubic), _num(cant)
                 stock[(art, ubic)] = stock.get((art, ubic), 0.0) + cant
                 u = ubic.upper()
                 if u == PULMON:
@@ -654,7 +678,7 @@ def fetch_picking_disponible(
             for art, ubic, en_camino in _chunked_query(
                 cur, SQL_REPO_EN_CAMINO, codigos, vivos=vivos
             ):
-                k = (_txt(art), _txt(ubic))
+                k = (_art(art), _txt(ubic))
                 repo[k] = repo.get(k, 0.0) + _num(en_camino)
     finally:
         conn.close()
@@ -693,7 +717,7 @@ def fetch_picking_disponible(
         if es_operario_ignorado(armador) or ip.get("Apartado"):
             espera_merca += 1
             continue
-        cod = _txt(f.get("CodArticulo"))
+        cod = _art(f.get("CodArticulo"))
         pos = _txt(f.get("Posicion"))
         pend = _num(f.get("Pendiente"))
         if not cod or pend <= 0:
@@ -722,11 +746,12 @@ def fetch_picking_disponible(
     # clave es el NroMovVenta en negativo, para no chocar con un OTId real.
     for f in sin_ot:
         nro = _int(f.get("NroMovVenta"))
-        cod = _txt(f.get("CodArticulo"))
+        cod = _art(f.get("CodArticulo"))
         pend = _num(f.get("Pendiente"))
         if not nro or not cod or pend <= 0:
             continue
-        pos = pos_pick.get(cod, SIN_POSICION)
+        # Sin estante propio el WMS lo manda a pickear a la playa.
+        pos = pos_pick.get(cod, PLAYA)
         sin_asignar += 1
         ot = ots.setdefault(-nro, {
             "OTId": -nro,
@@ -743,7 +768,7 @@ def fetch_picking_disponible(
         })
         ot["_reng"][(cod, pos)] = ot["_reng"].get((cod, pos), 0.0) + pend
 
-    info_art = _info_articulos(codigos) if codigos else {}
+    info_art = {k.upper(): v for k, v in (_info_articulos(codigos) if codigos else {}).items()}
 
     # Reparto FIFO: la OT más vieja tiene prioridad sobre la misma posición. Si
     # dos OT se pelean 80 unidades pidiendo 60 y 50, la primera se lleva las 60
@@ -785,8 +810,7 @@ def fetch_picking_disponible(
             en_guard = libre_guard.get(cod, guardado.get(cod, 0.0))
             en_pulmon = pulmon.get(cod, 0.0)
             es_playa = pos.upper() == PLAYA
-            # Artículo sin posición de picking asignada en el WMS: no hay
-            # estante al que reponer, igual que la playa.
+            # Ya no se genera (sin estante → PLAYA); queda por compatibilidad.
             sin_pos = pos.upper() == SIN_POSICION
 
             # Lo que ya viene en camino (una OT de reposición viva hacia esta
@@ -795,7 +819,7 @@ def fetch_picking_disponible(
             # una OT de reposición ya pedida por 30 seguía avisando "faltan 50"
             # en vez de "faltan 20", y "armar OT" de nuevo volvía a pedir las 50
             # enteras — duplicando lo que ya se sacó de guardado.
-            cubierto_en_camino = 0.0 if (es_playa or sin_pos) else min(a_reponer_bruto, en_camino)
+            cubierto_en_camino = 0.0 if sin_pos else min(a_reponer_bruto, en_camino)
             libre_repo[k] = max(0.0, en_camino - cubierto_en_camino)
             a_reponer = max(0.0, a_reponer_bruto - cubierto_en_camino)
 
@@ -812,10 +836,10 @@ def fetch_picking_disponible(
 
             # Sin nada para bajar al estante el aviso no sirve: el que repone no
             # puede hacer nada. Se marca y se saca de la vista por pasillo (el
-            # widget), no del detalle por OT. La playa nunca se repone, así que
-            # va siempre acá.
+            # widget), no del detalle por OT. La playa se repone como cualquier
+            # otra posición de picking.
             sin_repo = sit == "faltante" and (
-                es_playa or sin_pos or (en_guard <= 0 and en_camino <= 0)
+                sin_pos or (en_guard <= 0 and en_camino <= 0)
             )
             if sit != "ok":
                 problemas += 1
@@ -890,7 +914,8 @@ def fetch_picking_disponible(
     salida.sort(key=lambda o: (-o["Faltantes"], -o["ConProblema"], o["OTId"]))
 
     # Vista por pasillo = orden de trabajo del repositor: lo que no se puede
-    # reponer (nada en el depósito central, o playa) no entra.
+    # reponer (nada en el depósito central) no entra. La playa sí: es su
+    # propio grupo PLAYA_PEDIDOS, al final.
     grupos: dict[str, list] = {}
     ocultos_sin_repo = 0
     for (pas, cod), e in por_art.items():
@@ -1055,10 +1080,10 @@ def fetch_ot_reposicion(pasillo: str, dias: int = VENTANA_DIAS):
             for art, ubic, cant in _chunked_query(
                 cur, SQL_ORIGEN_COMPROMETIDO, codigos, vivos=vivos
             ):
-                k = (_txt(art), _txt(ubic))
+                k = (_art(art), _txt(ubic))
                 tomado[k] = tomado.get(k, 0.0) + _num(cant)
             for art, ubic, cant, desde in _chunked_query(cur, SQL_ORIGENES, codigos):
-                art, ubic = _txt(art), _txt(ubic)
+                art, ubic = _art(art), _txt(ubic)
                 if ubic.upper() in UBIC_NO_RACK or deposito_de(ubic) != DEPOSITO_CENTRAL:
                     continue
                 libre = _num(cant) - tomado.get((art, ubic), 0.0)
