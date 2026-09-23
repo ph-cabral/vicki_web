@@ -7,6 +7,7 @@ import {
   defaultModulosForSector,
   isModuleKey,
   isViewHref,
+  normalizarHrefs,
   viewsForModule,
   type ModuleKey,
 } from "./modules";
@@ -18,13 +19,15 @@ function sanitizeMods(v: unknown): ModuleKey[] {
 
 function sanitizeHrefs(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return v.filter(isViewHref);
+  return normalizarHrefs(v.filter((x): x is string => typeof x === "string")).filter(isViewHref);
 }
 
 // Para "ocultos" admitimos tanto keys de módulo como hrefs de vista.
 function sanitizeOcultos(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => isModuleKey(x) || isViewHref(x));
+  return normalizarHrefs(v.filter((x): x is string => typeof x === "string")).filter(
+    (x) => isModuleKey(x) || isViewHref(x),
+  );
 }
 
 export interface PermisosSector {
@@ -37,7 +40,7 @@ export interface PermisosSector {
  * Vistas que abre la bandera `usuario.bulonesAccesoTotal` (2026-08-31).
  *
  * La bandera ya existía para que un no-admin vea el 100% de la empresa en
- * /ventas/bulones (ver lib/ventas/bulonesAcceso.ts). Desde acá pasa a ser
+ * /ventas/lineas (ex /ventas/bulones, ver lib/ventas/bulonesAcceso.ts). Desde acá pasa a ser
  * además la LLAVE DE ACCESO a las vistas de bulonería: quien la tiene entra
  * aunque su sector no las tenga habilitadas.
  *
@@ -51,7 +54,7 @@ export interface PermisosSector {
  * sigue viendo exactamente lo que le da su sector.
  */
 const BULONES_MOD: ModuleKey = "ventas";
-const BULONES_VISTAS = ["/ventas/bulones", "/ventas/presupuestos"];
+const BULONES_VISTAS = ["/ventas/lineas", "/ventas/presupuestos"];
 
 /** Todas las vistas de los módulos habilitados (default cuando no hay selección guardada). */
 function allViewsForMods(mods: ModuleKey[]): string[] {

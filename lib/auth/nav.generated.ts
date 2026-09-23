@@ -129,12 +129,12 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
   ],
   "ventas": [
     {
-      "label": "Líneas",
-      "href": "/ventas/bulones"
-    },
-    {
       "label": "Faltantes",
       "href": "/ventas/faltantes"
+    },
+    {
+      "label": "Líneas",
+      "href": "/ventas/lineas"
     },
     {
       "label": "Presupuestos",

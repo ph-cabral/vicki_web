@@ -2,7 +2,7 @@
 // El middleware (edge) verifica la firma aparte con Web Crypto; mismo formato.
 import { createHmac, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
-import type { SessionPayload } from "./modules";
+import { normalizarHrefs, type SessionPayload } from "./modules";
 
 export const SESSION_COOKIE = "ever_session";
 const MAX_AGE_SEC = 60 * 60 * 12; // 12 horas
@@ -52,6 +52,9 @@ export function verifySession(token: string | undefined | null): SessionPayload 
     ).toString("utf8");
     const payload = JSON.parse(json) as SessionPayload;
     if (typeof payload.exp !== "number" || payload.exp * 1000 < Date.now()) return null;
+    // Cookies firmadas antes de un cambio de URL de vista (LEGACY_VIEW_HREFS).
+    payload.vistas = normalizarHrefs(payload.vistas);
+    payload.ocultos = normalizarHrefs(payload.ocultos);
     return payload;
   } catch {
     return null;

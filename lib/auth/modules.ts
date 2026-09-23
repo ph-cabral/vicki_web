@@ -176,6 +176,25 @@ export function isModuleKey(v: unknown): v is ModuleKey {
   return typeof v === "string" && (ALL_MODULE_KEYS as string[]).includes(v);
 }
 
+/**
+ * Hrefs de vistas que cambiaron de URL → href nuevo. Se aplica al leer
+ * permisos de sector, ocultos y la cookie de sesión, así que lo guardado con
+ * el href viejo sigue valiendo sin re-loguear ni re-guardar nada.
+ */
+export const LEGACY_VIEW_HREFS: Record<string, string> = {
+  "/ventas/bulones": "/ventas/lineas", // 2026-09-23
+};
+
+export function normalizarHref(h: string): string {
+  return LEGACY_VIEW_HREFS[h] ?? h;
+}
+
+/** Normaliza una lista de hrefs (sin duplicar). Deja pasar undefined (cookies viejas). */
+export function normalizarHrefs<T extends string[] | undefined>(l: T): T {
+  if (!Array.isArray(l)) return l;
+  return [...new Set(l.map(normalizarHref))] as T;
+}
+
 export function isViewHref(v: unknown): v is string {
   return typeof v === "string" && ALL_VIEW_HREFS.includes(v);
 }

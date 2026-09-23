@@ -3,6 +3,7 @@ import {
   moduleForPath,
   viewForPath,
   isAdminPath,
+  normalizarHrefs,
   type SessionPayload,
 } from "@/lib/auth/modules";
 
@@ -51,6 +52,8 @@ async function verifyToken(token: string | undefined): Promise<SessionPayload | 
       new TextDecoder().decode(b64urlToBytes(body)),
     ) as SessionPayload;
     if (typeof payload.exp !== "number" || payload.exp * 1000 < Date.now()) return null;
+    // Cookies firmadas antes de un cambio de URL de vista (LEGACY_VIEW_HREFS).
+    payload.vistas = normalizarHrefs(payload.vistas);
     return payload;
   } catch {
     return null;

@@ -10,7 +10,9 @@ const APP = join(ROOT, "app");
 // Rutas accesibles pero que NO se listan en el árbol (home/permisos).
 // /deposito/wms: migrada a /deposito/deposito (sidebar wms/mesas) 2026-07-31,
 // queda solo como redirect para links viejos — no se lista en el menú.
-const IGNORE = new Set(["/deposito/faltantes/control", "/deposito/wms"]);
+// /ventas/bulones: la vista de Líneas se mudó a /ventas/lineas 2026-09-23,
+// queda sólo como redirect para links viejos.
+const IGNORE = new Set(["/deposito/faltantes/control", "/deposito/wms", "/ventas/bulones"]);
 
 // Etiquetas lindas por segmento (acentos, siglas). Lo que no esté acá va Capitalizado.
 const LABELS = {
@@ -31,8 +33,7 @@ const LABELS = {
   legajos: "Legajos",
   relojes: "Relojes",
   telefono: "Teléfono",
-  // /ventas/bulones es la vista de LÍNEAS desde 2026-09-23 (la URL no cambió).
-  bulones: "Líneas",
+  lineas: "Líneas",
 };
 const label = (seg) =>
   LABELS[seg] ?? seg.charAt(0).toUpperCase() + seg.slice(1);
