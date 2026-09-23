@@ -19,7 +19,15 @@ export const maxDuration = 60;
 //     CantidadPedida. El faltante es esa diferencia.
 //   · Un renglón cancelado dentro de un pedido vivo queda con cumplida = 0, así
 //     que cuenta entero por la misma regla.
-//   · El día lo fija cab.FechaCierre.
+//   · El día lo fija cab.FechaCierre — salvo acopio 70/75 (reglas medidas
+//     2026-09-22, ver indicadores-api/deposito.py "Acopio 70/75"): ahí solo
+//     cuenta el renglón que fue a preparación y su Fecha es la última tanda
+//     (día real en que faltó), no el cierre del pedido.
+//   · Esta pantalla pide por=cierre: el renglón aparece el día en que el
+//     pedido cierra (cuando el faltante se vuelve definitivo), pero se
+//     persiste en faltante_pedido con su Fecha real, así el registro mensual
+//     lo imputa al mes en que faltó. Por eso se recalculan TODOS los meses
+//     que aparecen en las filas, no solo el del día consultado.
 //
 // Por qué se cambió: la fuente anterior (/deposito/ot-diferencias, OT Picking
 // Cumplida del WMS) solo veía lo que el operario llegó a pickear y se persistía
@@ -41,7 +49,8 @@ export const maxDuration = 60;
 interface FaltanteRow {
   NroMovVenta: number;
   Renglon: number;
-  Fecha: string | null;
+  Fecha: string | null; // día real del faltante (70/75: última tanda)
+  FechaCierre?: string | null; // cierre del pedido en Magnus
   Cliente: string | number | null;
   ClienteNombre: string | null;
   Vendedor: string;
@@ -119,6 +128,7 @@ export async function GET(req: NextRequest) {
   const hasta = sp.get("hasta");
   if (desde) qs.set("desde", desde);
   if (hasta) qs.set("hasta", hasta);
+  qs.set("por", "cierre");
 
   let json: {
     desde: string | null;
@@ -189,11 +199,17 @@ export async function GET(req: NextRequest) {
   // entero y pisa). El registro diario garantizado lo hace el job que pega a
   // POST /api/deposito/faltantes/mes — esto es el refuerzo, no la garantía.
   let mesWarn = false;
-  const mes = mesDeFecha(json.hasta ?? json.desde);
-  if (mes) {
+  const meses = new Set<string>();
+  const mesConsulta = mesDeFecha(json.hasta ?? json.desde);
+  if (mesConsulta) meses.add(mesConsulta);
+  for (const r of raw) {
+    const m = mesDeFecha(r.Fecha);
+    if (m) meses.add(m); // 70/75 cerrado hoy puede caer en un mes anterior
+  }
+  for (const mes of meses) {
     try {
       const r = await registrarFaltanteMes(mes);
-      mesWarn = !r.guardado;
+      if (!r.guardado) mesWarn = true;
     } catch (e) {
       mesWarn = true;
       console.error("registrarFaltanteMes desde /api/deposito/faltantes", e);
@@ -224,6 +240,7 @@ export async function GET(req: NextRequest) {
       Proveedor: r.Proveedor ?? null,
       Vendedor: r.Vendedor,
       Fecha: r.Fecha,
+      FechaCierre: r.FechaCierre ?? null,
       CantPedida: r.CantPedida,
       CantCumplida: r.CantCumplida,
       Cancelado: r.EstadoRenglon === 4,

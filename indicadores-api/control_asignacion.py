@@ -588,9 +588,25 @@ def fetch_pedidos_cumplidos_abiertos_legacy(limit: int = MAGNUS_ABIERTOS_LIMIT) 
 #   · `cab.Impreso = 1`          -> 2 de 22.
 #
 # "ALGUNA fila con ubicación", no "todas": un pedido puede tener más de un
-# centro de preparación (`CodCentroPrep` 1 y 2) y es normal que el segundo
-# esté sin arrancar mientras el pedido ya está listo para mesa (casos reales:
-# 757574, 757615, 753015). Exigir "todas" perdía esos 3.
+# centro de preparación (`CodCentroPrep` 1 y 2) y el CP2 NUNCA escribe
+# ObsArmadorMovil (verificado 2026-09-23 en todos los CA de CP2), así que
+# exigir ubicación en todas las filas perdía los pedidos con CP2.
+#
+# CAMBIO 2026-09-23 — GATE POR CENTRO: con "alguna fila" alcanzaba que
+# terminara CP1 para que el pedido entrara a la cola aunque CP2 siguiera sin
+# preparar; mesa no lo puede cerrar hasta que llegue lo de CP2 (casos 761948
+# y 762126: CP1 con ubicación, CP2 con FechaFin = 0 y sin tanda). Ahora, además
+# de la fila con ubicación, CADA centro que tenga renglones no anulados del
+# pedido tiene que estar terminado: una fila de Ven_PedImpresoCA de ESE
+# centro con ubicación cargada o con FechaFin > 0 (la señal de fin del CP2;
+# coincide con la FechaDesde de su tanda en VenFer_PedidoRengPreparacion).
+# Centro sin fila CA (no se mandó a preparar) = espera. Ver
+# _SQL_GATE_CENTROS; se aplica también en la purga (SQL_PEDIDOS_YA_NO_VAN)
+# para sacar lo que ya estaba en la cola con un centro pendiente.
+# Medido 2026-09-23 sobre los 8 candidatos del momento: quedan en espera
+# exactamente 761948 y 762126; 753015 (CP2 terminado) sigue entrando.
+# Seeks: VenFer_PedidoReng clustered (NroMovVenta, NroRenglon) y
+# Ven_PedImpresoCA clustered (NroMovVenta, CodCentroPrep, NroCentroArmado).
 #
 # De regalo, Ven_PedImpresoCA es el puente Magnus<->WMS que ya existía:
 #   ObsArmadorMovil  -> la ubicación que el widget muestra (antes salía de
@@ -599,6 +615,24 @@ def fetch_pedidos_cumplidos_abiertos_legacy(limit: int = MAGNUS_ABIERTOS_LIMIT) 
 #   CodArmador       -> el armador según Magnus
 # Misma lección que el acopio 70/75: el circuito YA estaba registrado en
 # Magnus; el cruce contra WMS era el rodeo.
+# Pedido con algún centro de preparación todavía sin terminar. Se usa con
+# NOT EXISTS (cola) y con EXISTS (purga). {nro} = expresión del NroMovVenta.
+_SQL_GATE_CENTROS = """
+    SELECT 1
+    FROM EVERWEAR.dbo.VenFer_PedidoReng r
+    WHERE r.NroMovVenta = {nro}
+      AND r.CodCentroPrep > 0
+      AND r.Estado <> 4
+      AND NOT EXISTS (
+            SELECT 1
+            FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+            WHERE c.NroMovVenta   = r.NroMovVenta
+              AND c.CodCentroPrep = r.CodCentroPrep
+              AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
+                   OR ISNULL(c.FechaFin, 0) > 0)
+          )
+"""
+
 SQL_MAGNUS_LISTOS_PARA_CONTROL = """
 SELECT TOP ({limit})
     cab.NroMovVenta,
@@ -632,6 +666,9 @@ LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo = cc.CompCodi
 LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente = cli.CodCliente
 WHERE cab.EstadoPedido = 2
   AND cab.CompCodigo IN (10, 100, 210, 310, 410)
+  -- 2026-09-23: todos los centros de preparación del pedido terminados
+  -- (ver _SQL_GATE_CENTROS y el comentario de arriba).
+  AND NOT EXISTS ({gate_centros})
   -- Misma whitelist de siempre (ver SQL_MAGNUS_ABIERTOS_TODOS para el porqué
   -- de cada código) MÁS el 410.
   --
@@ -681,7 +718,8 @@ def fetch_pedidos_listos_para_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> lis
     try:
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_MAGNUS_LISTOS_PARA_CONTROL.format(limit=limit))
+        cur.execute(SQL_MAGNUS_LISTOS_PARA_CONTROL.format(
+            limit=limit, gate_centros=_SQL_GATE_CENTROS.format(nro="cab.NroMovVenta")))
         for (nro, fecha_int, tipo_pedido, cliente, cod_cliente,
              prioridad, ubicacion, ot, _cod_armador, comp_codigo) in cur.fetchall():
             if nro is None:
@@ -957,11 +995,16 @@ def fetch_acopio_vueltas_espera_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> l
 #
 # Solo se tocan filas SIN asignar ("asignadoEn" IS NULL): las ya asignadas son
 # historial (las lee fetch_pedidos_asignados) y no se borran nunca.
+# 2026-09-23: también sale de la cola (sin asignar) el pedido que tiene un
+# centro de preparación pendiente (CP2 sin terminar) — entró con el criterio
+# viejo de "alguna fila con ubicación". Cuando el centro termine, el próximo
+# refresco lo vuelve a insertar (la fila se borró, no choca el ON CONFLICT).
 SQL_PEDIDOS_YA_NO_VAN = """
-SELECT NroMovVenta
-FROM EVERWEAR.dbo.VenFer_PedidoCabecera
-WHERE NroMovVenta IN ({ph})
-  AND (EstadoPedido <> 2 OR ISNULL(FechaCierre, 0) > 0)
+SELECT cab.NroMovVenta
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+WHERE cab.NroMovVenta IN ({ph})
+  AND (cab.EstadoPedido <> 2 OR ISNULL(cab.FechaCierre, 0) > 0
+       OR EXISTS (""" + _SQL_GATE_CENTROS.format(nro="cab.NroMovVenta") + """))
 """
 
 # Equivalente para las filas de acopio (unidad = la vuelta/remito, ver

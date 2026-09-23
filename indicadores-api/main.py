@@ -524,15 +524,19 @@ def deposito_ot_diferencias(
 def deposito_faltante_pedidos(
     desde: str | None = Query(default=None),
     hasta: str | None = Query(default=None),
+    por: str = Query(default="fecha", pattern=r"^(fecha|cierre)$"),
 ):
     """Faltante REAL: renglones de pedidos Cerrados/Facturados (Magnus) que se
     cumplieron por debajo de lo pedido. Fuente de /deposito/faltantes desde
     2026-09-22 (reemplaza al pick de OT del WMS, /deposito/ot-diferencias).
     De un pedido Cancelado no se trae nada; un renglón cancelado dentro de un
     pedido vivo queda con cumplida = 0 y cuenta entero.
+    Acopio 70/75: solo renglones que fueron a preparación, fechados por la
+    última tanda. por=fecha (default) ventanea por ese día real; por=cierre
+    por el cierre del pedido (pantalla de Depósito).
     Sin params → último día cerrado anterior a hoy."""
     try:
-        return fetch_faltante_pedidos(desde, hasta)
+        return fetch_faltante_pedidos(desde, hasta, por)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

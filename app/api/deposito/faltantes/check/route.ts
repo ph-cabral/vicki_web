@@ -9,13 +9,38 @@ export const dynamic = "force-dynamic";
 // header refleje la marca apenas se guarda, no recién en el próximo refresh
 // de la vista. Best-effort: si falla, la marca ya quedó guardada igual — el
 // próximo GET de /api/deposito/faltantes la recalcula de todos modos.
-async function recalcularMes(fechaIso: string) {
-  const mes = mesDeFecha(fechaIso);
-  if (!mes) return;
-  try {
-    await registrarFaltanteMes(mes);
-  } catch (e) {
-    console.error("recalcularMes tras marca", e);
+//
+// Acopio 70/75: la marca se guarda con el día de la pantalla (cierre del
+// pedido) pero el renglón está imputado en faltante_pedido.fecha (día real
+// de la tanda), que puede ser de un mes anterior → se recalculan los dos.
+async function recalcularMes(
+  fechaIso: string,
+  nroPedOrigen?: number,
+  nroRengOrigen?: number,
+) {
+  const meses = new Set<string>();
+  const m = mesDeFecha(fechaIso);
+  if (m) meses.add(m);
+  if (nroPedOrigen != null && nroRengOrigen != null) {
+    try {
+      const r = await prisma.$queryRaw<{ fecha: Date | null }[]>`
+        SELECT fecha FROM preparado.faltante_pedido
+        WHERE "nroMovVenta" = ${Number(nroPedOrigen)}
+          AND "nroRenglon"  = ${Number(nroRengOrigen)}
+        LIMIT 1
+      `;
+      const mf = mesDeFecha(r[0]?.fecha ? r[0].fecha.toISOString() : null);
+      if (mf) meses.add(mf);
+    } catch (e) {
+      console.error("recalcularMes: fecha real del renglón", e);
+    }
+  }
+  for (const mes of meses) {
+    try {
+      await registrarFaltanteMes(mes);
+    } catch (e) {
+      console.error("recalcularMes tras marca", e);
+    }
   }
 }
 
@@ -96,7 +121,7 @@ export async function POST(req: NextRequest) {
     // Solo si la marca es lo que cambió el resultado del mes (existencia o
     // malFacturado); tipear cantidad sola no mueve el acumulado.
     if (tieneExistencia || tieneMalFacturado) {
-      await recalcularMes(b.fecha);
+      await recalcularMes(b.fecha, b.nroPedOrigen, b.nroRengOrigen);
     }
     return NextResponse.json({ ok: true, id: row.id });
   } catch (error) {
@@ -119,7 +144,7 @@ export async function DELETE(req: NextRequest) {
         nroRengOrigen: b.nroRengOrigen,
       },
     });
-    await recalcularMes(b.fecha);
+    await recalcularMes(b.fecha, b.nroPedOrigen, b.nroRengOrigen);
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("DELETE /api/deposito/faltantes/check", error);

@@ -1843,6 +1843,8 @@ def fetch_ot_diferencias(desde=None, hasta=None):
 #   · El día lo fija cab.FechaCierre (entero de días desde 1800-12-28): es el
 #     único campo siempre cargado en estados 3 y 4 (verificado sobre el último
 #     mes: 7.639 pedidos, todos con FechaCierre) y no se mueve después.
+#   · EXCEPCIÓN acopio 70/75 (2026-09-22): solo renglones que fueron a
+#     preparación y fechados por la última tanda — ver "Acopio 70/75" abajo.
 #
 # Por qué no se hace un solo SQL con los joins de nombre/cliente/vendedor: la
 # consulta ancha (join a StkFer_Articulos + Clientes + Vendedores sobre el rango
@@ -1878,11 +1880,33 @@ WHERE cab.EstadoPedido IN (3, 4)
   AND cab.FechaCierre < ?
 """
 
-SQL_FALTANTE_PEDIDOS = """
-SELECT
+# ── Acopio 70/75 (reglas medidas contra Magnus 2026-09-22) ──────────────────
+# El 70/75 entrega por vueltas: cada OT cumplida pasa por mesa, se remite y el
+# pedido sigue Abierto (2) con el saldo; se vuelve a mandar a preparar hasta
+# cumplir todo o cancelar el saldo / los ítems. Recién ahí cierra (4). Por eso:
+#   · El saldo de un 70/75 ABIERTO no es faltante (no entra: EstadoPedido 3/4).
+#   · Al cerrar, faltó (Pedida - Cumplida) SOLO si el renglón fue a preparación
+#     (fila en VenFer_PedidoRengPreparacion). Un renglón anulado sin haberse
+#     preparado nunca es baja comercial, no faltante de depósito (en 70 era ~7x
+#     el faltante real: pedidos enteros anulados a Estado 4 sin CA ni tandas).
+#   · Día del faltante = última FechaDesde de la tanda del renglón (cuando se
+#     fue a buscar y no había), no cab.FechaCierre: el cierre con saldo
+#     cancelado llega ~24 días después (hay cierres masivos). Fallback a
+#     FechaCierre si la tanda viene en 0.
+#   · Cod.10 y el resto: sin cambios (100% de sus faltantes tiene tanda).
+# Consecuencia: un 70/75 que cierra hoy puede sumar a un mes anterior. Para
+# encontrarlo, la rama 70/75 prefiltra por FechaCierre con ventana extendida
+# (ACOPIO_VENTANA_DIAS, máx. medido 104) y después filtra por su día real.
+# por='cierre' (lo usa la pantalla de Depósito) ventanea por FechaCierre: el
+# renglón aparece el día que se vuelve definitivo, pero con Fecha = día real.
+CODIGOS_ACOPIO = (70, 75)
+ACOPIO_VENTANA_DIAS = 180
+
+_FALT_SELECT = """
     cab.NroMovVenta,
     r.NroRenglon,
     cab.FechaCierre,
+    {fecha}                    AS FechaFaltante,
     cab.EstadoPedido,
     cab.CompCodigo,
     LTRIM(RTRIM(r.CodArticu))  AS CodArticulo,
@@ -1891,31 +1915,66 @@ SELECT
     r.CantidadPedida,
     r.CantidadCumplida,
     r.PrecioVenta
+"""
+_ACO = ",".join(str(c) for c in CODIGOS_ACOPIO)
+_FECHA_ACOPIO = "CASE WHEN t.Ult > 0 THEN t.Ult ELSE cab.FechaCierre END"
+
+
+def _sql_faltante_base(por: str = "fecha") -> str:
+    """UNION ALL de dos ramas sargables (índice FechaCierre+EstadoPedido).
+    Parámetros: (d, h) rama general + (d, h_ext) rama acopio [+ (d, h) si
+    por='fecha']. Ver _params_faltante."""
+    filtro_dia = (f"\n  AND ({_FECHA_ACOPIO}) BETWEEN ? AND ?" if por == "fecha" else "")
+    return f"""
+SELECT {_FALT_SELECT.format(fecha="cab.FechaCierre")}
 FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoReng r
         ON r.NroMovVenta = cab.NroMovVenta
        AND r.CantidadCumplida < r.CantidadPedida
 WHERE cab.EstadoPedido IN (3, 4)
   AND cab.FechaCierre BETWEEN ? AND ?
-ORDER BY cab.FechaCierre, cab.NroMovVenta, r.NroRenglon
+  AND cab.CompCodigo NOT IN ({_ACO})
+UNION ALL
+SELECT {_FALT_SELECT.format(fecha=_FECHA_ACOPIO)}
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoReng r
+        ON r.NroMovVenta = cab.NroMovVenta
+       AND r.CantidadCumplida < r.CantidadPedida
+CROSS APPLY (
+    SELECT MAX(p.FechaDesde) AS Ult, COUNT(*) AS N
+    FROM EVERWEAR.dbo.VenFer_PedidoRengPreparacion p
+    WHERE p.NroMovVenta = r.NroMovVenta
+      AND p.NroRenglon  = r.NroRenglon
+) t
+WHERE cab.EstadoPedido IN (3, 4)
+  AND cab.CompCodigo IN ({_ACO})
+  AND cab.FechaCierre BETWEEN ? AND ?
+  AND t.N > 0{filtro_dia}
 """
 
+
+def _params_faltante(d_i: int, h_i: int, por: str = "fecha") -> tuple:
+    if por == "fecha":
+        return (d_i, h_i, d_i, h_i + ACOPIO_VENTANA_DIAS, d_i, h_i)
+    return (d_i, h_i, d_i, h_i)
+
+
+def _sql_faltante_pedidos(por: str = "fecha") -> str:
+    return (f"SELECT * FROM ({_sql_faltante_base(por)}) x\n"
+            "ORDER BY x.FechaFaltante, x.NroMovVenta, x.NroRenglon")
+
+
 # Acumulado del rango agrupado por artículo, resuelto ENTERO en el motor (una
-# sola consulta, sin traer el detalle): es lo que alimenta el registro mensual.
-SQL_FALTANTE_AGRUPADO = """
+# sola consulta, sin traer el detalle), por día real del faltante.
+SQL_FALTANTE_AGRUPADO = f"""
 SELECT
-    LTRIM(RTRIM(r.CodArticu))                                AS CodArticulo,
-    SUM(r.CantidadPedida - r.CantidadCumplida)               AS Unidades,
-    SUM((r.CantidadPedida - r.CantidadCumplida) * r.PrecioVenta) AS Importe,
-    COUNT(*)                                                 AS Renglones,
-    COUNT(DISTINCT cab.NroMovVenta)                          AS Pedidos
-FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
-INNER JOIN EVERWEAR.dbo.VenFer_PedidoReng r
-        ON r.NroMovVenta = cab.NroMovVenta
-       AND r.CantidadCumplida < r.CantidadPedida
-WHERE cab.EstadoPedido IN (3, 4)
-  AND cab.FechaCierre BETWEEN ? AND ?
-GROUP BY LTRIM(RTRIM(r.CodArticu))
+    x.CodArticulo,
+    SUM(x.CantidadPedida - x.CantidadCumplida)                 AS Unidades,
+    SUM((x.CantidadPedida - x.CantidadCumplida) * x.PrecioVenta) AS Importe,
+    COUNT(*)                                                   AS Renglones,
+    COUNT(DISTINCT x.NroMovVenta)                              AS Pedidos
+FROM ({_sql_faltante_base("fecha")}) x
+GROUP BY x.CodArticulo
 """
 
 
@@ -1959,7 +2018,7 @@ def _info_articulos_faltante(codigos, conn=None):
     por IN-list chunkeada. Mismos joins que SQL_FALTANTES (StkFer_Articulos ->
     tipo real / proveedor habitual / linea Nivel1 / estado del articulo),
     resueltos aparte por codigo (no en el JOIN de rango de
-    SQL_FALTANTE_PEDIDOS) para no repetir esos joins sobre cada renglon del
+    _sql_faltante_pedidos) para no repetir esos joins sobre cada renglon del
     periodo -- se resuelve 1 vez por ARTICULO distinto. Usado por
     fetch_faltante_pedidos para que /compras/faltantes-consumo (origen,
     linea, proveedor) y el recorte del mes (lib/compras/faltantesMes.ts,
@@ -2035,16 +2094,19 @@ def _rango_faltante_pedidos(desde=None, hasta=None):
     return d_i, h_i
 
 
-def fetch_faltante_pedidos(desde=None, hasta=None):
+def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
     """Renglones que faltaron: pedidos Cerrados/Facturados cuyo renglón se
-    cumplió por debajo de lo pedido. Sin params → último día cerrado."""
+    cumplió por debajo de lo pedido. Sin params → último día cerrado.
+    por='fecha' (default) ventanea por el día real del faltante; por='cierre'
+    por cab.FechaCierre (pantalla de Depósito). Reglas 70/75 arriba."""
     d_i, h_i = _rango_faltante_pedidos(desde, hasta)
+    por = "cierre" if por == "cierre" else "fecha"
 
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_FALTANTE_PEDIDOS, (d_i, h_i))
+        cur.execute(_sql_faltante_pedidos(por), _params_faltante(d_i, h_i, por))
         cols = [c[0] for c in cur.description]
         filas = [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
@@ -2067,7 +2129,9 @@ def fetch_faltante_pedidos(desde=None, hasta=None):
         rows.append({
             "NroMovVenta":   nro,
             "Renglon":       _int(f.get("NroRenglon")),
-            "Fecha":         _int_a_fecha(f.get("FechaCierre")),
+            # Día real del faltante (70/75: última tanda; resto: cierre).
+            "Fecha":         _int_a_fecha(f.get("FechaFaltante")),
+            "FechaCierre":   _int_a_fecha(f.get("FechaCierre")),
             "Cliente":       meta.get("Cliente"),
             "ClienteNombre": meta.get("ClienteNombre"),
             "Vendedor":      _txt(meta.get("Vendedor")),
@@ -2100,6 +2164,7 @@ def fetch_faltante_pedidos(desde=None, hasta=None):
     return {
         "desde": _int_a_fecha(d_i),
         "hasta": _int_a_fecha(h_i),
+        "por":   por,
         "total": len(rows),
         "rows":  rows,
         "resumen": resumen,
@@ -2128,7 +2193,7 @@ def fetch_faltante_mes(mes: str):
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_FALTANTE_AGRUPADO, (d_i, h_i))
+        cur.execute(SQL_FALTANTE_AGRUPADO, _params_faltante(d_i, h_i, "fecha"))
         filas = cur.fetchall()
     finally:
         conn.close()
