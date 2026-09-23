@@ -5,6 +5,7 @@ import { Percent, CalendarX, Users } from "lucide-react";
 import KpiCard from "@/app/rrhh/components/KpiCard";
 import PieChartCard from "@/app/rrhh/components/charts/PieChartCard";
 import BarChartCard from "@/app/rrhh/components/charts/BarChartCard";
+import AusentismoSectorMesChart from "@/app/rrhh/components/charts/AusentismoSectorMesChart";
 import {
   TabHeader,
   Panel,
@@ -208,6 +209,11 @@ export default function AusentismoTab() {
           )}
         </Panel>
       </div>
+
+      {/* Anual: independiente del selector de mes (tiene su propio año). */}
+      <Panel>
+        <AusentismoSectorMesChart />
+      </Panel>
 
       {objetivoNum != null && (
         <Panel>
