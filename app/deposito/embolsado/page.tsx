@@ -12,24 +12,14 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //
 // La lista sale de /api/deposito/embolsado (recomendación en vivo contra Magnus
 // + WMS, ver indicadores-api/embolsado.py) y viene YA ORDENADA por menor
-// cobertura; a igual cobertura, primero el que más rota. Acá no se reordena: lo
-// único que hace la vista es partirla en las tres solapas y llevar el ciclo
-// tomar → cerrar.
+// cobertura; a igual cobertura, primero el que más rota. Acá no se reordena.
+// Se muestra sólo lo que hay que trabajar: stock < promedio de venta (6 meses)
+// x 2 Y material en el pulmón de ingreso (se recomienda el promedio x 3,
+// topeado por el pulmón). Cubiertos y sin material no se listan.
 //
-//   Para embolsar → stock < promedio de venta (6 meses) x 2 Y hay material en
-//                    el pulmón de ingreso. Se recomienda embolsar el promedio
-//                    x 3, topeado por lo que haya en el pulmón.
-//   Sin material  → hace falta embolsar pero el pulmón está vacío: no se
-//                    puede trabajar.
-//   Cubiertos     → el stock ya llega al doble del promedio; están para poder
-//                    mirarlos.
-//
-// Además de las tres solapas, la API separa aparte los artículos marcados
-// como EMBOLSADOS en los últimos 7 días cuyo movimiento el WMS todavía no
-// confirmó (`embolsados`, ver route.ts): se muestran en una tabla propia
-// ARRIBA de todo, así no vuelven a "Para embolsar" ni se pueden re-tomar
-// mientras se espera que el stock se actualice. Al vencer los 7 días (o
-// confirmarse antes) se vuelve a controlar el promedio contra el stock.
+// Un artículo marcado como embolsado queda APARTADO (ver route.ts): la API lo
+// saca de la lista y no se muestra en ningún lado hasta que el control diario
+// vea que bajó el pulmón de ingreso; ahí vuelve al cálculo normal.
 //
 // QUIÉN embolsa se pide EN CADA TOMA, no una vez al entrar: esta pantalla queda
 // abierta en una PC compartida y por ella pasan muchas personas en el día. Al
@@ -74,24 +64,7 @@ type Registro = {
   enIngreso: number | null;
 };
 
-/** Fila de `embolsados`: un artículo recién marcado como embolsado, fuera de
- * las 3 solapas hasta que el WMS confirme el movimiento o venzan los 7 días
- * de gracia. */
-type Embolsado = Fila & {
-  cantidadEmbolsada: number;
-  ultimoCierre: string;
-  venceEl: string;
-};
-
 type Candidato = { numero: number; nombre: string };
-
-type Solapa = "trabajar" | "sinMaterial" | "cubiertos";
-
-const SOLAPAS: { key: Solapa; label: string }[] = [
-  { key: "trabajar", label: "Para embolsar" },
-  { key: "sinMaterial", label: "Sin material" },
-  { key: "cubiertos", label: "Cubiertos" },
-];
 
 // Umbral de cobertura (en meses de promedio de venta) que dispara la
 // recomendación: por debajo de esto, stock < promedio x 2 (ver embolsado.py,
@@ -116,33 +89,15 @@ function transcurrido(desdeIso: string, hasta: number) {
 const hora = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 
-const fechaHora = (iso: string) =>
-  new Date(iso).toLocaleString("es-AR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-/** "hoy" / "mañana" / "en 3 días" contra el vencimiento del período de gracia. */
-function faltaPara(iso: string, ahora: number) {
-  const dias = Math.ceil((new Date(iso).getTime() - ahora) / 86400000);
-  if (dias <= 0) return "hoy";
-  if (dias === 1) return "mañana";
-  return `en ${dias} días`;
-}
-
 export default function DepositoEmbolsadoPage() {
   const [rows, setRows] = useState<Fila[]>([]);
   const [enCurso, setEnCurso] = useState<Registro[]>([]);
   const [hechosHoy, setHechosHoy] = useState<Registro[]>([]);
-  const [embolsados, setEmbolsados] = useState<Embolsado[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
-  const [solapa, setSolapa] = useState<Solapa>("trabajar");
   const [q, setQ] = useState("");
   const [guardando, setGuardando] = useState<string | number | null>(null);
   const [cantidades, setCantidades] = useState<Record<number, string>>({});
@@ -172,7 +127,6 @@ export default function DepositoEmbolsadoPage() {
       setRows(j.rows ?? []);
       setEnCurso(j.enCurso ?? []);
       setHechosHoy(j.hechosHoy ?? []);
-      setEmbolsados(j.embolsados ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar");
     } finally {
@@ -193,29 +147,14 @@ export default function DepositoEmbolsadoPage() {
   const visibles = useMemo(() => {
     const texto = q.trim().toLowerCase();
     return rows.filter((r) => {
-      const enSolapa =
-        solapa === "cubiertos"
-          ? r.cubierto
-          : solapa === "sinMaterial"
-            ? !r.cubierto && r.enIngreso <= 0
-            : !r.cubierto && r.enIngreso > 0;
-      if (!enSolapa) return false;
+      if (r.cubierto || r.enIngreso <= 0) return false; // sólo lo que hay que trabajar
       if (!texto) return true;
       return (
         r.codArticulo.toLowerCase().includes(texto) ||
         r.nombre.toLowerCase().includes(texto)
       );
     });
-  }, [rows, solapa, q]);
-
-  const conteos = useMemo(
-    () => ({
-      trabajar: rows.filter((r) => !r.cubierto && r.enIngreso > 0).length,
-      sinMaterial: rows.filter((r) => !r.cubierto && r.enIngreso <= 0).length,
-      cubiertos: rows.filter((r) => r.cubierto).length,
-    }),
-    [rows],
-  );
+  }, [rows, q]);
 
   const unidadesHoy = useMemo(
     () => hechosHoy.reduce((a, r) => a + (r.cantidad ?? 0), 0),
@@ -375,66 +314,6 @@ export default function DepositoEmbolsadoPage() {
           </div>
         )}
 
-        {embolsados.length > 0 && (
-          <div className="mb-6">
-            <div className="text-sm text-cyan-400 mb-2">
-              EMBOLSADOS · esperando que el WMS confirme el movimiento, hasta 7 días (
-              {embolsados.length})
-            </div>
-            <Panel bodyClass="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-xs text-zinc-500 border-b border-zinc-800">
-                    <tr>
-                      <th className="text-left font-medium px-3 py-2">Artículo</th>
-                      <th className="text-right font-medium px-3 py-2">Embolsado</th>
-                      <th className="text-left font-medium px-3 py-2">Último cierre</th>
-                      <th className="text-left font-medium px-3 py-2">Vuelve a la lista</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {embolsados.map((r) => (
-                      <tr key={r.codArticulo} className="border-b border-zinc-900 bg-cyan-400/5">
-                        <td className="px-3 py-3">
-                          <div className="font-mono text-zinc-300">{r.codArticulo}</div>
-                          <div className="text-zinc-400 text-[13px]">
-                            {r.nombre}
-                            {r.empaque && <span className="text-zinc-500"> · {r.empaque}</span>}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3 text-right tabular-nums text-zinc-100">
-                          {fmtNum(r.cantidadEmbolsada)}
-                        </td>
-                        <td className="px-3 py-3 text-zinc-400">{fechaHora(r.ultimoCierre)}</td>
-                        <td className="px-3 py-3 text-cyan-400">
-                          {faltaPara(r.venceEl, ahora)} si el WMS no lo confirma antes
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-          </div>
-        )}
-
-        <div className="flex items-center gap-1 mb-3">
-          {SOLAPAS.map((s) => (
-            <button
-              key={s.key}
-              onClick={() => setSolapa(s.key)}
-              className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
-                solapa === s.key
-                  ? "border-yellow-400 text-yellow-400"
-                  : "border-zinc-800 text-zinc-400 hover:border-zinc-600"
-              }`}
-            >
-              {s.label}{" "}
-              <span className="text-xs text-zinc-600">({conteos[s.key]})</span>
-            </button>
-          ))}
-        </div>
-
         <Panel bodyClass="p-0">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -529,8 +408,6 @@ export default function DepositoEmbolsadoPage() {
                               Listo
                             </button>
                           </div>
-                        ) : r.enIngreso <= 0 ? (
-                          <span className="text-xs text-zinc-600">sin material</span>
                         ) : (
                           <button
                             onClick={() => abrirCartel(r)}
@@ -612,10 +489,9 @@ export default function DepositoEmbolsadoPage() {
           recomienda embolsar el triple del promedio, topeado por lo que haya
           en el pulmón de ingreso (si hacen falta 100 y sólo hay 5, se
           recomiendan 5). Orden: menor cobertura primero y, a igual cobertura,
-          mayor venta. Un artículo recién marcado como embolsado se saca de la
-          lista por hasta 7 días (tabla EMBOLSADOS arriba) hasta que el WMS
-          confirme el movimiento o venzan los días de gracia; ahí se vuelve a
-          controlar el promedio contra el stock.
+          mayor venta. Un artículo marcado como embolsado se aparta de la
+          lista hasta que baje el stock del pulmón de ingreso (se controla una
+          vez por día); ahí se vuelve a controlar el promedio contra el stock.
         </p>
       </main>
 

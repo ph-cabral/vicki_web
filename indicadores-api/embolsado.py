@@ -451,3 +451,35 @@ def fetch_embolsado(meses_venta: int = MESES_VENTA,
         "multiplicadorRecomendacion": MULTIPLICADOR_RECOMENDACION,
         "ubicacionIngreso": UBIC_INGRESO,
     }
+
+
+# ── Pulmón de ingreso de UN artículo (foto al marcar como embolsado) ──────
+# Al cerrar un embolsado se guarda cuánto había en PULMON_INGRESO en ese
+# momento (`deposito_embolsado.pulmonAlCierre`). Una vez por día se compara
+# contra el pulmón en vivo: si bajó, el WMS ya reflejó el movimiento y el
+# artículo vuelve al cálculo normal (ver route.ts, "APARTADOS").
+#
+# Seek puro sobre el índice UUBICACIONDETALLE (UbicacionCodigo,
+# UbicacionDepositoId, UbicacionDetalleArticuloId): igualdades sin RTRIM —
+# la comparación de CHAR en SQL Server ignora el padding de la derecha — y
+# parámetro VARCHAR (db.py fija SQL_CHAR), así que no hay CONVERT_IMPLICIT.
+SQL_PULMON_ARTICULO = f"""
+SELECT SUM(UbicacionDetalleCantidad)
+FROM dbo.UbicacionDetalle
+WHERE UbicacionCodigo = '{UBIC_INGRESO}'
+  AND UbicacionDepositoId = '{DEPOSITO_CENTRAL}'
+  AND UbicacionDetalleArticuloId = ?
+"""
+
+
+def pulmon_ingreso(cod: str) -> float:
+    """Unidades del artículo en PULMON_INGRESO (depósito CENTRAL), en vivo.
+    0 si no tiene ubicación en el pulmón."""
+    conn = get_connection("WMS")
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_PULMON_ARTICULO, (cod or "").strip())
+        fila = cur.fetchone()
+        return float(_safe(fila[0]) or 0) if fila and fila[0] is not None else 0.0
+    finally:
+        conn.close()

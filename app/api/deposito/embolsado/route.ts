@@ -4,39 +4,37 @@
 // carga la vista con un solo viaje:
 //
 //   GET    [?meses_venta=6]
-//          -> { rows, embolsados, enCurso, hechosHoy, ... }
+//          -> { rows, enCurso, hechosHoy, ... }
 //          `rows`       = recomendación en vivo (proxy → FastAPI, que la calcula
 //                         contra Magnus + WMS; ver indicadores-api/embolsado.py).
 //                         Regla: si el stock de CENTRAL no llega al doble del
 //                         promedio de venta mensual (6 meses), se recomienda
 //                         embolsar el triple de ese promedio, topeado por lo
 //                         que haya en el pulmón de ingreso. YA SIN los
-//                         artículos recién marcados como embolsados (ver
-//                         `embolsados`)
-//          `embolsados` = artículos marcados como embolsados en los últimos
-//                         `VENTANA_EMBOLSADOS_DIAS` (7) días que `rows` sacó
-//                         de la lista de trabajo porque el WMS todavía no
-//                         confirmó el movimiento; se calcula acá cruzando
-//                         `rows` con los cierres recientes de Postgres, no en
-//                         el FastAPI (que es sólo lectura de Magnus/WMS)
+//                         artículos APARTADOS (ver abajo).
 //          `enCurso`    = ítems tomados y todavía sin cerrar (Postgres)
 //          `hechosHoy`  = lo terminado desde las 00:00 de hoy (Postgres)
 //   POST   { codArticulo, usuario, ... }  -> valida el usuario y toma el ítem
-//   PATCH  { id, cantidad }               -> lo cierra (fin + cantidad)
+//   PATCH  { id, cantidad }               -> lo cierra (fin + cantidad) y
+//                                             guarda la foto del pulmón
 //
-// EMBOLSADOS (tabla de arriba). Sin esto, un artículo se queda en "Para
-// embolsar" todo lo que tarde el WMS en reflejar el movimiento físico (puede
-// ser días: ver claude/deposito_embolsado.md), y como la pantalla la usan
-// varios preparadores sin coordinarse, terminan re-embolsando lo mismo. Por
-// eso todo artículo con un cierre en los últimos `VENTANA_EMBOLSADOS_DIAS`
-// días se saca de `rows` y pasa a `embolsados` — hasta que el propio WMS
-// confirme el movimiento (con tolerancia `CONFIRMACION_TOLERANCIA`) o venzan
-// los días de gracia, lo que pase primero. Al vencer (o confirmarse antes),
-// el artículo vuelve al cálculo normal en vivo: si ya está cubierto
-// (stock >= promedio x 2) no vuelve a aparecer en "Para embolsar"; si sigue
-// haciendo falta, reaparece con la recomendación recalculada. Ninguno de los
-// dos caminos cambia el cálculo de cobertura: sólo deciden en qué lista
-// aparece cada artículo.
+// APARTADOS (2026-09-23). Marcar un ítem como embolsado no mueve nada en el
+// WMS: el pase físico de PULMON_INGRESO a una ubicación real lo registra el
+// circuito de depósito y puede tardar días. Mientras tanto el artículo
+// seguiría pidiendo embolsado y varios preparadores lo re-embolsarían. Por
+// eso al cerrar (PATCH) se guarda cuánto había en el pulmón en ese momento
+// (`pulmonAlCierre`, leído en vivo del WMS) y la fila queda APARTADA
+// (`liberado` NULL): el artículo sale de `rows` y NO se muestra en ningún
+// lado de la pantalla.
+//
+// Una vez por día —el primer GET después de la medianoche de Argentina— se
+// compara el pulmón en vivo contra `pulmonAlCierre` de cada fila apartada
+// (las cerradas hoy recién se controlan mañana). Si bajó, el WMS ya reflejó
+// el movimiento: `liberado` = ahora y el artículo vuelve al cálculo normal en
+// vivo; con lo embolsado ya sumado al stock, si cumple la cobertura (stock >=
+// promedio x 2) no pide embolsado otra vez. Si no bajó, sigue apartado y se
+// vuelve a controlar al día siguiente. No hay vencimiento: sale sólo cuando
+// baja el pulmón.
 //
 // QUIÉN embolsa. La pantalla la comparten varias personas desde una sola PC:
 // la sesión de la app no dice quién está parado ahí, así que cada vez que
@@ -65,19 +63,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_CANTIDAD = 1_000_000; // techo defensivo contra el dedazo al cargar
 
-// "EMBOLSADOS": un artículo que se acaba de marcar como embolsado se saca de
-// la lista de trabajo por unos días, para que dos preparadores que no se
-// cruzan no sigan tomando lo mismo mientras el movimiento físico todavía no
-// se reflejó en el WMS (puede tardar hasta 7 días: ver
-// claude/deposito_embolsado.md, "Por qué un artículo recién embolsado sigue
-// apareciendo para embolsar"). Sale antes si el propio WMS ya confirma el
-// movimiento (bajó lo que había en el pulmón, o subió el stock ya embolsado,
-// lo esperado); si nunca confirma, a los 7 días vuelve solo a la lista y se
-// controla de nuevo el promedio contra el stock — no tiene sentido esconder
-// un faltante real para siempre.
-const VENTANA_EMBOLSADOS_DIAS = 7;
-const VENTANA_EMBOLSADOS_MS = VENTANA_EMBOLSADOS_DIAS * 24 * 60 * 60 * 1000;
-const CONFIRMACION_TOLERANCIA = 0.8; // 80% de lo embolsado alcanza para confirmar
+const AR_OFFSET_MS = 3 * 60 * 60 * 1000; // Argentina = UTC-3 fijo (sin horario de verano)
 
 type Registro = {
   id: number;
@@ -107,14 +93,22 @@ const SELECT_REGISTRO = {
   enIngreso: true,
 } as const;
 
-/** Fila de `cerradosRecientes`: sólo lo necesario para el chequeo de confirmación. */
-type Cierre = {
+/** Fila apartada: sólo lo necesario para el control diario. */
+type Apartado = {
+  id: number;
   codArticulo: string;
-  cantidad: number | null;
   fin: Date | null;
-  enIngreso: number | null;
-  stockSinIngreso: number | null;
+  pulmonAlCierre: number | null;
+  controlado: Date | null;
 };
+
+/** Medianoche de hoy en Argentina, independiente del TZ del contenedor: es
+ * el corte del control diario de los apartados. */
+function medianocheAR(): Date {
+  const d = new Date(Date.now() - AR_OFFSET_MS);
+  d.setUTCHours(0, 0, 0, 0);
+  return new Date(d.getTime() + AR_OFFSET_MS);
+}
 
 /** Medianoche de hoy en hora local del server (el corte que ve el operario). */
 function inicioDelDia(): Date {
@@ -140,7 +134,7 @@ export async function GET(req: NextRequest) {
 
   // Recomendación y registros en paralelo: son bases distintas y ninguna
   // depende de la otra.
-  const [reco, enCurso, hechosHoy, cerradosRecientes] = await Promise.all([
+  const [reco, enCurso, hechosHoy, apartados] = await Promise.all([
     fetch(`${API_URL}/deposito/embolsado?${params}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(60000),
@@ -166,10 +160,10 @@ export async function GET(req: NextRequest) {
       select: SELECT_REGISTRO,
       orderBy: { inicio: "desc" },
     }),
+    // Índice parcial deposito_embolsado_apartado_idx: sólo las filas apartadas.
     prisma.deposito_embolsado.findMany({
-      where: { fin: { not: null, gte: new Date(Date.now() - VENTANA_EMBOLSADOS_MS) } },
-      select: { codArticulo: true, cantidad: true, fin: true, enIngreso: true, stockSinIngreso: true },
-      orderBy: { fin: "asc" },
+      where: { fin: { not: null }, liberado: null },
+      select: { id: true, codArticulo: true, fin: true, pulmonAlCierre: true, controlado: true },
     }),
   ]);
 
@@ -180,48 +174,80 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // Un artículo recién cerrado se saca de `rows` y pasa a `embolsados` hasta
-  // que el WMS confirme el movimiento o venzan los 7 días de gracia (ver
-  // constantes arriba). `cierres` agrupa por artículo, ordenado por `fin` asc:
-  // el primero de cada grupo es la foto más vieja dentro de la ventana (contra
-  // la que se mide el delta) y el último marca cuándo vence la supresión.
-  const cierres = new Map<string, Cierre[]>();
-  for (const c of cerradosRecientes as Cierre[]) {
-    const cod = c.codArticulo.trim();
-    const arr = cierres.get(cod);
-    if (arr) arr.push(c);
-    else cierres.set(cod, [c]);
-  }
+  const recoRows = (reco.rows ?? []) as Record<string, any>[];
+  const pulmonVivo = new Map<string, number>();
+  for (const r of recoRows) pulmonVivo.set(String(r.codArticulo).trim(), Number(r.enIngreso) || 0);
 
-  const rows: unknown[] = [];
-  const embolsados: unknown[] = [];
-  for (const r of (reco.rows ?? []) as Record<string, any>[]) {
-    const grupo = cierres.get(String(r.codArticulo).trim());
-    if (!grupo?.length) {
-      rows.push(r);
+  // Control diario: cada fila apartada se compara como mucho una vez por día
+  // (las cerradas hoy, recién mañana). Si el pulmón bajó respecto de la foto
+  // del cierre, se libera. Un artículo que ya no figura en la recomendación
+  // no tiene ubicación en el pulmón: cuenta como 0 (bajó). Sin foto no hay
+  // contra qué medir: se libera.
+  const corte = medianocheAR().getTime();
+  const ahora = new Date();
+  const controlar: number[] = [];
+  const liberar: { id: number; pulmon: number }[] = [];
+  const siguenApartados = new Set<string>();
+  for (const a of apartados as Apartado[]) {
+    const cod = a.codArticulo.trim();
+    const ultimo = (a.controlado ?? a.fin)!.getTime();
+    if (ultimo >= corte) {
+      siguenApartados.add(cod); // ya controlado hoy (o cerrado hoy)
       continue;
     }
-    const foto = grupo[0];
-    const ultimoCierre = grupo[grupo.length - 1].fin as Date;
-    const venceEl = new Date(ultimoCierre.getTime() + VENTANA_EMBOLSADOS_MS);
-    const cantidadEmbolsada = grupo.reduce((a, c) => a + (c.cantidad ?? 0), 0);
-
-    // Dos señales, cualquiera alcanza: bajó lo que había en el pulmón de
-    // ingreso, o subió el stock ya embolsado, al menos lo que se cargó acá.
-    const deltaIngreso = foto.enIngreso != null ? foto.enIngreso - Number(r.enIngreso) : null;
-    const deltaStock = foto.stockSinIngreso != null ? Number(r.stockSinIngreso) - foto.stockSinIngreso : null;
-    const confirmado =
-      (deltaIngreso != null && deltaIngreso >= cantidadEmbolsada * CONFIRMACION_TOLERANCIA) ||
-      (deltaStock != null && deltaStock >= cantidadEmbolsada * CONFIRMACION_TOLERANCIA);
-
-    if (confirmado || Date.now() > venceEl.getTime()) {
-      rows.push(r); // el WMS ya lo reflejó, o pasaron los 7 días: vuelve al flujo normal
+    const vivo = pulmonVivo.get(cod) ?? 0;
+    if (a.pulmonAlCierre == null || vivo < a.pulmonAlCierre) {
+      liberar.push({ id: a.id, pulmon: Math.round(vivo) });
     } else {
-      embolsados.push({ ...r, cantidadEmbolsada, ultimoCierre, venceEl });
+      controlar.push(a.id);
+      siguenApartados.add(cod);
     }
   }
 
-  return NextResponse.json({ ...reco, rows, embolsados, enCurso, hechosHoy });
+  if (controlar.length || liberar.length) {
+    // `liberado: null` en el WHERE: si dos pantallas hacen el control a la
+    // vez, la segunda no pisa lo que escribió la primera.
+    await prisma
+      .$transaction([
+        ...(controlar.length
+          ? [
+              prisma.deposito_embolsado.updateMany({
+                where: { id: { in: controlar }, liberado: null },
+                data: { controlado: ahora },
+              }),
+            ]
+          : []),
+        ...liberar.map((l) =>
+          prisma.deposito_embolsado.updateMany({
+            where: { id: l.id, liberado: null },
+            data: { controlado: ahora, liberado: ahora, pulmonLiberado: l.pulmon },
+          }),
+        ),
+      ])
+      .catch((e) => console.error("GET /api/deposito/embolsado (control apartados)", e));
+  }
+
+  const rows = recoRows.filter((r) => !siguenApartados.has(String(r.codArticulo).trim()));
+
+  return NextResponse.json({ ...reco, rows, enCurso, hechosHoy });
+}
+
+/** Pulmón de ingreso EN VIVO de un artículo (WMS). Si falla, `fallback`. */
+async function pulmonActual(cod: string, fallback: number | null): Promise<number | null> {
+  if (!cod.trim()) return fallback;
+  try {
+    const res = await fetch(
+      `${API_URL}/deposito/embolsado/pulmon?cod=${encodeURIComponent(cod.trim())}`,
+      { cache: "no-store", signal: AbortSignal.timeout(10000) },
+    );
+    if (!res.ok) return fallback;
+    const j = await res.json().catch(() => null);
+    const n = Number(j?.enIngreso);
+    return Number.isFinite(n) ? Math.round(n) : fallback;
+  } catch (e) {
+    console.error("pulmonActual", e);
+    return fallback;
+  }
 }
 
 /** Resuelve el usuario tipeado contra Gen_Usuarios (Magnus). */
@@ -338,7 +364,7 @@ export async function PATCH(req: NextRequest) {
   // la foto (`enIngreso` null), no hay contra qué comparar y se deja pasar.
   const previo = await prisma.deposito_embolsado.findUnique({
     where: { id },
-    select: { enIngreso: true },
+    select: { enIngreso: true, codArticulo: true },
   });
   if (previo?.enIngreso != null && cantidad > previo.enIngreso)
     return NextResponse.json(
@@ -348,11 +374,23 @@ export async function PATCH(req: NextRequest) {
       { status: 400 },
     );
 
+  // Foto del pulmón AL MARCAR como embolsado: contra ella se controla una vez
+  // por día si el WMS ya reflejó el movimiento (ver APARTADOS arriba). Si el
+  // WMS no contesta, se usa la foto de cuando se tomó el ítem: el cierre no
+  // se frena por eso. Cantidad 0 = no se embolsó nada: no se aparta.
+  const pulmonAlCierre = cantidad > 0 ? await pulmonActual(previo?.codArticulo ?? "", previo?.enIngreso ?? null) : null;
+  const fin = new Date();
+
   // updateMany con `fin: null` en el WHERE: si otro ya lo cerró, devuelve 0 y
   // no se pisa el cierre anterior.
   const r = await prisma.deposito_embolsado.updateMany({
     where: { id, fin: null },
-    data: { fin: new Date(), cantidad },
+    data: {
+      fin,
+      cantidad,
+      pulmonAlCierre,
+      ...(cantidad > 0 ? {} : { liberado: fin }),
+    },
   });
   if (r.count === 0)
     return NextResponse.json({ error: "Ese ítem ya estaba cerrado" }, { status: 409 });

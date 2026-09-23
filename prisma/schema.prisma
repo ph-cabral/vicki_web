@@ -987,6 +987,12 @@ model deposito_embolsado {
   stockSinIngreso Int?
   enIngreso       Int?
   creadoPor       Int?
+  // Apartado (2026-09-23): foto del pulmón al marcar como embolsado y control
+  // diario. liberado NULL = sigue apartado. Índice parcial en el .sql.
+  pulmonAlCierre  Int?
+  controlado      DateTime?
+  liberado        DateTime?
+  pulmonLiberado  Int?
 
   @@index([inicio(sort: Desc)])
   @@index([usuarioMagnus, inicio(sort: Desc)])
