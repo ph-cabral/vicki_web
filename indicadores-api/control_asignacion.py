@@ -216,6 +216,14 @@ Es preferencia, no filtro — si no hay otro pedido libre de ese cliente, sigue
 el orden de siempre. Consecuencia buscada y aceptada: la afinidad pesa más que
 la prioridad, así que un prioridad 1 puede esperar un turno. Sin verificar en
 vivo — falta rebuild indicadores-api.
+
+RESERVA POR CLIENTE (2026-09-23): la afinidad deja de ser preferencia y pasa a
+ser regla — todas las unidades de un cliente (pedidos 10/100/210/310/410 y
+vueltas de acopio 70/75) las controla el primero al que se le asignó una.
+Tabla deposito.control_reserva_cliente; estados nuevo/tomado/espera; el widget
+pregunta Tomar/Esperar cuando el cliente tiene unidades en preparación y
+vuelve a preguntar cada vez que se suma una lista. Ver el bloque "RESERVA POR
+CLIENTE" más abajo (evaluar_reservas, _reclamar, decidir_grupo, estado_grupos).
 """
 from datetime import datetime, timedelta
 
@@ -1282,6 +1290,504 @@ def _fetch_asignacion_activa(nro_operario: int) -> dict | None:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# RESERVA POR CLIENTE (2026-09-23)
+#
+# Regla: todos los pedidos de un mismo cliente los controla la PRIMERA
+# persona a la que se le asignó uno de ellos. Si el cliente tiene 5 pedidos y
+# al operario le toca 1, los otros 4 le van a tocar a él cuando estén listos.
+#
+# La unidad sigue siendo la misma que en la cola: pedido (10/100/210/310/410)
+# o VUELTA de acopio (70/75, remito 71). El "grupo" de un cliente es:
+#   · listo      -> la unidad pasaría hoy el gate de la cola (mismo criterio que
+#                   SQL_MAGNUS_LISTOS_PARA_CONTROL / SQL_MAGNUS_ACOPIO_ESPERA_CONTROL,
+#                   incluido el gate de centros CP1/CP2).
+#   · en prep.   -> ya se mandó a armar y todavía no terminó: fila de
+#                   Ven_PedImpresoCA con FechaAsignacion en los últimos
+#                   RESERVA_PREP_DIAS días (CP1 sin ubicación o CP2 sin FechaFin),
+#                   o remito 71 emitido (EstadoRemito 1/2) con FechaArmado = 0.
+#                   Un pedido abierto que nunca se mandó al depósito NO traba al
+#                   grupo, y uno mandado hace más de RESERVA_PREP_DIAS tampoco
+#                   (medido 2026-09-23: 4 de 80 pedidos en preparación tenían
+#                   más de 7 días — trabados, no "en camino").
+#
+# Estados de la reserva (deposito.control_reserva_cliente, 1 fila por cliente):
+#   nuevo   -> se le acaba de asignar la 1ª unidad y hay otras en preparación:
+#              el widget le pregunta Tomar / Esperar.
+#   tomado  -> la toma: el resto del cliente le cae a él, primero en la cola,
+#              a medida que se pone listo. No se le vuelve a preguntar.
+#   espera  -> prefiere esperar: la unidad vuelve a la cola RESERVADA para él
+#              (nadie más la puede tomar) y sigue con otros clientes. Cuando se
+#              suma otra unidad lista ("listosAlDecidir" crece) se le vuelve a
+#              preguntar. Si quedan TODAS listas, pasa sola a "tomado" y el
+#              widget, si está libre, se las asigna.
+#
+# Liberación de la reserva: cuando en Magnus ya no queda ninguna unidad del
+# cliente (todo controlado/cerrado) o cuando el operario deja de dar señales
+# ("vistoEn" más viejo que RESERVA_INACTIVO_MIN: widget cerrado, PC apagada,
+# cambio de operario). El widget nuevo refresca "vistoEn" cada 30 s.
+#
+# Concurrencia: el reclamo + alta de reserva van dentro de un
+# pg_advisory_xact_lock — dos operarios que aprietan Asignar a la vez con
+# pedidos del mismo cliente en la cola no pueden quedarse con uno cada uno.
+# ══════════════════════════════════════════════════════════════════════════
+
+RESERVA_PREP_DIAS = 7
+RESERVA_INACTIVO_MIN = 30
+_LOCK_COLA = 7_310_425   # clave del pg_advisory_xact_lock de la cola
+
+_SQL_PG_RESERVA_DDL = """
+CREATE TABLE IF NOT EXISTS deposito.control_reserva_cliente (
+    "codCliente"      integer PRIMARY KEY,
+    "nroOperario"     integer NOT NULL,
+    "asignadoA"       text,
+    cliente           text,
+    estado            text NOT NULL DEFAULT 'nuevo',
+    "listosAlDecidir" integer NOT NULL DEFAULT 0,
+    "creadoEn"        timestamp NOT NULL DEFAULT now(),
+    "actualizadoEn"   timestamp NOT NULL DEFAULT now(),
+    "vistoEn"         timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_control_reserva_operario
+    ON deposito.control_reserva_cliente ("nroOperario");
+CREATE INDEX IF NOT EXISTS idx_control_asignacion_cliente
+    ON deposito.control_asignacion ("codCliente");
+"""
+_reserva_ddl_ok = False
+
+
+def _asegurar_tabla_reserva() -> None:
+    """CREATE IF NOT EXISTS una sola vez por proceso (también está en
+    sql/deposito_control_asignacion.sql). Si el usuario de PG no tiene
+    permiso de DDL, sigue: la tabla la crea el .sql."""
+    global _reserva_ddl_ok
+    if _reserva_ddl_ok:
+        return
+    try:
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(_SQL_PG_RESERVA_DDL)
+            conn.commit()
+        finally:
+            conn.close()
+        _reserva_ddl_ok = True
+    except Exception:  # noqa: BLE001
+        _reserva_ddl_ok = True
+
+
+# Grupo de uno o más clientes en Magnus. Seeks: VenFer_PedidoCabecera por
+# VF_PEDCAB_Cla_EstadoCliente (EstadoPedido, CodCliente); remitos 71 por
+# VF_REMCAB_Cla_CodClienteFecha (CodCliente); CA/Reng por sus clustered. {ph} = IN
+# de CodCliente (se usa dos veces: los parámetros van duplicados).
+_SQL_GRUPO_CLIENTES = """
+SELECT cab.CodCliente, cab.NroMovVenta AS NroPedido, 0 AS NroRemito,
+       CASE WHEN EXISTS (
+                SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+                WHERE c.NroMovVenta = cab.NroMovVenta
+                  AND LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> '')
+             AND NOT EXISTS ({gate_centros})
+            THEN 1 ELSE 0 END AS Listo
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+WHERE cab.EstadoPedido = 2
+  AND cab.CodCliente IN ({ph})
+  AND cab.CompCodigo IN (10, 100, 210, 310, 410)
+  AND EXISTS (
+        SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+        WHERE c.NroMovVenta = cab.NroMovVenta
+          AND (c.FechaAsignacion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias}
+               OR LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''))
+UNION ALL
+SELECT cab.CodCliente, rmt.NroMovPedido, rmt.NroMovVenta,
+       CASE WHEN rmt.FechaArmado > 0 THEN 1 ELSE 0 END
+FROM EVERWEAR.dbo.VenFer_RmtoCabecera rmt
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMovPedido
+-- Acopio: se entra por el REMITO (VF_REMCAB_Cla_CodClienteFecha) y NO se
+-- exige pedido abierto — medido 2026-09-23: las vueltas recién mandadas
+-- (remito 71 EstadoRemito 1/2, FechaArmado 0) cuelgan de pedidos 70/75 ya en
+-- EstadoPedido 4. Misma lógica que SQL_MAGNUS_ACOPIO_ESPERA_CONTROL, que
+-- tampoco filtra el estado del pedido. rmt.CodCliente = cab.CodCliente en
+-- 574/574 remitos 71 (desde 82350).
+WHERE rmt.CodCliente IN ({ph})
+  AND cab.CompCodigo IN (70, 75)
+  AND rmt.CompCodigo = 71
+  AND ISNULL(rmt.FechaCierre, 0) = 0
+  AND (
+        (rmt.FechaArmado > 0 AND rmt.EstadoRemito NOT IN (3, 4)
+         AND EXISTS (SELECT 1 FROM EVERWEAR.dbo.VenFer_RmtoReng rr
+                     WHERE rr.NroMovVenta = rmt.NroMovVenta))
+     OR (ISNULL(rmt.FechaArmado, 0) = 0 AND rmt.EstadoRemito IN (1, 2)
+         AND rmt.FecRegistracion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias})
+      )
+"""
+
+
+def fetch_grupos_magnus(cod_clientes: list[int]) -> dict[int, list[dict]]:
+    """{codCliente: [{nroPedido, nroRemito, listo}]} — unidades vivas del
+    cliente (listas o en preparación). Cliente sin unidades = no aparece."""
+    cods = sorted({int(c) for c in cod_clientes if c is not None})
+    out: dict[int, list[dict]] = {}
+    if not cods:
+        return out
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        for i in range(0, len(cods), _PURGA_CHUNK // 2):
+            lote = cods[i:i + _PURGA_CHUNK // 2]
+            ph = ",".join("?" * len(lote))
+            cur.execute(
+                _SQL_GRUPO_CLIENTES.format(
+                    ph=ph, dias=int(RESERVA_PREP_DIAS),
+                    gate_centros=_SQL_GATE_CENTROS.format(nro="cab.NroMovVenta")),
+                lote + lote,
+            )
+            for cod, nro_ped, nro_rmt, listo in cur.fetchall():
+                out.setdefault(int(cod), []).append({
+                    "nroPedido": int(nro_ped),
+                    "nroRemito": int(nro_rmt or 0),
+                    "listo": bool(listo),
+                })
+    finally:
+        conn.close()
+    for lst in out.values():
+        lst.sort(key=lambda u: (u["nroPedido"], u["nroRemito"]))
+    return out
+
+
+def _unidades_asignadas(cur, cod_clientes: list[int]) -> set[tuple[int, int]]:
+    """(nroPedido, nroRemito) de ese/os cliente/s que ya se entregaron a un
+    operario (en control o controlados con el cierre de Magnus demorado)."""
+    if not cod_clientes:
+        return set()
+    cur.execute(
+        'SELECT "nroPedido", "nroRemito" FROM deposito.control_asignacion '
+        'WHERE "codCliente" = ANY(%s) AND "asignadoEn" IS NOT NULL '
+        "  AND \"asignadoEn\" > now() - interval '60 days'",
+        (list(cod_clientes),),
+    )
+    return {(int(a), int(b or 0)) for a, b in cur.fetchall()}
+
+
+def _tocar_operario(nro_operario: int) -> None:
+    """Latido: el operario sigue en su puesto -> sus reservas no vencen."""
+    try:
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                'UPDATE deposito.control_reserva_cliente SET "vistoEn" = now() '
+                'WHERE "nroOperario" = %s',
+                (nro_operario,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — sin tabla todavía / PG caído
+        pass
+
+
+def _resumir(reserva: dict, unidades: list[dict], asignadas: set) -> dict:
+    """Arma el resumen del grupo y decide la transición de estado (no escribe:
+    devuelve "_nuevoEstado"/"_nuevoListos" para que el llamador persista)."""
+    detalle = []
+    libres = asignados = prep = 0
+    for u in unidades:
+        clave = (u["nroPedido"], u["nroRemito"])
+        if not u["listo"]:
+            est = "prep"
+            prep += 1
+        elif clave in asignadas:
+            est = "asignado"
+            asignados += 1
+        else:
+            est = "listo"
+            libres += 1
+        detalle.append({"nroPedido": u["nroPedido"], "nroRemito": u["nroRemito"], "estado": est})
+
+    estado = reserva["estado"]
+    listos_decidir = int(reserva.get("listosAlDecidir") or 0)
+    oferta = False
+    auto = False
+    nuevo_estado, nuevo_listos = estado, listos_decidir
+
+    if estado == "nuevo":
+        if prep == 0:
+            nuevo_estado = "tomado"          # nada que esperar: no se pregunta
+        else:
+            oferta = True
+    elif estado == "espera":
+        if prep == 0 and libres > 0:
+            nuevo_estado = "tomado"          # quedaron todas listas: van a él
+            auto = True
+        elif libres > listos_decidir:
+            oferta = True                    # se sumó otra lista: volver a preguntar
+        elif libres < listos_decidir:
+            nuevo_listos = libres            # se anuló alguna: bajar la vara
+
+    return {
+        "codCliente": reserva["codCliente"],
+        "cliente": reserva.get("cliente"),
+        "nroOperario": reserva["nroOperario"],
+        "asignadoA": reserva.get("asignadoA"),
+        "estado": nuevo_estado,
+        "total": len(unidades),
+        "listos": libres,            # listos y todavía sin entregar
+        "asignados": asignados,      # ya entregados (en control / controlados)
+        "enPreparacion": prep,
+        "oferta": oferta,
+        "todosListos": prep == 0,
+        "autoAsignar": auto,
+        "pedidos": detalle,
+        "_nuevoEstado": nuevo_estado if nuevo_estado != estado else None,
+        "_nuevoListos": nuevo_listos if nuevo_listos != listos_decidir else None,
+    }
+
+
+def evaluar_reservas(nro_operario: int | None = None) -> dict[int, dict]:
+    """Mantenimiento + estado de las reservas (todas, o las de un operario):
+    borra las vencidas por inactividad y las de clientes que ya no tienen
+    unidades vivas en Magnus, aplica las transiciones de estado y devuelve
+    {codCliente: resumen}. Si Magnus no contesta, no borra nada por grupo
+    (solo por inactividad) y devuelve lo que pueda."""
+    _asegurar_tabla_reserva()
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'DELETE FROM deposito.control_reserva_cliente '
+            'WHERE "vistoEn" < now() - make_interval(mins => %s)',
+            (RESERVA_INACTIVO_MIN,),
+        )
+        sql = ('SELECT "codCliente", "nroOperario", "asignadoA", cliente, estado, '
+               '"listosAlDecidir" FROM deposito.control_reserva_cliente')
+        params: tuple = ()
+        if nro_operario is not None:
+            sql += ' WHERE "nroOperario" = %s'
+            params = (nro_operario,)
+        cur.execute(sql, params)
+        cols = [c[0] for c in cur.description]
+        reservas = [dict(zip(cols, r)) for r in cur.fetchall()]
+        conn.commit()
+        if not reservas:
+            return {}
+
+        cods = [r["codCliente"] for r in reservas]
+        try:
+            grupos = fetch_grupos_magnus(cods)
+        except Exception:  # noqa: BLE001 — Magnus caído: no tocar reservas
+            return {}
+        asignadas = _unidades_asignadas(cur, cods)
+
+        out: dict[int, dict] = {}
+        for r in reservas:
+            unidades = grupos.get(int(r["codCliente"]), [])
+            if not unidades:
+                cur.execute(
+                    'DELETE FROM deposito.control_reserva_cliente WHERE "codCliente" = %s',
+                    (r["codCliente"],),
+                )
+                continue
+            res = _resumir(r, unidades, asignadas)
+            if res["_nuevoEstado"] is not None or res["_nuevoListos"] is not None:
+                cur.execute(
+                    'UPDATE deposito.control_reserva_cliente '
+                    'SET estado = %s, "listosAlDecidir" = %s, "actualizadoEn" = now() '
+                    'WHERE "codCliente" = %s',
+                    (res["estado"],
+                     res["_nuevoListos"] if res["_nuevoListos"] is not None else r["listosAlDecidir"],
+                     r["codCliente"]),
+                )
+            res.pop("_nuevoEstado", None)
+            res.pop("_nuevoListos", None)
+            out[int(r["codCliente"])] = res
+        conn.commit()
+        return out
+    finally:
+        conn.close()
+
+
+_COLS_FILA = [
+    "id", "nroPedido", "nroRemito", "fecha", "tipoPedido", "cliente", "codCliente",
+    "prioridad", "ubicacion", "ot", "nroArmador", "nombreArmador",
+    "asignadoA", "asignadoEn",
+]
+
+
+def _fila_json(row) -> dict:
+    out = dict(zip(_COLS_FILA, row))
+    if out.get("fecha") is not None:
+        out["fecha"] = out["fecha"].isoformat()
+    if out.get("asignadoEn") is not None:
+        out["asignadoEn"] = out["asignadoEn"].isoformat()
+    return out
+
+
+def _reclamar(cur, nro_operario: int, nombre: str, cod_cliente_afin,
+              solo_cliente: int | None = None):
+    """UPDATE atómico que entrega la próxima fila libre. Respeta reservas:
+    nunca entrega una fila de un cliente reservado por OTRO operario (vigente)
+    ni de un cliente que ESTE operario dejó en espera. Orden: 410 primero de
+    todo (regla 2026-08-25), después los clientes reservados por él, después
+    afinidad, prioridad y fecha. `solo_cliente` = reclamar solo de ese cliente
+    (botón Tomar)."""
+    cur.execute(
+        """
+        UPDATE deposito.control_asignacion
+        SET "asignadoA" = %(nombre)s, "nroOperarioAsignado" = %(op)s, "asignadoEn" = now()
+        WHERE id = (
+            SELECT ca.id FROM deposito.control_asignacion ca
+            WHERE ca."asignadoEn" IS NULL
+              AND (%(solo)s::int IS NULL OR ca."codCliente" = %(solo)s::int)
+              AND NOT EXISTS (
+                    SELECT 1 FROM deposito.control_reserva_cliente r
+                    WHERE r."codCliente" = ca."codCliente"
+                      AND r."vistoEn" >= now() - make_interval(mins => %(inact)s)
+                      AND (r."nroOperario" <> %(op)s OR r.estado = 'espera')
+                  )
+            ORDER BY CASE WHEN ca."compCodigo" = 410 THEN 0 ELSE 1 END ASC,
+                     EXISTS (
+                        SELECT 1 FROM deposito.control_reserva_cliente r
+                        WHERE r."codCliente" = ca."codCliente" AND r."nroOperario" = %(op)s
+                     ) DESC,
+                     COALESCE(ca."codCliente" = %(afin)s::int, FALSE) DESC,
+                     COALESCE(ca."prioridad", 999) ASC, ca.fecha ASC
+            FOR UPDATE OF ca SKIP LOCKED
+            LIMIT 1
+        )
+        RETURNING id, "nroPedido", "nroRemito", fecha, "tipoPedido", cliente, "codCliente",
+                  "prioridad", ubicacion, ot, "nroArmador", "nombreArmador",
+                  "asignadoA", "asignadoEn"
+        """,
+        {"nombre": nombre, "op": nro_operario, "solo": solo_cliente,
+         "inact": RESERVA_INACTIVO_MIN, "afin": cod_cliente_afin},
+    )
+    return cur.fetchone()
+
+
+def _alta_reserva(cur, nro_operario: int, nombre: str, fila: dict) -> None:
+    """Reserva el cliente de la fila recién entregada para este operario. Si
+    ya era suyo, solo refresca el latido (no pisa "tomado"/"espera")."""
+    cod = fila.get("codCliente")
+    if cod is None:
+        return
+    cur.execute(
+        """
+        INSERT INTO deposito.control_reserva_cliente
+            ("codCliente", "nroOperario", "asignadoA", cliente, estado, "listosAlDecidir")
+        VALUES (%s, %s, %s, %s, 'nuevo', 0)
+        ON CONFLICT ("codCliente") DO UPDATE
+            SET "vistoEn" = now()
+            WHERE deposito.control_reserva_cliente."nroOperario" = EXCLUDED."nroOperario"
+        """,
+        (cod, nro_operario, nombre, fila.get("cliente")),
+    )
+
+
+def grupo_de_cliente(nro_operario: int, cod_cliente) -> dict | None:
+    """Resumen del grupo del cliente para ESTE operario (o None si no hay
+    reserva suya para ese cliente)."""
+    if cod_cliente is None:
+        return None
+    try:
+        return evaluar_reservas(nro_operario).get(int(cod_cliente))
+    except Exception:  # noqa: BLE001 — el grupo es informativo, no traba asignar
+        return None
+
+
+def estado_grupos(nro_operario: int) -> dict:
+    """Polling del widget (cada ~30 s): latido + estado de TODAS las reservas
+    del operario. Orden: primero las que piden decisión (oferta), después las
+    que se auto-asignan, después el resto (más unidades listas primero)."""
+    _tocar_operario(nro_operario)
+    grupos = list(evaluar_reservas(nro_operario).values())
+    grupos.sort(key=lambda g: (not g["oferta"], not g["autoAsignar"], -g["listos"], g["codCliente"]))
+    return {"grupos": grupos}
+
+
+def decidir_grupo(nro_operario: int, cod_cliente: int, accion: str) -> dict:
+    """Botones Tomar / Esperar del widget.
+
+    esperar: si la unidad activa del operario es de ese cliente y todavía no
+      cerró, vuelve a la cola (reservada para él). La reserva pasa a "espera"
+      con la cantidad de listas de ese momento como vara: cuando se sume una
+      más, se le vuelve a preguntar.
+    tomar: la reserva pasa a "tomado". Si el operario está libre, se le
+      entrega YA la próxima unidad lista de ese cliente; si está con otro
+      pedido, las del cliente le salen primero en el próximo Asignar."""
+    if accion not in ("tomar", "esperar"):
+        raise ValueError("Acción inválida")
+    nombre = fetch_operario_nombre(nro_operario)
+    if not nombre:
+        raise ValueError(f"Operario {nro_operario} no encontrado")
+    _asegurar_tabla_reserva()
+    _tocar_operario(nro_operario)
+
+    activa = _fetch_asignacion_activa(nro_operario)
+    activa_abierta = activa is not None and not _fetch_asignacion_cerrada(activa)
+    activa_es_del_cliente = activa_abierta and activa.get("codCliente") == cod_cliente
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        cur.execute(
+            'SELECT estado FROM deposito.control_reserva_cliente '
+            'WHERE "codCliente" = %s AND "nroOperario" = %s FOR UPDATE',
+            (cod_cliente, nro_operario),
+        )
+        if cur.fetchone() is None:
+            conn.rollback()
+            raise ValueError("Ese cliente ya no está reservado para vos")
+
+        liberado = False
+        asignado = None
+        if accion == "esperar":
+            if activa_es_del_cliente:
+                cur.execute(
+                    'UPDATE deposito.control_asignacion '
+                    'SET "asignadoA" = NULL, "nroOperarioAsignado" = NULL, "asignadoEn" = NULL '
+                    'WHERE id = %s AND "nroOperarioAsignado" = %s',
+                    (activa["id"], nro_operario),
+                )
+                liberado = cur.rowcount > 0
+            cur.execute(
+                'UPDATE deposito.control_reserva_cliente '
+                # Vara provisoria altísima: evaluar_reservas (abajo) la baja
+                # sola a las listas reales de este momento (rama libres < vara).
+                'SET estado = \'espera\', "listosAlDecidir" = 1000000, '
+                '    "actualizadoEn" = now(), "vistoEn" = now() '
+                'WHERE "codCliente" = %s',
+                (cod_cliente,),
+            )
+        else:
+            cur.execute(
+                'UPDATE deposito.control_reserva_cliente '
+                'SET estado = \'tomado\', "actualizadoEn" = now(), "vistoEn" = now() '
+                'WHERE "codCliente" = %s',
+                (cod_cliente,),
+            )
+            if not activa_abierta:
+                row = _reclamar(cur, nro_operario, nombre, cod_cliente, solo_cliente=cod_cliente)
+                if row:
+                    asignado = _fila_json(row)
+        conn.commit()
+    finally:
+        conn.close()
+
+    grupo = grupo_de_cliente(nro_operario, cod_cliente)
+    if asignado is not None:
+        asignado["grupo"] = grupo
+    return {
+        "accion": accion,
+        "liberado": liberado,
+        "asignado": asignado,
+        # Tomó pero está con otro pedido: las del cliente salen en el próximo Asignar.
+        "despues": accion == "tomar" and activa_abierta and not activa_es_del_cliente,
+        "grupo": grupo,
+    }
+
+
 def asignar_siguiente(nro_operario: int) -> dict:
     """Reclama, de forma atómica, el próximo pedido libre de la cola para
     `nro_operario` (resuelto a nombre igual que insert_error_mesa — no confía
@@ -1328,20 +1834,38 @@ def asignar_siguiente(nro_operario: int) -> dict:
     distinta (o uno de los dos se quede sin pedidos si la cola tiene 1 solo) —
     nunca el mismo pedido 2 veces.
 
+    RESERVA POR CLIENTE (2026-09-23): la fila entregada reserva su cliente
+    para este operario (ver bloque "RESERVA POR CLIENTE"). El reclamo nunca
+    entrega filas de clientes reservados por otro operario ni de los que este
+    dejó en "espera", y prioriza los clientes reservados por él (después de
+    los 410). La respuesta trae "grupo" (resumen del cliente: listos, en
+    preparación, si hay que preguntar Tomar/Esperar) o None.
+
     Lanza ValueError si el operario no existe o si no hay pedidos disponibles
     (cola vacía o todos ya asignados)."""
     nombre = fetch_operario_nombre(nro_operario)
     if not nombre:
         raise ValueError(f"Operario {nro_operario} no encontrado")
 
+    _asegurar_tabla_reserva()
+    _tocar_operario(nro_operario)
+
     activa = _fetch_asignacion_activa(nro_operario)
     if activa is not None and not _fetch_asignacion_cerrada(activa):
         # Sigue con lo suyo: se le devuelve LA MISMA fila. Para acopio "lo
         # suyo" es la vuelta (remito), no el pedido — ver
         # _fetch_asignacion_cerrada.
+        activa["grupo"] = grupo_de_cliente(nro_operario, activa.get("codCliente"))
         return activa
 
     refrescar_cola()
+    # Reservas por cliente (2026-09-23): vencer las inactivas, soltar las de
+    # clientes sin unidades vivas y pasar a "tomado" las "espera" que ya
+    # tienen todo listo — ANTES de reclamar, para que el orden de abajo las vea.
+    try:
+        evaluar_reservas()
+    except Exception:  # noqa: BLE001 — sin reservas se asigna igual
+        pass
 
     conn = get_pg_connection()
     try:
@@ -1366,43 +1890,28 @@ def asignar_siguiente(nro_operario: int) -> dict:
         _ult = cur.fetchone()
         cod_cliente_afin = _ult[0] if _ult else None
 
+        # Todo lo que sigue va serializado: reclamo + alta de reserva. Sin el
+        # lock, 2 operarios podrían llevarse 1 pedido cada uno del mismo
+        # cliente antes de que exista la reserva.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        # Lo que tenía en "nuevo" y no contestó: ya lo controló, lo tomó.
         cur.execute(
-            """
-            UPDATE deposito.control_asignacion
-            SET "asignadoA" = %s, "nroOperarioAsignado" = %s, "asignadoEn" = now()
-            WHERE id = (
-                SELECT id FROM deposito.control_asignacion
-                WHERE "asignadoEn" IS NULL
-                ORDER BY CASE WHEN "compCodigo" = 410 THEN 0 ELSE 1 END ASC,
-                         COALESCE("codCliente" = %s, FALSE) DESC,
-                         COALESCE("prioridad", 999) ASC, fecha ASC
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-            )
-            RETURNING id, "nroPedido", "nroRemito", fecha, "tipoPedido", cliente, "codCliente",
-                      "prioridad", ubicacion, ot, "nroArmador", "nombreArmador",
-                      "asignadoA", "asignadoEn"
-            """,
-            (nombre, nro_operario, cod_cliente_afin),
+            'UPDATE deposito.control_reserva_cliente SET estado = \'tomado\', '
+            '"actualizadoEn" = now() WHERE "nroOperario" = %s AND estado = \'nuevo\'',
+            (nro_operario,),
         )
-        row = cur.fetchone()
+        row = _reclamar(cur, nro_operario, nombre, cod_cliente_afin)
+        out = _fila_json(row) if row else None
+        if out is not None:
+            _alta_reserva(cur, nro_operario, nombre, out)
         conn.commit()
     finally:
         conn.close()
 
-    if not row:
+    if out is None:
         raise ValueError("No hay pedidos disponibles para asignar")
 
-    cols = [
-        "id", "nroPedido", "nroRemito", "fecha", "tipoPedido", "cliente", "codCliente",
-        "prioridad", "ubicacion", "ot", "nroArmador", "nombreArmador",
-        "asignadoA", "asignadoEn",
-    ]
-    out = dict(zip(cols, row))
-    if out.get("fecha") is not None:
-        out["fecha"] = out["fecha"].isoformat()
-    if out.get("asignadoEn") is not None:
-        out["asignadoEn"] = out["asignadoEn"].isoformat()
+    out["grupo"] = grupo_de_cliente(nro_operario, out.get("codCliente"))
     return out
 
 

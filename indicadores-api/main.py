@@ -103,7 +103,10 @@ from errores_mesa import (
     fetch_articulos_pedido, insert_error_mesa_items,
     opciones_calidad as errores_mesa_opciones_calidad, insert_error_calidad_items,
 )
-from control_asignacion import asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados
+from control_asignacion import (
+    asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
+    estado_grupos, decidir_grupo,
+)
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
 # mesa, de un mes. Ver premios.py.
@@ -1798,6 +1801,11 @@ class ObservacionIn(BaseModel):
 class AsignarIn(BaseModel):
     nroOperario: int
 
+class DecisionGrupoIn(BaseModel):
+    nroOperario: int
+    codCliente: int
+    accion: str   # "tomar" | "esperar"
+
 @app.get("/deposito/pedido/{nro}")
 def deposito_pedido(nro: int):
     """Lookup por Nro Pedido (NroMovVenta): Fecha (registracion) + fechaArmado
@@ -1966,6 +1974,27 @@ def deposito_errores_mesa_asignar(body: AsignarIn):
     disponibles para asignar."""
     try:
         return asignar_siguiente(body.nroOperario)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/deposito/errores-mesa/grupo")
+def deposito_errores_mesa_grupo(nroOperario: int = Query(...)):
+    """Polling del widget de Mesa (cada ~30 s): latido del operario + estado
+    de los clientes reservados para él (listos / en preparación / si hay que
+    preguntar Tomar-Esperar). Ver RESERVA POR CLIENTE en control_asignacion.py."""
+    try:
+        return estado_grupos(nroOperario)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/errores-mesa/grupo/decision")
+def deposito_errores_mesa_grupo_decision(body: DecisionGrupoIn):
+    """Botones Tomar / Esperar del widget para un cliente reservado. 404 si
+    el cliente ya no está reservado para ese operario."""
+    try:
+        return decidir_grupo(body.nroOperario, body.codCliente, body.accion)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -8,8 +8,9 @@ import { Panel, ErrMsg, Empty } from "@/app/rrhh/components/IndicadorUI";
 
 type CvPorMes = { mes: string; cantidad: number };
 
-// Pestaña Reclutamiento — CVs recibidos por mes, desde Postgres
-// rag_system.documento_aprobado (tipo='CV'), vía indicadores-api.
+// Pestaña Reclutamiento — personas que postularon por mes (sin repetidos:
+// cada persona cuenta una vez, en el mes de su primer ingreso), desde Postgres
+// rag_system.candidato, vía indicadores-api.
 // Ver app/api/rrhh/reclutamiento/cvs-por-mes/route.ts.
 export default function ReclutamientoTab() {
   const [rows, setRows] = useState<CvPorMes[]>([]);
@@ -24,7 +25,7 @@ export default function ReclutamientoTab() {
       .then(async (r) => {
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
-          throw new Error(e?.error ?? "Error al cargar CVs");
+          throw new Error(e?.error ?? "Error al cargar postulantes");
         }
         return r.json();
       })
@@ -47,16 +48,16 @@ export default function ReclutamientoTab() {
           Reclutamiento
         </h2>
         <p className="text-zinc-500 text-sm mt-1">
-          CVs recibidos por mes — rag_system.documento_aprobado
+          Personas que postularon por mes — sin repetidos
         </p>
       </div>
 
       {error && <ErrMsg msg={error} />}
 
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <KpiCard label="CVs últimos 12 meses" value={total} icon={FileText} accent="yellow" />
+        <KpiCard label="Personas últimos 12 meses" value={total} icon={FileText} accent="yellow" />
         <KpiCard
-          label="CVs mes actual"
+          label="Personas mes actual"
           value={ultimoMes?.cantidad ?? 0}
           icon={TrendingUp}
           accent="green"
@@ -72,14 +73,14 @@ export default function ReclutamientoTab() {
           </div>
         ) : rows.length > 0 ? (
           <BarChartCard
-            title="CVs recibidos por mes"
+            title="Personas que postularon por mes"
             data={rows}
             xKey="mes"
             yKey="cantidad"
             currency={false}
           />
         ) : (
-          <Empty msg="Sin CVs registrados en el período." />
+          <Empty msg="Sin postulantes registrados en el período." />
         )}
       </Panel>
     </div>

@@ -6,8 +6,8 @@ const API_URL =
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-// Proxy → FastAPI indicadores-api: CVs recibidos por mes
-// (rag_system.documento_aprobado, tipo='CV'). Ver indicadores-api/rrhh.py.
+// Proxy → FastAPI indicadores-api: personas únicas que postularon por mes
+// (rag_system.candidato). Ver indicadores-api/rrhh.py.
 export async function GET(req: NextRequest) {
   const meses = req.nextUrl.searchParams.get("meses") ?? "12";
   try {
