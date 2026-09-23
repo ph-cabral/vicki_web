@@ -216,12 +216,19 @@ def _fila_cliente(d: dict) -> dict:
     }
 
 
-def _magnus_buscar(texto: str, digits: str, limit: int) -> dict[int, dict]:
-    """Clientes de Magnus que matchean el texto por código, CUIT o nombre.
-    Devuelve {codigo: fila_cliente}."""
+def _magnus_buscar(texto: str, digits: str, limit: int, es_email: bool = False) -> dict[int, dict]:
+    """Clientes de Magnus que matchean el texto por código, CUIT, nombre o
+    (si el texto trae '@') por email. Devuelve {codigo: fila_cliente}."""
     like = f"%{texto}%"
-    conds = ["c.RazonSocial LIKE ?", "c.NombreComercial LIKE ?"]
-    params: list = [like, like]
+    if es_email:
+        # Con '@' solo tiene sentido el mail: no se busca por nombre ni por
+        # los dígitos que pueda traer la dirección (ej. juan123@...).
+        conds = ["c.EMail LIKE ?"]
+        params: list = [like]
+        digits = ""
+    else:
+        conds = ["c.RazonSocial LIKE ?", "c.NombreComercial LIKE ?"]
+        params = [like, like]
     if digits:
         conds.append("c.CliDocNro LIKE ?")
         params.append(f"%{digits}%")
@@ -277,28 +284,38 @@ def buscar(q: str, limit: int = 50) -> dict:
     if not texto:
         return {"resultados": [], "total": 0, "ecommerceOk": True, "aviso": None}
     limit = max(1, min(int(limit or 50), 100))
-    digits = "".join(ch for ch in texto if ch.isdigit())
     ql = texto.lower()
+    es_email = "@" in texto
+    # Con '@' los dígitos son parte de la dirección, no un nº de cliente/CUIT.
+    digits = "" if es_email else "".join(ch for ch in texto if ch.isdigit())
 
     # 1) Clientes de Magnus que matchean directamente el texto.
-    clientes = _magnus_buscar(texto, digits, limit + 30)
+    clientes = _magnus_buscar(texto, digits, limit + 30, es_email)
     cods_directos = set(clientes.keys())
 
-    # 2) Cuentas del ecommerce que matchean (por nº cliente, CUIT, usuario) —
-    #    o cuyo cliente cayó en la búsqueda de Magnus por nombre.
+    # 2) Cuentas del ecommerce que matchean (por nº cliente, CUIT, usuario,
+    #    email de la cuenta) — o cuyo cliente cayó en la búsqueda de Magnus.
+    #    El email de la cuenta es el que bloquea el alta de un usuario nuevo
+    #    ("el email ya está vinculado"): así se ve a qué cuenta/cliente quedó
+    #    pegado.
     ecommerce_ok = True
     aviso = None
     cuentas_match: list[dict] = []
     try:
         for a in _cuentas():
             hit = False
-            if digits and a["nroCliente"] is not None and str(a["nroCliente"]) == digits:
+            mail = (a["emailCuenta"] or "").lower()
+            if es_email:
+                hit = bool(mail) and ql in mail
+            elif digits and a["nroCliente"] is not None and str(a["nroCliente"]) == digits:
                 hit = True
             elif digits and len(digits) >= 7 and a["cuit"] and digits in a["cuit"]:
                 hit = True
             elif len(ql) >= 2 and a["usuario"] and ql in a["usuario"].lower():
                 hit = True
-            elif a["nroCliente"] in cods_directos:
+            elif len(ql) >= 4 and mail and ql in mail:
+                hit = True
+            if not hit and a["nroCliente"] in cods_directos:
                 hit = True
             if hit:
                 cuentas_match.append(a)
@@ -337,6 +354,10 @@ def buscar(q: str, limit: int = 50) -> dict:
             exacto = -2
         elif cu.get("usuario") and cu["usuario"].lower() == ql:
             exacto = -2
+        elif (cu.get("emailCuenta") or "").lower() == ql:
+            exacto = -2
+        elif (cli.get("email") or "").lower() == ql:
+            exacto = -1
         con_cuenta = 0 if row["cuenta"] else 1
         nombre = (cli.get("razonSocial") or cu.get("usuario") or "").lower()
         return (exacto, con_cuenta, nombre)

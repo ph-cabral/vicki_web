@@ -30,6 +30,14 @@ RUN apt-get update \
 RUN printf '\n[ODBC]\nPooling=Yes\n' >> /etc/odbcinst.ini \
     && sed -i '/^\[ODBC Driver 18 for SQL Server\]/a CPTimeout=120' /etc/odbcinst.ini
 
+# 3c. TLS legacy para la tienda ecommerce (54.232.225.100,2433).
+# Ese SQL Server es viejo y solo habla TLS 1.0; el OpenSSL 3 de bookworm lo
+# rechaza ("unsupported protocol") aunque la conexión use Encrypt=no, porque el
+# login igual va cifrado. Bajamos el mínimo del cliente: no afecta a SRV-SQL2,
+# que sigue negociando TLS 1.2.
+RUN printf 'openssl_conf = openssl_init\n\n[openssl_init]\nssl_conf = ssl_sect\n\n[ssl_sect]\nsystem_default = system_default_sect\n\n[system_default_sect]\nMinProtocol = TLSv1\nCipherString = DEFAULT@SECLEVEL=0\n' > /etc/ssl/openssl_legacy.cnf
+ENV OPENSSL_CONF=/etc/ssl/openssl_legacy.cnf
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

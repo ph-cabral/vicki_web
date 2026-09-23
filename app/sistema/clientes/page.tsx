@@ -141,7 +141,7 @@ export default function ClientesPage() {
           <div>
             <h1 className="text-yellow-400 font-bold uppercase tracking-wide">Clientes · Ecommerce</h1>
             <p className="text-sm text-zinc-500">
-              Buscá por número de cliente, nombre o CUIT. Trae los datos del cliente y su usuario y contraseña del ecommerce.
+              Buscá por número de cliente, nombre, CUIT o email. Trae los datos del cliente y su usuario y contraseña del ecommerce.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -164,7 +164,7 @@ export default function ClientesPage() {
               autoFocus
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="N° de cliente, nombre o CUIT…"
+              placeholder="N° de cliente, nombre, CUIT o email…"
               className="w-full rounded-md border border-zinc-700 bg-[#171717] py-2.5 pl-9 pr-3 text-base text-zinc-100 placeholder:text-zinc-600 outline-none focus:border-yellow-500/60"
             />
           </div>
@@ -204,7 +204,7 @@ export default function ClientesPage() {
                   {data.total > data.resultados.length ? ` (mostrando ${data.resultados.length})` : ""}
                 </div>
                 {data.resultados.map((fila, i) => (
-                  <Fila key={`${fila.cuenta?.usuario ?? ""}-${fila.cliente?.codigo ?? i}`} fila={fila} />
+                  <Fila key={`${fila.cuenta?.usuario ?? ""}-${fila.cliente?.codigo ?? i}`} fila={fila} buscado={buscado} />
                 ))}
               </>
             )}
@@ -215,10 +215,14 @@ export default function ClientesPage() {
   );
 }
 
-function Fila({ fila }: { fila: Fila }) {
+function Fila({ fila, buscado }: { fila: Fila; buscado: string }) {
   const c = fila.cliente;
   const cu = fila.cuenta;
   const titulo = c?.razonSocial || c?.nombreComercial || (cu ? `Cuenta ${cu.usuario}` : "—");
+  // Si se buscó un email y es el de la cuenta, se resalta: es el que bloquea
+  // el alta de un usuario nuevo en el ecommerce ("email ya vinculado").
+  const qMail = buscado.includes("@") ? buscado.trim().toLowerCase() : "";
+  const mailCuentaCoincide = !!(qMail && cu?.emailCuenta && cu.emailCuenta.toLowerCase().includes(qMail));
 
   return (
     <div className="overflow-hidden rounded-lg border border-zinc-800 bg-[#171717]">
@@ -259,7 +263,9 @@ function Fila({ fila }: { fila: Fila }) {
             </div>
           ) : (
             <p className="text-sm text-zinc-500">
-              La cuenta apunta al cliente {cu?.nroCliente ?? "?"}, que no aparece en Magnus.
+              {cu?.nroCliente != null
+                ? `La cuenta apunta al cliente ${cu.nroCliente}, que no aparece en Magnus.`
+                : "La cuenta no está vinculada a ningún número de cliente."}
             </p>
           )}
         </div>
@@ -274,7 +280,16 @@ function Fila({ fila }: { fila: Fila }) {
               <CampoCredencial label="Usuario" valor={cu.usuario} />
               <CampoCredencial label="Contraseña" valor={cu.password} secreto />
               <div className="grid grid-cols-2 gap-3 pt-1">
-                <Dato label="Email de la cuenta" valor={cu.emailCuenta} />
+                {mailCuentaCoincide ? (
+                  <div className="col-span-2 flex flex-col gap-0.5 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-1.5">
+                    <span className="text-[10px] uppercase tracking-wider text-yellow-400">
+                      Email de la cuenta · coincide con la búsqueda
+                    </span>
+                    <span className="text-sm text-yellow-200 break-all">{cu.emailCuenta}</span>
+                  </div>
+                ) : (
+                  <Dato label="Email de la cuenta" valor={cu.emailCuenta} />
+                )}
                 <Dato label="Último ingreso" valor={cu.ultimoLogin} />
                 <Dato label="Alta" valor={cu.alta} />
                 <div className="flex items-end">
