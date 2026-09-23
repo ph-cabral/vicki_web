@@ -31,6 +31,7 @@ _dep.PATRONES_CANCELADO = ()
 _dep.WMS_ESTADOS_VIVOS = (1, 5)
 _dep.WMS_ESTADO_LABELS = {1: {"label": "Pendiente", "bucket": "espera"}}
 _dep._es_operario_merca = lambda *a, **k: False
+_dep.es_operario_ignorado = lambda *a, **k: False
 _dep._info_articulos = lambda codigos: {}
 _dep._info_pedidos_resumen = lambda *a, **k: {}
 _dep._int = lambda v: int(v) if v is not None else None

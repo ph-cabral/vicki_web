@@ -369,6 +369,9 @@ interface PickOt {
   Cliente: string;
   Armador: string;
   Estado: string;
+  Asignada?: boolean;
+  SinOT?: boolean;
+  Acopio?: boolean;
   Registrada: string;
   Renglones: number;
   ConProblema: number;
@@ -503,13 +506,15 @@ function PickingDisponiblePanel() {
     <>
       <div className="flex items-start justify-between gap-3 mb-3">
         <p className="text-[11px] text-zinc-600 leading-relaxed max-w-2xl">
-          Foto en vivo de las OT de Picking ya asignadas a un armador, la haya tomado o no.
+          Foto en vivo contra todos los pedidos abiertos (CP1): OT de Picking asignadas o
+          todavía sin armador, pedidos que el WMS aún no pasó a OT y vueltas de acopio 70/75
+          con remito. Lo asignado tiene prioridad sobre lo que todavía no se tomó.
           Disponible = lo que hay en la posición que el WMS le asignó al renglón − lo que
           las OT anteriores en la cola ya tienen comprometido sobre esa misma posición
           (reparto FIFO: la OT más vieja tiene prioridad). El stock de la posición baja
           recién cuando el armador pickea, así que hasta ese momento dos pedidos pueden
           estar apuntados al mismo estante sin que nadie lo vea.
-          {data ? ` Ventana: OT de los últimos ${data.ventanaDias} días.` : ""}
+          {data ? ` Vueltas de acopio de los últimos ${data.ventanaDias} días.` : ""}
         </p>
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -568,6 +573,7 @@ function PickingDisponiblePanel() {
               }
               accent={
                 <span className="flex items-center gap-2 flex-wrap justify-end">
+                  {o.Acopio && <Tag tone="neutral">Acopio</Tag>}
                   <Tag tone="neutral">{o.Armador}</Tag>
                   <Tag tone={o.Estado === "En proceso" ? "yellow" : "neutral"}>{o.Estado}</Tag>
                   {o.Faltantes > 0 && <Tag tone="red">{o.Faltantes} sin stock</Tag>}

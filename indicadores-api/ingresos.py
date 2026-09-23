@@ -23,7 +23,7 @@ El nombre de la columna que guarda ese código en `Com_RemitoCabecera` NO está
 documentado, así que se DETECTA por INFORMATION_SCHEMA entre los candidatos de
 `CAND_COL_COMPROBANTE` y se cachea a nivel proceso (`_col_comprobante`, corre
 una sola vez, no una por request). Si no aparece ninguno, la consulta NO filtra
-por tipo (trae todos los remitos no anulados del rango) y la respuesta avisa con
+por tipo (trae todos los remitos TERMINADOS/FACTURADOS del rango) y la respuesta avisa con
 `comprobanteWarn: true` — las vistas lo muestran en amarillo.
 
 `solo_oc=True` vuelve al recorte viejo (`NroOrdCompra <> 0`) por si alguna
@@ -212,8 +212,14 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
           {_hasta_cond}
           {_comp_cond}
           {_oc_cond}
-          AND LTRIM(RTRIM(cab.Estado)) <> 'Anulado'
+          AND cab.Estado = 0
+          AND cab.EstadoDeRegistracion IN (0, 2)
         """
+        # Estado del remito (regla del reporte de Magnus, SP RPT_ConsultaRemitosCompras):
+        #   Estado=1 → ANULADO · EstadoDeRegistracion 0 → TERMINADO · 1 → GUARDADO · 2 → FACTURADO.
+        # Solo cuentan como "arribado" los TERMINADOS y FACTURADOS (no anulados ni guardados).
+        # El filtro anterior (LTRIM(RTRIM(cab.Estado)) <> 'Anulado') comparaba un tinyint
+        # contra texto y no filtraba nada.
 
         cur.execute(sql)
         cols = [c[0] for c in cur.description]

@@ -51,6 +51,8 @@ interface Item {
   Fecha: string | null; // fecha del faltante (snapshot Ven_PedRenPendientes)
   fechaArribo: string | null;
   arriboOC: boolean; // true = fecha derivada de la OC pendiente (no cargada a mano)
+  arriboNroOC?: string | null; // OC de donde sale la fecha (0001-00014328)
+  arriboPactada?: boolean; // true = entrega pactada del renglón; false = fecha de la OC (sin pactada)
   extraordinario: boolean; // leído de preparado.faltante_extraordinario (compras)
   extraordinarioFecha: string | null; // clave (fecha, CodArticulo) para decidir comprar
 }
@@ -958,13 +960,20 @@ function GrupoCard({
                 <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">
-                  {fmtAr(it.fechaArribo)}
-                  {it.arriboOC && it.fechaArribo && (
+                  {/* Vista "Ingresados" (vendidoMode): la mercadería ya llegó → siempre "En stock". */}
+                  {vendidoMode ? "En stock" : fmtAr(it.fechaArribo)}
+                  {!vendidoMode && it.arriboOC && it.fechaArribo && (
                     <span
                       className="ml-1.5 text-[10px] text-sky-400/80 align-middle"
-                      title="Entrega pactada + 2 días de la OC más vieja con este artículo todavía pendiente de recibir"
+                      title={
+                        (it.arriboPactada
+                          ? "Entrega pactada en Magnus"
+                          : "Fecha de la OC (el renglón no tiene entrega pactada)") +
+                        (it.arriboNroOC ? ` · OC ${it.arriboNroOC}` : "") +
+                        " — OC más vieja con este artículo todavía pendiente de recibir"
+                      }
                     >
-                      OC
+                      {it.arriboNroOC ? `OC ${it.arriboNroOC.replace(/^0*\d+-0*/, "")}` : "OC"}
                     </span>
                   )}
                 </td>
@@ -1070,7 +1079,7 @@ function GrupoCardListo({
                   <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
                   <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">{fmtAr(it.fechaArribo)}</td>
+                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">En stock</td>
                   <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-center gap-1.5">

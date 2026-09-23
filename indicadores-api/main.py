@@ -41,7 +41,10 @@ from compras import (
 )
 from oc_areas import fetch_oc_por_area, fetch_oc_detalle_area
 from ingresos import fetch_remitos_ingreso
-from embolsado import fetch_embolsado, buscar_usuario as buscar_usuario_embolsado
+from embolsado import (
+    fetch_embolsado, buscar_usuario as buscar_usuario_embolsado,
+    pulmon_ingreso as pulmon_ingreso_embolsado,
+)
 from ventas import (
     fetch_pedidos_mes, fetch_ventas_por_linea, fetch_vendedores,
     fetch_top_clientes, fetch_top_lineas, fetch_clientes_por_linea,
@@ -470,6 +473,17 @@ def deposito_embolsado(
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
+@app.get("/deposito/embolsado/pulmon")
+def deposito_embolsado_pulmon(cod: str = Query(...)):
+    """Unidades de un artículo en PULMON_INGRESO (depósito CENTRAL), en vivo.
+    Lo usa el cierre de un embolsado para guardar la foto del pulmón contra la
+    que después se controla, una vez por día, si el WMS ya reflejó el
+    movimiento."""
+    try:
+        return {"codArticulo": cod.strip(), "enIngreso": pulmon_ingreso_embolsado(cod)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
 @app.get("/deposito/embolsado/usuario")
 def deposito_embolsado_usuario(q: str = Query(...)):
     """Resuelve quién es el que va a embolsar contra el maestro de usuarios de
@@ -564,15 +578,17 @@ def deposito_reposicion_ot():
 
 @app.get("/deposito/picking-disponible")
 def deposito_picking_disponible(
-    dias: int = Query(default=7, ge=1, le=60),
+    dias: int = Query(default=15, ge=1, le=60),
     todos: int = Query(default=0),
 ):
-    """Cartel de armado: por cada OT de Picking viva (ya asignada a un armador,
-    la haya tomado o no), qué hay REALMENTE para tomar en la POSICIÓN de picking
+    """Cartel de armado: contra TODOS los pedidos abiertos (OT de picking vivas
+    con o sin armador, vueltas de acopio 70/75 con remito y pedidos CP1 que el
+    WMS todavía no pasó a OT), qué hay REALMENTE para tomar en la POSICIÓN de picking
     de cada renglón — disponible | pedido | a reponer — con la demanda de las
     otras OT vivas descontada y la reposición ya generada por el WMS. Distinto
     de /deposito/reposicion-ot, que compara contra el stock del depósito entero.
-    ?dias acota la antigüedad de la OT (default 7, evita el backlog zombi);
+    ?dias acota la antigüedad de las vueltas de acopio (default 15); el resto
+    entra si el pedido está Abierto en Magnus;
     ?todos=1 devuelve todos los renglones de las OT con problema, no sólo los
     renglones con problema."""
     try:
@@ -591,7 +607,7 @@ def deposito_picking_disponible_ot(ot: int = Query(...)):
 @app.get("/deposito/picking-disponible/armar-ot")
 def deposito_picking_disponible_armar_ot(
     pasillo: str = Query(...),
-    dias: int = Query(default=7, ge=1, le=60),
+    dias: int = Query(default=15, ge=1, le=60),
 ):
     """Renglones listos para cargar la OT de reposición de UN pasillo: lo mismo
     que muestra el cartel por pasillo, más de qué ubicación de guardado sacar
@@ -627,7 +643,7 @@ class OTRepoIn(BaseModel):
 @app.get("/deposito/repo/pasillo")
 def deposito_repo_pasillo(
     pasillo: str = Query(...),
-    dias: int = Query(default=7, ge=1, le=60),
+    dias: int = Query(default=15, ge=1, le=60),
 ):
     """Lo que hay que reponer en un pasillo, cada artículo con TODAS sus
     ubicaciones de guardado para elegir (no una sola elegida por el sistema,

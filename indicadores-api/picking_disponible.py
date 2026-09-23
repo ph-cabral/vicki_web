@@ -72,6 +72,36 @@ Y el `faltante` se abre en dos, porque no son el mismo aviso:
                          en `ots` y contado en resumen.faltanteSinRepo para la
                          vista web y para compras.
 
+**Universo de la demanda (2026-09-23): todos los pedidos abiertos, no sólo los
+asignados.** Antes entraban sólo las OT de picking vivas con armador de los
+últimos 7 días; así el faltante se veía recién cuando el pedido ya estaba en
+manos de alguien. Ahora se anticipa lo que va a faltar cuando se asignen:
+
+    pedidos 10/100/210/310/410   pedido Abierto en Magnus (EstadoPedido = 2),
+                                 con o sin armador, sin ventana de fecha
+                                 (el filtro de abierto ya saca los zombis)
+    acopio 70/75                 SÓLO la vuelta con remito 71 vivo (no anulado
+                                 ni borrador) — el saldo del acopio sin vuelta
+                                 mandada no es demanda. OJO: la cabecera del
+                                 acopio suele estar en Estado 4 aunque la vuelta
+                                 esté viva, por eso NO se mira EstadoPedido. Se
+                                 acota a `dias` (default 15): hay OT de vueltas
+                                 de 2025 que quedaron vivas con remito.
+    centro de preparación        sólo CP1. La OT de picking del WMS ya es CP1
+                                 (los renglones CP2 no viajan al WMS); los
+                                 pedidos sin OT se leen de Magnus con
+                                 CodCentroPrep = 1.
+    pedido abierto sin OT        (el WMS todavía no la generó) → renglones CP1
+                                 de Magnus, contra la posición de picking que el
+                                 WMS tiene asignada al artículo (UbicacionItem
+                                 sobre ubicación EsPicking). Sin posición →
+                                 SIN_POSICION, nunca se ofrece reposición.
+
+Reparto FIFO por escalones: primero las OT con armador (ya están consumiendo
+el estante), después las OT sin armador y al final los pedidos sin OT; dentro
+de cada escalón, por fecha. Así lo que ya está asignado nunca queda "corto"
+por culpa de algo que todavía no se tomó.
+
 Gotchas (medidos 2026-09-21, ver claude/picking_disponible_al_asignar_armador.md):
 
 - OT zombi: de 37 OT en estado 1, 9 eran de meses anteriores (una de 2025). Sin
@@ -93,20 +123,42 @@ from datetime import datetime, timedelta
 from db import get_connection
 from deposito import (
     OT_COL_PEDIDO,
-    PATRONES_CANCELADO,
     WMS_ESTADOS_VIVOS,
     WMS_ESTADO_LABELS,
     es_operario_ignorado,
     _info_articulos,
-    _info_pedidos_resumen,
     _int,
     _safe,
     _txt,
 )
 
-# Ventana de antigüedad de la OT (OTFechaHoraRegist). Fuera de esto es backlog
-# muerto: OT que nadie va a tomar y que sólo ensucian la demanda comprometida.
-VENTANA_DIAS = 7
+# Ventana de antigüedad de la VUELTA de acopio (OTFechaHoraRegist de su OT).
+# Desde 2026-09-23 sólo aplica a 70/75: los demás pedidos entran si están
+# Abiertos en Magnus, sin importar la fecha. Hay OT de vueltas de 2025 que
+# quedaron vivas con remito y nadie va a tomar.
+VENTANA_DIAS = 15
+
+# Comprobantes con centro de preparación 1 que entran por "pedido abierto".
+CODIGOS_PEDIDO_CP1 = (10, 100, 210, 310, 410)
+# Acopio: entra sólo la vuelta con remito (CompCodigo 71) vivo.
+CODIGOS_ACOPIO = (70, 75)
+COMP_REMITO_ACOPIO = 71
+ESTADO_PEDIDO_ABIERTO = 2
+CENTRO_PREP_1 = 1
+# Pedidos abiertos que todavía no tienen OT de picking: tope de antigüedad por
+# resguardo (hoy son los últimos minutos; seek por EstadoPedido+CompCodigo).
+PEDIDO_SIN_OT_VENTANA_DIAS = 30
+# Preparador "Mercaderia X Llegar" (mismo número en Magnus Gen_Usuarios y en
+# WMS Personal): usuario creado para APARTAR los pedidos que esperan
+# mercadería. Nunca se van a poder reponer, así que no son demanda. Del lado
+# WMS se descartan por nombre (deposito.es_operario_ignorado); del lado Magnus
+# por este número en Ven_PedImpresoCA.CodArmador, que cubre el pedido apartado
+# cuya OT todavía no tiene ese armador o que todavía no tiene OT.
+COD_ARMADOR_ESPERA_MERCA = 239
+
+# Posición para un artículo sin ubicación de picking asignada en el WMS.
+SIN_POSICION = "SIN_POSICION"
+_BASE_MAGNUS = datetime(1800, 12, 28)
 
 # Ubicación que el WMS marca como picking pero no es un estante (acopio ya
 # preparado). No admite reposición.
@@ -151,6 +203,7 @@ SQL_DEMANDA = """
 SELECT
     OT.OTId,
     OT.{col_pedido}                           AS NroMovVenta,
+    OT.OTNromovventaRemito                    AS NroRemito,
     OT.OTEstado,
     OT.OTFechaHoraRegist,
     OT.OTClienteNombre,
@@ -164,12 +217,88 @@ INNER JOIN OTItem i ON i.OTId = OT.OTId
 LEFT  JOIN Personal P ON P.PersonalId = OT.OTUsuarioGUID_Repositor
 WHERE Codot.CodotProcesoNegocio = 4              -- Picking
   AND OT.OTEstado IN ({vivos})                   -- Pendiente (0/1) o En proceso (5)
-  AND OT.OTFechaHoraRegist >= ?
   AND i.OTItemTipo = 1                           -- Recolectar
   AND i.OTItemCantCumplida < i.OTItemCantPedida
-GROUP BY OT.OTId, OT.{col_pedido}, OT.OTEstado, OT.OTFechaHoraRegist,
-         OT.OTClienteNombre, P.PersonalNombre,
+GROUP BY OT.OTId, OT.{col_pedido}, OT.OTNromovventaRemito, OT.OTEstado,
+         OT.OTFechaHoraRegist, OT.OTClienteNombre, P.PersonalNombre,
          i.OTItemArticuloId, i.OTItemUbicacionCodigo
+"""
+# Sin filtro de fecha: el universo lo recorta Magnus (pedido abierto / vuelta
+# con remito). Las OT vivas son un centenar y entran por el índice UOTESTADO.
+
+# Estado y comprobante de los pedidos de las OT vivas (EVERWEAR, seek por PK).
+SQL_PEDIDOS_ESTADO = """
+SELECT cab.NroMovVenta, cab.CompCodigo, cab.EstadoPedido,
+       CASE WHEN EXISTS (
+            SELECT 1 FROM Ven_PedImpresoCA c
+            WHERE c.NroMovVenta = cab.NroMovVenta
+              AND c.CodArmador = {apartado}
+       ) THEN 1 ELSE 0 END AS Apartado
+FROM VenFer_PedidoCabecera cab
+WHERE cab.NroMovVenta IN ({ph})
+"""
+
+# Remitos de vuelta de acopio que siguen vivos (ni anulados ni borrador vacío).
+# El NroMovVenta del remito lo trae la propia OT (OTNromovventaRemito).
+SQL_REMITOS_VUELTA = """
+SELECT r.NroMovVenta
+FROM VenFer_RmtoCabecera r
+WHERE r.NroMovVenta IN ({ph})
+  AND r.CompCodigo = {comp_remito}
+  AND ISNULL(r.EstadoRemito, 0) NOT IN (3, 4)
+"""
+
+# Pedidos abiertos con renglones CP1 cuyo centro 1 todavía no terminó. La
+# CantidadCumplida de estos comprobantes viene precargada igual a la pedida,
+# así que la demanda es CantidadPedida. Seek por VF_PEDCAB_Cla_EstadoCompCodigo.
+SQL_PEDIDOS_SIN_OT = """
+SELECT cab.NroMovVenta, cab.CompCodigo, cab.FechaPedido, cab.HoraRegistracion,
+       RTRIM(cab.RazonSocial)            AS Cliente,
+       LTRIM(RTRIM(r.CodArticu))         AS CodArticulo,
+       SUM(r.CantidadPedida)             AS Pendiente
+FROM VenFer_PedidoCabecera cab
+INNER JOIN VenFer_PedidoReng r ON r.NroMovVenta = cab.NroMovVenta
+WHERE cab.EstadoPedido = {abierto}
+  AND cab.CompCodigo IN ({comps})
+  AND cab.FechaPedido >= ?
+  AND r.CodCentroPrep = {cp}
+  AND r.Estado <> 4
+  AND r.CantidadPedida > 0
+  AND NOT EXISTS (                 -- apartado en "Mercaderia X Llegar"
+        SELECT 1 FROM Ven_PedImpresoCA c
+        WHERE c.NroMovVenta = cab.NroMovVenta
+          AND c.CodArmador = {apartado})
+  AND NOT EXISTS (
+        SELECT 1 FROM Ven_PedImpresoCA c
+        WHERE c.NroMovVenta = cab.NroMovVenta
+          AND c.CodCentroPrep = {cp}
+          AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
+               OR ISNULL(c.FechaFin, 0) > 0))
+GROUP BY cab.NroMovVenta, cab.CompCodigo, cab.FechaPedido, cab.HoraRegistracion,
+         cab.RazonSocial, r.CodArticu
+"""
+
+# De esos, los que YA tienen OT de picking en el WMS (en cualquier estado): si
+# está viva ya entra por SQL_DEMANDA; si está cumplida ya salió del estante.
+# Seek por UOTPEDIDO (OTNromovventa).
+SQL_PEDIDOS_CON_OT = """
+SELECT DISTINCT OT.{col_pedido}
+FROM OT
+INNER JOIN Codot ON OT.CodotCodigo = Codot.CodotCodigo
+WHERE Codot.CodotProcesoNegocio = 4
+  AND OT.{col_pedido} IN ({ph})
+"""
+
+# Posición de picking asignada a cada artículo (la misma que el WMS pone en
+# OTItemUbicacionCodigo al generar la OT). Seek por IUBICACIONITEM1.
+SQL_POS_PICKING = """
+SELECT LTRIM(RTRIM(ui.UbicacionItemArticuloId)) AS art,
+       LTRIM(RTRIM(ui.UbicacionCodigo))         AS ubic,
+       ISNULL(ui.UbicacionItemStkMaximo, 0)     AS mx
+FROM UbicacionItem ui
+INNER JOIN Ubicacion u ON u.UbicacionCodigo = ui.UbicacionCodigo
+WHERE ui.UbicacionItemArticuloId IN ({ph})
+  AND ISNULL(u.UbicacionEsPicking, 0) = 1
 """
 
 SQL_STOCK_UBIC = """
@@ -366,16 +495,88 @@ def _chunked_query(cur, sql_tpl: str, codigos: list[str], **fmt) -> list[tuple]:
     return out
 
 
+def _registro_pedido(fecha_dias, hora):
+    """FechaPedido (días desde 1800-12-28) + HoraRegistracion → datetime.
+
+    HoraRegistracion viene en CENTÉSIMAS de segundo desde medianoche (3185540 =
+    08:50:55, verificado contra la OT del mismo pedido); si llega un valor chico
+    se lee como HHMM, igual que el resto de las horas de Magnus."""
+    try:
+        f = int(fecha_dias or 0)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return None
+    try:
+        h = int(hora or 0)
+    except (TypeError, ValueError):
+        h = 0
+    if h > 2359:
+        seg = h // 100
+    else:
+        hh, mm = divmod(h, 100)
+        seg = hh * 3600 + mm * 60
+    return _BASE_MAGNUS + timedelta(days=f, seconds=min(seg, 86399))
+
+
+def _dias_magnus(d: datetime) -> int:
+    return (datetime(d.year, d.month, d.day) - _BASE_MAGNUS).days
+
+
+def _magnus_universo(pedidos: list[int], remitos: list[int]):
+    """Una sola conexión a EVERWEAR para las tres cosas que decide Magnus:
+    estado/comprobante de los pedidos de las OT vivas, qué remitos de vuelta de
+    acopio siguen vivos y los pedidos abiertos CP1 que todavía no tienen OT."""
+    info: dict[int, dict] = {}
+    remitos_ok: set[int] = set()
+    sin_ot: list[dict] = []
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        for nro, comp, estado, apartado in _chunked_query(
+            cur, SQL_PEDIDOS_ESTADO, pedidos, apartado=COD_ARMADOR_ESPERA_MERCA
+        ):
+            info[_int(nro)] = {
+                "CompCodigo": _int(comp),
+                "EstadoPedido": _int(estado),
+                "Apartado": _int(apartado) == 1,
+            }
+        for (nro,) in _chunked_query(
+            cur, SQL_REMITOS_VUELTA, remitos, comp_remito=COMP_REMITO_ACOPIO
+        ):
+            remitos_ok.add(_int(nro))
+        desde = _dias_magnus(datetime.now() - timedelta(days=PEDIDO_SIN_OT_VENTANA_DIAS))
+        cur.execute(
+            SQL_PEDIDOS_SIN_OT.format(
+                abierto=ESTADO_PEDIDO_ABIERTO,
+                comps=",".join(str(c) for c in CODIGOS_PEDIDO_CP1),
+                cp=CENTRO_PREP_1,
+                apartado=COD_ARMADOR_ESPERA_MERCA,
+            ),
+            [desde],
+        )
+        cols = [c[0] for c in cur.description]
+        sin_ot = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    return info, remitos_ok, sin_ot
+
+
 def fetch_picking_disponible(
     dias: int = VENTANA_DIAS,
     solo_problemas: bool = True,
     solo_con_problema: bool = True,
 ):
-    """Foto en vivo, por OT de picking viva, de lo que hay para tomar en cada
-    posición. Devuelve las OT ordenadas por gravedad (faltantes primero) con el
-    detalle renglón por renglón (disponible | pedido | a reponer).
+    """Foto en vivo de lo que hay para tomar en cada posición de picking contra
+    TODOS los pedidos abiertos (ver "Universo de la demanda" arriba): OT de
+    picking vivas con o sin armador, vueltas de acopio con remito y pedidos
+    abiertos CP1 que todavía no tienen OT. Devuelve un cartel por OT (o por
+    pedido, si todavía no tiene OT) ordenado por gravedad, con el detalle
+    renglón por renglón (disponible | pedido | a reponer).
 
-    dias           ventana de antigüedad de la OT (default 7, ver VENTANA_DIAS)
+    dias           ventana de antigüedad de las VUELTAS de acopio 70/75
+                   (default 15, ver VENTANA_DIAS). No recorta a los demás.
     solo_problemas si True (default) cada OT trae sólo los renglones con
                    problema; si False trae todos los renglones (para el
                    cartel completo del pedido).
@@ -383,27 +584,58 @@ def fetch_picking_disponible(
                    al menos un renglón con problema.
     """
     dias = max(1, int(dias or VENTANA_DIAS))
-    desde = datetime.now() - timedelta(days=dias)
+    desde_acopio = datetime.now() - timedelta(days=dias)
     vivos = ",".join(str(e) for e in WMS_ESTADOS_VIVOS)
+
+    stock: dict[tuple[str, str], float] = {}
+    guardado: dict[str, float] = {}
+    pulmon: dict[str, float] = {}
+    otro_picking: dict[str, float] = {}
+    repo: dict[tuple[str, str], float] = {}
+    pos_pick: dict[str, str] = {}
 
     conn = get_connection("WMS")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
 
-        cur.execute(
-            SQL_DEMANDA.format(col_pedido=OT_COL_PEDIDO, vivos=vivos), [desde]
-        )
+        cur.execute(SQL_DEMANDA.format(col_pedido=OT_COL_PEDIDO, vivos=vivos))
         cols = [c[0] for c in cur.description]
         demanda = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-        codigos = sorted({_txt(f["CodArticulo"]) for f in demanda if _txt(f["CodArticulo"])})
+        pedidos_ot = sorted({_int(f["NroMovVenta"]) for f in demanda if _int(f.get("NroMovVenta"))})
+        remitos = sorted({_int(f["NroRemito"]) for f in demanda if _int(f.get("NroRemito"))})
+        info_ped, remitos_ok, sin_ot = _magnus_universo(pedidos_ot, remitos)
 
-        stock: dict[tuple[str, str], float] = {}
-        guardado: dict[str, float] = {}
-        pulmon: dict[str, float] = {}
-        otro_picking: dict[str, float] = {}
-        repo: dict[tuple[str, str], float] = {}
+        # Pedidos abiertos sin OT: se descartan los que ya tienen OT de picking
+        # (viva → ya viene en `demanda`; cumplida → ya salió del estante).
+        cand = sorted({_int(f["NroMovVenta"]) for f in sin_ot})
+        con_ot = {
+            _int(r[0]) for r in _chunked_query(
+                cur, SQL_PEDIDOS_CON_OT, cand, col_pedido=OT_COL_PEDIDO
+            )
+        } if cand else set()
+        sin_ot = [f for f in sin_ot if _int(f["NroMovVenta"]) not in con_ot]
+
+        arts_sin_ot = sorted({_txt(f["CodArticulo"]) for f in sin_ot if _txt(f["CodArticulo"])})
+        if arts_sin_ot:
+            mejor: dict[str, float] = {}
+            for art, ubic, mx in _chunked_query(cur, SQL_POS_PICKING, arts_sin_ot):
+                art, ubic, mx = _txt(art), _txt(ubic), _num(mx)
+                if ubic.upper() == PLAYA:
+                    continue
+                # Si hay más de una, la de mayor capacidad (StkMaximo) es la
+                # que el WMS usa como principal.
+                if art not in pos_pick or mx > mejor[art] or (
+                    mx == mejor[art] and ubic < pos_pick[art]
+                ):
+                    pos_pick[art], mejor[art] = ubic, mx
+
+        codigos = sorted(
+            {_txt(f["CodArticulo"]) for f in demanda if _txt(f["CodArticulo"])}
+            | set(arts_sin_ot)
+        )
+
         if codigos:
             for art, ubic, cant, es_pick, es_guard in _chunked_query(cur, SQL_STOCK_UBIC, codigos):
                 art, ubic, cant = _txt(art), _txt(ubic), _num(cant)
@@ -427,44 +659,48 @@ def fetch_picking_disponible(
     finally:
         conn.close()
 
-    # Pedidos cancelados en Magnus: sus OT no son trabajo real (mismo criterio
-    # que fetch_reposicion_ot_abiertas).
-    pedidos = sorted({_int(f["NroMovVenta"]) for f in demanda if f.get("NroMovVenta") is not None})
-    info_ped = _info_pedidos_resumen(pedidos) if pedidos else {}
-
     ots: dict[int, dict] = {}
-    descartadas = 0
+    descartadas = 0          # pedido no abierto / cancelado / inexistente en Magnus
+    acopio_sin_remito = 0
+    acopio_fuera_ventana = 0
     espera_merca = 0
     sin_asignar = 0
 
     for f in demanda:
         otid = _int(f.get("OTId"))
         nro = _int(f.get("NroMovVenta")) if f.get("NroMovVenta") is not None else None
-        estado_mag = info_ped.get(nro, {}).get("Estado") if nro is not None else None
-        if estado_mag and any(p in str(estado_mag).upper() for p in PATRONES_CANCELADO):
+        ip = info_ped.get(nro) if nro is not None else None
+        if ip is None:
+            descartadas += 1
+            continue
+        if ip["CompCodigo"] in CODIGOS_ACOPIO:
+            # Acopio: manda la VUELTA (remito 71 vivo), no el estado de la
+            # cabecera — que suele estar en 4 con la vuelta todavía en curso.
+            if _int(f.get("NroRemito")) not in remitos_ok:
+                acopio_sin_remito += 1
+                continue
+            reg = f.get("OTFechaHoraRegist")
+            if hasattr(reg, "year") and reg < desde_acopio:
+                acopio_fuera_ventana += 1
+                continue
+        elif ip["EstadoPedido"] != ESTADO_PEDIDO_ABIERTO:
             descartadas += 1
             continue
         armador = _txt(f.get("Armador")) or SIN_ARMADOR
         # El buzón "Mercaderia X Llegar" y los demás operarios de
         # deposito.OPERARIOS_IGNORADOS no generan aviso: de esas OT ya se sabe
-        # por qué están esperando, así que su demanda no entra ni al cartel ni
-        # al armado de la OT de reposición.
-        if es_operario_ignorado(armador):
+        # por qué están esperando.
+        if es_operario_ignorado(armador) or ip.get("Apartado"):
             espera_merca += 1
-            continue
-        # OT sin armador ("— Sin asignar"): igual que el buzón, son pedidos
-        # guardados para pasar después, no trabajo en curso. No entran a la
-        # demanda: si entraran, por FIFO podrían dejar corta la OT de un armador
-        # real y traer el cartel solo. Cuando se le asigna un armador real
-        # entran en el sondeo siguiente (y ahí sí avisa).
-        if armador == SIN_ARMADOR:
-            sin_asignar += 1
             continue
         cod = _txt(f.get("CodArticulo"))
         pos = _txt(f.get("Posicion"))
         pend = _num(f.get("Pendiente"))
         if not cod or pend <= 0:
             continue
+        asignada = armador != SIN_ARMADOR
+        if not asignada:
+            sin_asignar += 1
 
         ot = ots.setdefault(otid, {
             "OTId": otid,
@@ -473,10 +709,39 @@ def fetch_picking_disponible(
             "Armador": armador,
             "Estado": _estado_label(f.get("OTEstado")),
             "Registrada": f.get("OTFechaHoraRegist"),
+            "Asignada": asignada,
+            "SinOT": False,
+            "Acopio": ip["CompCodigo"] in CODIGOS_ACOPIO,
+            # escalón del FIFO: lo asignado consume primero.
+            "_tier": 0 if asignada else 1,
             "_reng": {},
         })
-        r = ot["_reng"].setdefault((cod, pos), 0.0)
-        ot["_reng"][(cod, pos)] = r + pend
+        ot["_reng"][(cod, pos)] = ot["_reng"].get((cod, pos), 0.0) + pend
+
+    # Pedidos abiertos que el WMS todavía no pasó a OT: último escalón. La
+    # clave es el NroMovVenta en negativo, para no chocar con un OTId real.
+    for f in sin_ot:
+        nro = _int(f.get("NroMovVenta"))
+        cod = _txt(f.get("CodArticulo"))
+        pend = _num(f.get("Pendiente"))
+        if not nro or not cod or pend <= 0:
+            continue
+        pos = pos_pick.get(cod, SIN_POSICION)
+        sin_asignar += 1
+        ot = ots.setdefault(-nro, {
+            "OTId": -nro,
+            "NroMovVenta": nro,
+            "Cliente": _txt(f.get("Cliente")),
+            "Armador": SIN_ARMADOR,
+            "Estado": "Sin OT",
+            "Registrada": _registro_pedido(f.get("FechaPedido"), f.get("HoraRegistracion")),
+            "Asignada": False,
+            "SinOT": True,
+            "Acopio": False,
+            "_tier": 2,
+            "_reng": {},
+        })
+        ot["_reng"][(cod, pos)] = ot["_reng"].get((cod, pos), 0.0) + pend
 
     info_art = _info_articulos(codigos) if codigos else {}
 
@@ -488,7 +753,7 @@ def fetch_picking_disponible(
     # compartido entre OT.
     orden_fifo = sorted(
         ots.values(),
-        key=lambda o: (str(o["Registrada"] or ""), o["OTId"]),
+        key=lambda o: (o["_tier"], str(o["Registrada"] or ""), abs(o["OTId"])),
     )
     libre_pos: dict[tuple[str, str], float] = {}
     libre_repo: dict[tuple[str, str], float] = {}
@@ -520,6 +785,9 @@ def fetch_picking_disponible(
             en_guard = libre_guard.get(cod, guardado.get(cod, 0.0))
             en_pulmon = pulmon.get(cod, 0.0)
             es_playa = pos.upper() == PLAYA
+            # Artículo sin posición de picking asignada en el WMS: no hay
+            # estante al que reponer, igual que la playa.
+            sin_pos = pos.upper() == SIN_POSICION
 
             # Lo que ya viene en camino (una OT de reposición viva hacia esta
             # MISMA posición — armada desde este widget o a mano) se resta del
@@ -527,7 +795,7 @@ def fetch_picking_disponible(
             # una OT de reposición ya pedida por 30 seguía avisando "faltan 50"
             # en vez de "faltan 20", y "armar OT" de nuevo volvía a pedir las 50
             # enteras — duplicando lo que ya se sacó de guardado.
-            cubierto_en_camino = 0.0 if es_playa else min(a_reponer_bruto, en_camino)
+            cubierto_en_camino = 0.0 if (es_playa or sin_pos) else min(a_reponer_bruto, en_camino)
             libre_repo[k] = max(0.0, en_camino - cubierto_en_camino)
             a_reponer = max(0.0, a_reponer_bruto - cubierto_en_camino)
 
@@ -536,7 +804,7 @@ def fetch_picking_disponible(
             elif a_reponer <= 0:
                 # la reposición en camino ya cubre TODO el faltante restante.
                 sit = "repo_pedida"
-            elif en_guard >= a_reponer:
+            elif en_guard >= a_reponer and not sin_pos:
                 sit = "reponer"
                 libre_guard[cod] = max(0.0, en_guard - a_reponer)
             else:
@@ -547,7 +815,7 @@ def fetch_picking_disponible(
             # widget), no del detalle por OT. La playa nunca se repone, así que
             # va siempre acá.
             sin_repo = sit == "faltante" and (
-                es_playa or (en_guard <= 0 and en_camino <= 0)
+                es_playa or sin_pos or (en_guard <= 0 and en_camino <= 0)
             )
             if sit != "ok":
                 problemas += 1
@@ -557,10 +825,13 @@ def fetch_picking_disponible(
 
             pas = pasillo_de(pos)
             e = por_art.setdefault((pas, cod), {
-                "ots": set(), "operarios": set(), "pedido": 0.0, "reponer": 0.0,
+                "ots": set(), "sin_asignar": set(), "operarios": set(),
+                "pedido": 0.0, "reponer": 0.0,
                 "hay": {}, "sit": "ok", "posiciones": set(), "sin_repo": True,
             })
             e["ots"].add(ot["OTId"])
+            if not ot["Asignada"]:
+                e["sin_asignar"].add(ot["OTId"])
             e["operarios"].add(ot["Armador"])
             e["pedido"] += pedido
             e["reponer"] += a_reponer
@@ -588,6 +859,7 @@ def fetch_picking_disponible(
                 "EnPulmon":    _r3(en_pulmon),
                 "OtroPicking": _r3(max(0.0, otro_picking.get(cod, 0.0) - (en_pos if not es_playa else 0.0))),
                 "EsPlaya":     es_playa,
+                "SinPosicion": sin_pos,
                 "SinRepo":     sin_repo,
                 "Situacion":   sit,
             })
@@ -604,6 +876,9 @@ def fetch_picking_disponible(
             "Cliente":     ot["Cliente"],
             "Armador":     ot["Armador"],
             "Estado":      ot["Estado"],
+            "Asignada":    ot["Asignada"],
+            "SinOT":       ot["SinOT"],
+            "Acopio":      ot["Acopio"],
             "Registrada":  ot["Registrada"].isoformat(sep=" ", timespec="minutes")
                            if hasattr(ot["Registrada"], "isoformat") else _txt(ot["Registrada"]),
             "Renglones":   len(ot["_reng"]),
@@ -638,6 +913,9 @@ def fetch_picking_disponible(
             "CodArticulo": cod,
             "Nombre":      info_art.get(cod, {}).get("Nombre", ""),
             "OTs":         len(e["ots"]),
+            # de esas, cuántas todavía no tienen armador (u OT): el faltante
+            # que se va a dar cuando se asignen.
+            "SinAsignar":  len(e["sin_asignar"]),
             "Operarios":   operarios,
             "Hay":         _r3(sum(e["hay"].values())),
             "Pedido":      _r3(e["pedido"]),
@@ -660,7 +938,11 @@ def fetch_picking_disponible(
         "generado":     datetime.now().isoformat(sep=" ", timespec="seconds"),
         "ventanaDias":  dias,
         "resumen": {
-            "otsVivas":        len(ots),
+            "otsVivas":        sum(1 for o in ots.values() if not o["SinOT"]),
+            "otsAsignadas":    sum(1 for o in ots.values() if o["Asignada"]),
+            "otsSinAsignar":   sum(1 for o in ots.values() if not o["Asignada"] and not o["SinOT"]),
+            "pedidosSinOT":    sum(1 for o in ots.values() if o["SinOT"]),
+            "vueltasAcopio":   sum(1 for o in ots.values() if o["Acopio"]),
             "otsConProblema":  len(salida),
             "faltanteReal":    tot["faltante"],
             "faltanteSinRepo": tot_sin_repo,
@@ -672,8 +954,12 @@ def fetch_picking_disponible(
             # mercadería y los de OPERARIOS_IGNORADOS). Se mantiene el nombre
             # del campo: es el que ya lee la vista web.
             "renglonesEsperaMercaderia": espera_merca,
-            # Renglones de OT sin armador, dejados afuera (ver arriba).
+            # Renglones de pedidos todavía sin armador (OT sin asignar o sin
+            # OT). Desde 2026-09-23 ENTRAN en el cálculo, en el último escalón
+            # del FIFO; el contador queda para mostrar cuánto es anticipado.
             "renglonesSinAsignar": sin_asignar,
+            "renglonesAcopioSinRemito": acopio_sin_remito,
+            "renglonesAcopioFueraVentana": acopio_fuera_ventana,
         },
         "ots": salida,
         "porPasillo": por_pasillo,
