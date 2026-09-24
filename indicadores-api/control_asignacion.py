@@ -941,15 +941,63 @@ LEFT JOIN EVERWEAR.dbo.Ven_PedImpresoCA      pca ON pca.NroMovVenta = cab.NroMov
 LEFT JOIN EVERWEAR.dbo.[Gen_Usuarios]        usr ON usr.Numero      = rmt.UsuarioArmado
 WHERE rmt.CompCodigo = 71                 -- remito de acopio
   AND cab.CompCodigo IN (70, 75)          -- el pedido es un acopio
-  AND rmt.FechaArmado > 0                 -- la vuelta terminó de armarse
-  AND ISNULL(rmt.FechaCierre, 0) = 0      -- y todavía no pasó por mesa
+  AND ISNULL(rmt.FechaCierre, 0) = 0      -- todavía no pasó por mesa
   AND rmt.EstadoRemito NOT IN (3, 4)      -- 3 borrador (vuelta vacía) / 4 anulado
+  AND (
+        rmt.FechaArmado > 0               -- la vuelta terminó de armarse (Magnus)
+        -- 2026-09-24: o la OT de Picking ya se cumplió en WMS (se confirma en
+        -- Python contra WMS: fetch_acopio_vueltas_espera_control). Medido: la
+        -- mesa estampa FechaArmado y FechaCierre juntas (segundos de
+        -- diferencia, 472 de 513 remitos desde 82360), así que esperar
+        -- FechaArmado > 0 dejaba la cola de acopio siempre vacía.
+        OR (ISNULL(rmt.FechaArmado, 0) = 0 AND rmt.EstadoRemito IN (1, 2)
+            AND ISNULL(rmt.OTId, 0) > 0
+            AND rmt.FecRegistracion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias})
+      )
   AND EXISTS (
         SELECT 1 FROM EVERWEAR.dbo.VenFer_RmtoReng rr
         WHERE rr.NroMovVenta = rmt.NroMovVenta
       )
-ORDER BY COALESCE(cab.Prioridad, 999) ASC, rmt.FechaArmado ASC
+ORDER BY COALESCE(cab.Prioridad, 999) ASC, rmt.NroMovVenta ASC
 """
+
+# Ventana (días desde el registro del remito) en la que una vuelta con la OT
+# cumplida en WMS pero FechaArmado = 0 en Magnus entra a la cola de mesa.
+ACOPIO_WMS_DIAS = 30
+
+
+def _wms_ots_cumplidas(ot_ids) -> dict[int, dict]:
+    """{OTId: {"fin": datetime|None, "obs": str|None}} de las OT de Picking que
+    ya están Cumplidas en WMS (OTEstado = 2). Un seek por OTId (PK), en lotes.
+    Si WMS no contesta devuelve {} (la vuelta sigue "en preparación": es mejor
+    que trabar el widget)."""
+    ids = sorted({int(x) for x in ot_ids if x})
+    out: dict[int, dict] = {}
+    if not ids:
+        return out
+    try:
+        conn = get_connection("WMS")
+    except Exception:  # noqa: BLE001
+        return out
+    try:
+        cur = conn.cursor()
+        cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        for i in range(0, len(ids), 500):
+            lote = ids[i:i + 500]
+            ph = ",".join("?" for _ in lote)
+            cur.execute(
+                "SELECT OTId, OTFechaHoraEjecucion, OTObservaciones "
+                f"FROM OT WHERE OTId IN ({ph}) AND OTEstado = 2",
+                lote,
+            )
+            for ot_id, ejec, obs in cur.fetchall():
+                fin = ejec if (ejec is not None and getattr(ejec, "year", 0) > 1900) else None
+                out[int(ot_id)] = {"fin": fin, "obs": (str(obs).strip() or None) if obs else None}
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        conn.close()
+    return out
 
 
 def fetch_acopio_vueltas_espera_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> list[dict]:
@@ -960,40 +1008,58 @@ def fetch_acopio_vueltas_espera_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> l
     codCliente/prioridad/ubicacion/ot/nroArmador/nombreArmador) más
     `nroRemito`, así refrescar_cola las inserta con el mismo código.
 
-    Solo Magnus: no se consulta WMS (ver comentario junto a la query)."""
+    Entra si el remito tiene FechaArmado > 0 o (2026-09-24) si su OT de
+    Picking está Cumplida en WMS aunque Magnus todavía no tenga FechaArmado:
+    la mesa estampa FechaArmado y FechaCierre juntas al controlar."""
     conn = get_connection("EVERWEAR")
     out: list[dict] = []
     try:
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_MAGNUS_ACOPIO_ESPERA_CONTROL.format(limit=limit))
+        cur.execute(SQL_MAGNUS_ACOPIO_ESPERA_CONTROL.format(
+            limit=limit, dias=int(ACOPIO_WMS_DIAS)))
         cols = [c[0] for c in cur.description]
-        for row in cur.fetchall():
-            d = dict(zip(cols, row))
-            nro_remito, nro_pedido = d.get("NroRemito"), d.get("NroPedido")
-            if nro_remito is None or nro_pedido is None:
-                continue
-            armado = d.get("FechaArmado")
-            fecha = (BASE_DATE + timedelta(days=int(armado))) if armado else None
-            ubic = d.get("Ubicacion")
-            out.append({
-                "nroPedido": int(nro_pedido),
-                "nroRemito": int(nro_remito),
-                "fecha": fecha,
-                "tipoPedido": (d.get("TipoPedido") or "").strip() or None,
-                "cliente": (d.get("Cliente") or "").strip() or None,
-                "codCliente": int(d["CodCliente"]) if d.get("CodCliente") is not None else None,
-                "compCodigo": int(d["CompCodigo"]) if d.get("CompCodigo") is not None else None,
-                "prioridad": int(d["Prioridad"]) if d.get("Prioridad") is not None else None,
-                # En acopio la "ubicación" es la física del acopio en playa,
-                # que el armador deja escrita en Ven_PedImpresoCA.
-                "ubicacion": (str(ubic).strip() or None) if ubic is not None else None,
-                "ot": int(d["Ot"]) if d.get("Ot") is not None else None,
-                "nroArmador": int(d["NroArmador"]) if d.get("NroArmador") is not None else None,
-                "nombreArmador": (d.get("NombreArmador") or "").strip() or None,
-            })
+        filas = [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:
         conn.close()
+
+    # Las vueltas con FechaArmado = 0 entran sólo si su OT de Picking ya está
+    # Cumplida en WMS (la mesa recién estampa FechaArmado al controlar).
+    cumplidas = _wms_ots_cumplidas(
+        d.get("Ot") for d in filas if not d.get("FechaArmado"))
+    for d in filas:
+        nro_remito, nro_pedido = d.get("NroRemito"), d.get("NroPedido")
+        if nro_remito is None or nro_pedido is None:
+            continue
+        armado = d.get("FechaArmado")
+        wms = None
+        if armado:
+            fecha = BASE_DATE + timedelta(days=int(armado))
+        else:
+            wms = cumplidas.get(int(d["Ot"])) if d.get("Ot") else None
+            if wms is None:
+                continue          # OT sin cumplir: todavía se está armando
+            fecha = wms["fin"]
+        ubic = d.get("Ubicacion")
+        if not (ubic and str(ubic).strip()) and wms:
+            ubic = wms["obs"]     # ej. "pallet pasillo 14"
+        out.append({
+            "nroPedido": int(nro_pedido),
+            "nroRemito": int(nro_remito),
+            "fecha": fecha,
+            "tipoPedido": (d.get("TipoPedido") or "").strip() or None,
+            "cliente": (d.get("Cliente") or "").strip() or None,
+            "codCliente": int(d["CodCliente"]) if d.get("CodCliente") is not None else None,
+            "compCodigo": int(d["CompCodigo"]) if d.get("CompCodigo") is not None else None,
+            "prioridad": int(d["Prioridad"]) if d.get("Prioridad") is not None else None,
+            # En acopio la "ubicación" es la física del acopio en playa,
+            # que el armador deja escrita en Ven_PedImpresoCA (o, si no, la
+            # observación de la OT de WMS).
+            "ubicacion": (str(ubic).strip() or None) if ubic is not None else None,
+            "ot": int(d["Ot"]) if d.get("Ot") is not None else None,
+            "nroArmador": int(d["NroArmador"]) if d.get("NroArmador") is not None else None,
+            "nombreArmador": (d.get("NombreArmador") or "").strip() or None,
+        })
     return out
 
 
@@ -1432,7 +1498,7 @@ def _asegurar_tabla_reserva() -> None:
 # VF_REMCAB_Cla_CodClienteFecha (CodCliente); CA/Reng por sus clustered. {ph} = IN
 # de CodCliente (se usa dos veces: los parámetros van duplicados).
 _SQL_GRUPO_CLIENTES = """
-SELECT cab.CodCliente, cab.NroMovVenta AS NroPedido, 0 AS NroRemito,
+SELECT cab.CodCliente, cab.NroMovVenta AS NroPedido, 0 AS NroRemito, 0 AS OTId,
        CASE WHEN EXISTS (
                 SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
                 WHERE c.NroMovVenta = cab.NroMovVenta
@@ -1449,7 +1515,7 @@ WHERE cab.EstadoPedido = 2
           AND (c.FechaAsignacion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias}
                OR LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''))
 UNION ALL
-SELECT cab.CodCliente, rmt.NroMovPedido, rmt.NroMovVenta,
+SELECT cab.CodCliente, rmt.NroMovPedido, rmt.NroMovVenta, ISNULL(rmt.OTId, 0),
        CASE WHEN rmt.FechaArmado > 0 THEN 1 ELSE 0 END
 FROM EVERWEAR.dbo.VenFer_RmtoCabecera rmt
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMovPedido
@@ -1493,14 +1559,25 @@ def fetch_grupos_magnus(cod_clientes: list[int]) -> dict[int, list[dict]]:
                     gate_centros=_SQL_GATE_CENTROS.format(nro="cab.NroMovVenta")),
                 lote + lote,
             )
-            for cod, nro_ped, nro_rmt, listo in cur.fetchall():
+            for cod, nro_ped, nro_rmt, ot_id, listo in cur.fetchall():
                 out.setdefault(int(cod), []).append({
                     "nroPedido": int(nro_ped),
                     "nroRemito": int(nro_rmt or 0),
                     "listo": bool(listo),
+                    "_ot": int(ot_id or 0),
                 })
     finally:
         conn.close()
+    # Vuelta de acopio con FechaArmado = 0 pero OT cumplida en WMS = lista
+    # (misma regla que fetch_acopio_vueltas_espera_control).
+    cumplidas = _wms_ots_cumplidas(
+        u["_ot"] for lst in out.values() for u in lst
+        if u["nroRemito"] and not u["listo"])
+    for lst in out.values():
+        for u in lst:
+            if u["nroRemito"] and not u["listo"] and u["_ot"] in cumplidas:
+                u["listo"] = True
+            u.pop("_ot", None)
     for lst in out.values():
         lst.sort(key=lambda u: (u["nroPedido"], u["nroRemito"]))
     return out
@@ -2072,7 +2149,7 @@ WHERE cab.EstadoPedido = 2
 _SQL_PREP_ACOPIO = """
 SELECT rmt.NroMovVenta, cab.NroMovVenta, cab.FechaPedido, cc.DetalleCorto,
        cli.Cliente_Nombre, cab.CodCliente, cab.Prioridad, cab.CompCodigo,
-       rmt.FecRegistracion
+       rmt.FecRegistracion, ISNULL(rmt.OTId, 0)
 FROM EVERWEAR.dbo.VenFer_RmtoCabecera rmt
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMovPedido
 LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo = cc.CompCodigo
@@ -2113,7 +2190,13 @@ def fetch_en_preparacion() -> list[dict]:
                 "ubicacion": None, "armador": None,
             })
         cur.execute(_SQL_PREP_ACOPIO.format(dias=int(RESERVA_PREP_DIAS)))
-        for (nro_rmt, nro, f_ped, tipo, cliente, cod_cli, prio, comp, f_reg) in cur.fetchall():
+        filas_acopio = cur.fetchall()
+        # Las vueltas con la OT ya cumplida en WMS están listas (entran a la
+        # cola): no cuentan como "en preparación".
+        cumplidas = _wms_ots_cumplidas(r[9] for r in filas_acopio)
+        for (nro_rmt, nro, f_ped, tipo, cliente, cod_cli, prio, comp, f_reg, ot_id) in filas_acopio:
+            if ot_id and int(ot_id) in cumplidas:
+                continue
             desde = _magnus_dt(f_reg, 0)
             out.append({
                 "nroPedido": int(nro), "nroRemito": int(nro_rmt),
