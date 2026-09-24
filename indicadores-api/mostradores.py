@@ -17,7 +17,9 @@ Dos fuentes, todas chicas:
 Nada de esto toca filas de venta/pedido, así que no hay volumen que cuidar más
 allá de no traer el bytea del Excel en los listados (sólo al descargar).
 """
+import threading
 import time
+from decimal import Decimal, InvalidOperation
 
 from db import get_connection
 from db_pg import get_pg_connection
@@ -289,3 +291,237 @@ def fetch_excel(control_id: int) -> tuple[str, bytes] | None:
         return None
     nombre, archivo = fila
     return nombre, bytes(archivo)
+
+
+# ── Conteo en PDA (vista Control) ─────────────────────────────────────────
+# El PDA lista los ARTÍCULOS de los patrones pendientes (sólo esos: se arranca y
+# se termina patrón por patrón) y guarda una cantidad contada por artículo.
+#
+# Tabla `everwear.mostrador_conteo` (sql/mostradores_conteo.sql; también se crea
+# sola la primera vez que se usa): PK ("controlId","codArticulo") → un valor por
+# artículo y control; volver a contar REEMPLAZA la cantidad. Se guarda además
+# la foto del stock de sistema (StkFer_Articulos.StkReal) al momento de contar,
+# para comparar al cerrar el control. El PDA no muestra el stock (conteo ciego).
+_DDL_CONTEO = """
+CREATE TABLE IF NOT EXISTS everwear.mostrador_conteo (
+  "controlId"    BIGINT        NOT NULL REFERENCES everwear.mostrador_control(id) ON DELETE CASCADE,
+  "codArticulo"  TEXT          NOT NULL,
+  cantidad       NUMERIC(13,3) NOT NULL CHECK (cantidad >= 0),
+  "stockSistema" NUMERIC(13,3),
+  "contadoPor"   INT,
+  "contadoAt"    TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  PRIMARY KEY ("controlId", "codArticulo")
+)
+"""
+_ddl_conteo_ok = False
+_ddl_lock = threading.Lock()
+
+
+def _asegurar_tabla_conteo(cur) -> None:
+    global _ddl_conteo_ok
+    if _ddl_conteo_ok:
+        return
+    with _ddl_lock:
+        if not _ddl_conteo_ok:
+            cur.execute(_DDL_CONTEO)
+            cur.connection.commit()
+            _ddl_conteo_ok = True
+
+
+# Artículos de los patrones: entra por el índice KF_ART_Cla_ArticuloPatron y
+# por K_BAR_Cla_ArticuloBarra (CodArticulo, CodBarra). Medido: 3.400 filas
+# (patrones 1678 + 139, los más grandes) en < 1 ms de servidor.
+# Universo: activos/suspendidos (Estado <> 3) + los dados de baja que todavía
+# tienen stock (hay que contarlos igual). Estado 1 = 22,5k, 2 = 1,3k, 3 = 17,4k.
+# Un artículo puede tener varios códigos de barra (Stk_ArticBarras), algunos de
+# contenedor ("Caja" x100): todos sirven para escanear.
+_SQL_ARTICULOS_PATRONES = """
+SELECT RTRIM(s.ArticuloPatron), RTRIM(s.CodArticulo), RTRIM(s.DetalleMedida),
+       RTRIM(s.CodBarra), RTRIM(b.CodBarra), b.ContenedorCantContenida,
+       RTRIM(b.ContendorNombre)
+FROM StkFer_Articulos s
+LEFT JOIN Stk_ArticBarras b ON b.CodArticulo = s.CodArticulo
+WHERE s.ArticuloPatron IN ({marcas})
+  AND (s.Estado <> 3 OR s.StkReal <> 0)
+"""
+
+_ART_TTL_SEG = 10 * 60
+_cache_articulos: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _articulos_de_patrones(codigos: list[str]) -> dict[str, list[dict]]:
+    """{patron: [{cod, medida, barras:[{codigo, cant, envase}]}]} — cache 10 min
+    por patrón (el maestro de artículos casi no cambia durante un conteo)."""
+    ahora = time.monotonic()
+    salida: dict[str, list[dict]] = {}
+    faltan = []
+    for c in codigos:
+        hit = _cache_articulos.get(c)
+        if hit and ahora - hit[0] <= _ART_TTL_SEG:
+            salida[c] = hit[1]
+        else:
+            faltan.append(c)
+    if faltan:
+        conn = get_connection("EVERWEAR")
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                _SQL_ARTICULOS_PATRONES.format(marcas=",".join("?" * len(faltan))),
+                faltan,
+            )
+            filas = cur.fetchall()
+        finally:
+            conn.close()
+        por_pat: dict[str, dict[str, dict]] = {c: {} for c in faltan}
+        for pat, cod, medida, barra_ppal, barra, cant, envase in filas:
+            pat = (pat or "").strip()
+            cod = (cod or "").strip()
+            if not cod or pat not in por_pat:
+                continue
+            a = por_pat[pat].setdefault(cod, {"cod": cod, "medida": (medida or "").strip(), "barras": {}})
+            for bc, n, env in ((cod, 1, ""), ((barra_ppal or "").strip(), 1, ""),
+                               ((barra or "").strip(), int(cant or 0), (envase or "").strip())):
+                if bc and (bc not in a["barras"] or n > 1):
+                    a["barras"][bc] = {"codigo": bc, "cant": n if n > 1 else 1, "envase": env if n > 1 else ""}
+        for pat, arts in por_pat.items():
+            lista = []
+            for a in arts.values():
+                a["barras"] = list(a["barras"].values())
+                lista.append(a)
+            lista.sort(key=lambda a: (a["medida"].lower(), a["cod"]))
+            _cache_articulos[pat] = (ahora, lista)
+            salida[pat] = lista
+    return salida
+
+
+_SQL_PENDIENTES_CONTEO = """
+SELECT id, "codigoPatron" FROM everwear.mostrador_control
+WHERE estado = 'pendiente' ORDER BY "mandadoAt", id
+"""
+_SQL_CONTEOS = """
+SELECT "controlId", "codArticulo", cantidad, "contadoAt"
+FROM everwear.mostrador_conteo WHERE "controlId" = ANY(%s)
+"""
+
+
+def _num(v) -> float | int | None:
+    if v is None:
+        return None
+    f = float(v)
+    return int(f) if f.is_integer() else f
+
+
+def fetch_conteo() -> dict:
+    """Todo lo que necesita el PDA en una sola llamada: patrones pendientes y
+    sus artículos con lo ya contado."""
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        _asegurar_tabla_conteo(cur)
+        cur.execute(_SQL_PENDIENTES_CONTEO)
+        pend = [(int(i), c) for i, c in cur.fetchall()]
+        conteos = {}
+        if pend:
+            cur.execute(_SQL_CONTEOS, ([i for i, _ in pend],))
+            for cid, cod, cant, at in cur.fetchall():
+                conteos[(int(cid), cod)] = (_num(cant), at.isoformat() if at else None)
+    finally:
+        conn.close()
+    if not pend:
+        return {"patrones": [], "articulos": []}
+
+    m = maestro_magnus()
+    arts = _articulos_de_patrones([c for _, c in pend])
+    patrones, articulos = [], []
+    for cid, codigo in pend:
+        info = m["patrones"].get(codigo, {})
+        det_pat = info.get("detalle", "")
+        lista = arts.get(codigo, [])
+        contados = 0
+        for a in lista:
+            c = conteos.get((cid, a["cod"]))
+            if c:
+                contados += 1
+            articulos.append({
+                "controlId": cid,
+                "patron": codigo,
+                "cod": a["cod"],
+                "detalle": f"{det_pat} {a['medida']}".strip(),
+                "barras": a["barras"],
+                "contado": c[0] if c else None,
+                "contadoAt": c[1] if c else None,
+            })
+        lid = info.get("linea")
+        patrones.append({
+            "controlId": cid,
+            "codigo": codigo,
+            "detalle": det_pat,
+            "linea": _nombre_linea(lid, m["lineas"][lid]) if lid in m["lineas"] else "",
+            "total": len(lista),
+            "contados": contados,
+        })
+    return {"patrones": patrones, "articulos": articulos}
+
+
+def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int | None) -> dict:
+    """Guarda (o reemplaza) la cantidad contada de un artículo. Valida que el
+    control siga pendiente y que el artículo sea de ese patrón; toma la foto del
+    stock de sistema en la misma lectura (una fila, por PK)."""
+    cod = (cod_articulo or "").strip()
+    if not cod:
+        raise ValueError("Falta el artículo")
+    try:
+        cant = Decimal(str(cantidad))
+    except (InvalidOperation, ValueError):
+        raise ValueError("Cantidad inválida")
+    if not cant.is_finite() or cant < 0 or cant >= Decimal("1e10"):
+        raise ValueError("Cantidad inválida")
+    cant = cant.quantize(Decimal("0.001"))
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        _asegurar_tabla_conteo(cur)
+        cur.execute(
+            """SELECT "codigoPatron" FROM everwear.mostrador_control
+               WHERE id = %s AND estado = 'pendiente'""",
+            (control_id,),
+        )
+        fila = cur.fetchone()
+        if not fila:
+            raise LookupError("El patrón ya no está en control")
+        patron = fila[0]
+
+        mconn = get_connection("EVERWEAR")
+        try:
+            mcur = mconn.cursor()
+            mcur.execute(
+                "SELECT RTRIM(ArticuloPatron), StkReal FROM StkFer_Articulos WHERE CodArticulo = ?",
+                (cod,),
+            )
+            art = mcur.fetchone()
+        finally:
+            mconn.close()
+        if not art or (art[0] or "").strip() != patron:
+            raise LookupError("El artículo no es de este patrón")
+
+        cur.execute(
+            """
+            INSERT INTO everwear.mostrador_conteo
+                ("controlId", "codArticulo", cantidad, "stockSistema", "contadoPor")
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT ("controlId", "codArticulo") DO UPDATE
+               SET cantidad = EXCLUDED.cantidad,
+                   "stockSistema" = EXCLUDED."stockSistema",
+                   "contadoPor" = EXCLUDED."contadoPor",
+                   "contadoAt" = now()
+            RETURNING "contadoAt"
+            """,
+            (control_id, cod, cant, art[1], usuario_id),
+        )
+        at = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "controlId": control_id, "cod": cod,
+            "cantidad": _num(cant), "contadoAt": at.isoformat() if at else None}

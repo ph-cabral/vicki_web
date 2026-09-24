@@ -2147,6 +2147,35 @@ def mostradores_pendientes():
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
 
+@app.get("/mostradores/conteo")
+def mostradores_conteo():
+    """PDA: patrones pendientes con sus artículos y lo ya contado."""
+    try:
+        return mostradores.fetch_conteo()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+class MostradorConteoIn(BaseModel):
+    controlId: int
+    codArticulo: str
+    cantidad: float
+    usuarioId: int | None = None
+
+
+@app.post("/mostradores/conteo")
+def mostradores_conteo_guardar(body: MostradorConteoIn):
+    """PDA: guarda (o reemplaza) la cantidad contada de un artículo."""
+    try:
+        return mostradores.guardar_conteo(body.controlId, body.codArticulo, body.cantidad, body.usuarioId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
 @app.get("/mostradores/controles/{control_id}/excel")
 def mostradores_control_excel(control_id: int):
     """Excel guardado de un control cerrado."""
