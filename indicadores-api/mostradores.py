@@ -1,16 +1,18 @@
 """
 Mostradores — control de códigos patrón por línea.
 
-Tres fuentes, todas chicas:
-  · Postgres `catalogo.*`  → líneas (linea) y sus códigos patrón (patron →
-    sub_linea → linea). Es el mismo catálogo de /ventas/lineas.
-  · Magnus StkFer_Articulos → el DETALLE (DetallePatron) de cada código patrón.
-    No está en el catálogo de Postgres. Se trae UNA vez para todos los patrones
-    (un GROUP BY sobre ~41k filas → ~1.700 filas) y se cachea 15 min, igual que
-    catalogo_pg: no hay razón para pegarle a Magnus por cada línea que se abre.
+Dos fuentes, todas chicas:
+  · Magnus → las LÍNEAS y sus códigos patrón. "Línea" es el Nivel1 de Magnus
+    (Stk_Parametros.DetalleNivel1 = 'Línea'; maestro Stk_Nivel1) y cada código
+    patrón cuelga de una línea por StkFer_ArtParamet.Nivel1 (una fila por patrón,
+    ~1.700, con su nombre en Detalle y el rubro en Nivel2 → Stk_Nivel2). Se trae
+    todo junto UNA vez (3 consultas de maestros, sin tocar filas de venta) y se
+    cachea 15 min: no hay razón para pegarle a Magnus por cada línea que se abre.
+    OJO: NO es el catálogo de Postgres (`catalogo.*`, el de /ventas/lineas): acá
+    las líneas que se muestran son las de Magnus.
   · Postgres `everwear.mostrador_control` → los controles (ver
     sql/mostradores_control.sql): uno pendiente por patrón como máximo, y los
-    cerrados con su Excel (bytea).
+    cerrados con su Excel (bytea). Se referencia al patrón por CÓDIGO.
 
 Nada de esto toca filas de venta/pedido, así que no hay volumen que cuidar más
 allá de no traer el bytea del Excel en los listados (sólo al descargar).
@@ -21,17 +23,21 @@ from db import get_connection
 from db_pg import get_pg_connection
 
 _TTL_SEG = 15 * 60
-_cache_detalle: dict[str, str] | None = None
-_cache_detalle_ts: float = 0.0
+_cache_maestro: dict | None = None
+_cache_maestro_ts: float = 0.0
 
-# Mismo criterio que bulones.py (_DETALLE_PATRON): el patrón tiene un solo
-# nombre, pero hay artículos con la descripción vieja → MAX(LTRIM(RTRIM())).
-_SQL_DETALLES = """
-SELECT LTRIM(RTRIM(ArticuloPatron)) AS Patron,
-       MAX(LTRIM(RTRIM(DetallePatron))) AS Detalle
-FROM StkFer_Articulos
-WHERE ArticuloPatron <> ''
-GROUP BY ArticuloPatron
+# Máximo de controles cerrados que se muestran por patrón (los más nuevos).
+MAX_CONTROLES_VISIBLES = 3
+
+_SQL_LINEAS_MAGNUS = "SELECT Nivel1, RTRIM(Detalle) FROM Stk_Nivel1"
+_SQL_RUBROS_MAGNUS = "SELECT Nivel2, RTRIM(Detalle) FROM Stk_Nivel2"
+# Nivel1 = 0 → patrones sin línea asignada (6 filas de basura: 116, 797, BAJA…):
+# no pertenecen a ninguna línea, quedan afuera.
+_SQL_PATRONES_MAGNUS = """
+SELECT LTRIM(RTRIM(ArticuloPatron)) AS Patron, Nivel1, Nivel2,
+       RTRIM(Detalle) AS Detalle
+FROM StkFer_ArtParamet
+WHERE Nivel1 > 0
 """
 
 
@@ -41,108 +47,129 @@ def _limpiar_detalle(txt: str | None) -> str:
     return (txt or "").strip().lstrip("-").strip()
 
 
-def detalles_patron(forzar: bool = False) -> dict[str, str]:
-    """codigo_patron -> detalle (Magnus), cacheado 15 min."""
-    global _cache_detalle, _cache_detalle_ts
+def _clave_codigo(codigo: str):
+    """Código patrón numérico primero, por valor (139 < 1014); después el resto."""
+    return (0, int(codigo), "") if codigo.isdigit() else (1, 0, codigo)
+
+
+def maestro_magnus(forzar: bool = False) -> dict:
+    """Líneas y patrones de Magnus, cacheado 15 min.
+
+    {"lineas": {id: nombre}, "patrones": {codigo: {...}},
+     "por_linea": {id: [codigo, ...] ordenados}}
+    """
+    global _cache_maestro, _cache_maestro_ts
     ahora = time.monotonic()
-    if forzar or _cache_detalle is None or (ahora - _cache_detalle_ts) > _TTL_SEG:
-        conn = get_connection("EVERWEAR")
-        try:
-            cur = conn.cursor()
-            cur.execute(_SQL_DETALLES)
-            _cache_detalle = {
-                (p or "").strip(): _limpiar_detalle(d) for p, d in cur.fetchall() if p
-            }
-        finally:
-            conn.close()
-        _cache_detalle_ts = ahora
-    return _cache_detalle
+    if not forzar and _cache_maestro is not None and (ahora - _cache_maestro_ts) <= _TTL_SEG:
+        return _cache_maestro
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute(_SQL_LINEAS_MAGNUS)
+        lineas = {int(i): (n or "").strip() for i, n in cur.fetchall()}
+        cur.execute(_SQL_RUBROS_MAGNUS)
+        rubros = {int(i): (n or "").strip() for i, n in cur.fetchall()}
+        cur.execute(_SQL_PATRONES_MAGNUS)
+        filas = cur.fetchall()
+    finally:
+        conn.close()
+
+    patrones: dict[str, dict] = {}
+    por_linea: dict[int, list[str]] = {}
+    for codigo, n1, n2, detalle in filas:
+        codigo = (codigo or "").strip()
+        n1 = int(n1)
+        if not codigo or n1 not in lineas:
+            continue
+        patrones[codigo] = {
+            "linea": n1,
+            "rubro": rubros.get(int(n2 or 0), ""),
+            "detalle": _limpiar_detalle(detalle),
+        }
+        por_linea.setdefault(n1, []).append(codigo)
+    for lista in por_linea.values():
+        lista.sort(key=_clave_codigo)
+
+    _cache_maestro = {"lineas": lineas, "patrones": patrones, "por_linea": por_linea}
+    _cache_maestro_ts = ahora
+    return _cache_maestro
+
+
+def _nombre_linea(lid: int, nombre: str) -> str:
+    """La línea 9 se llama literalmente "-" en Magnus (555 patrones)."""
+    n = _limpiar_detalle(nombre)
+    return n or f"(Sin nombre) #{lid}"
 
 
 # ── Líneas ────────────────────────────────────────────────────────────────
-# `controlados` = patrones de la línea con al menos un control cerrado. El
-# DISTINCT de la CTE evita contar dos veces un patrón controlado varias veces.
-_SQL_LINEAS = """
-WITH ctrl AS (
-    SELECT DISTINCT "codigoPatron"
-    FROM everwear.mostrador_control
-    WHERE estado = 'cerrado'
-)
-SELECT l.id, l.nombre,
-       COUNT(p.id)              AS patrones,
-       COUNT(c."codigoPatron")  AS controlados
-FROM catalogo.linea l
-LEFT JOIN catalogo.sub_linea sl ON sl.linea_id = l.id
-LEFT JOIN catalogo.patron p     ON p.sub_linea_id = sl.id
-LEFT JOIN ctrl c                ON c."codigoPatron" = p.codigo_patron
-GROUP BY l.id, l.nombre
-ORDER BY l.nombre, l.id
+# `controlados` = patrones de la línea con al menos un control cerrado. Se pide
+# UNA vez la lista de códigos con control cerrado (DISTINCT: un patrón controlado
+# varias veces cuenta uno) y se cruza en memoria con el maestro de Magnus.
+_SQL_CODIGOS_CONTROLADOS = """
+SELECT DISTINCT "codigoPatron"
+FROM everwear.mostrador_control
+WHERE estado = 'cerrado'
 """
 
 
 def fetch_lineas() -> dict:
+    m = maestro_magnus()
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        cur.execute(_SQL_LINEAS)
-        filas = cur.fetchall()
+        cur.execute(_SQL_CODIGOS_CONTROLADOS)
+        controlados = {c for (c,) in cur.fetchall()}
     finally:
         conn.close()
-    # Nombres repetidos ("Varios" existe dos veces): se distinguen con el id.
-    cuenta: dict[str, int] = {}
-    for _, nombre, _, _ in filas:
-        k = (nombre or "").strip().lower()
-        cuenta[k] = cuenta.get(k, 0) + 1
+
     lineas = []
-    for lid, nombre, patrones, controlados in filas:
-        n = (nombre or "").strip()
-        if cuenta.get(n.lower(), 0) > 1:
-            n = f"{n} (#{lid})"
+    for lid, codigos in m["por_linea"].items():  # sólo líneas con patrones
         lineas.append({
-            "id": int(lid),
-            "nombre": n,
-            "patrones": int(patrones),
-            "controlados": int(controlados),
+            "id": lid,
+            "nombre": _nombre_linea(lid, m["lineas"][lid]),
+            "patrones": len(codigos),
+            "controlados": sum(1 for c in codigos if c in controlados),
         })
+    lineas.sort(key=lambda x: (x["nombre"].lower(), x["id"]))
     return {"lineas": lineas}
 
 
 # ── Patrones de una línea ─────────────────────────────────────────────────
-# Código patrón numérico primero (por valor, no por texto: 139 < 1014).
-_SQL_PATRONES = """
-SELECT p.codigo_patron, sl.nombre
-FROM catalogo.patron p
-JOIN catalogo.sub_linea sl ON sl.id = p.sub_linea_id
-WHERE sl.linea_id = %s
-ORDER BY (CASE WHEN p.codigo_patron ~ '^[0-9]+$' THEN p.codigo_patron::bigint END) NULLS LAST,
-         p.codigo_patron
-"""
-
 # Sin el bytea del Excel: sólo si tiene archivo. Usa el índice por código.
+# Cerrados: los MAX_CONTROLES_VISIBLES más nuevos por patrón (ROW_NUMBER sobre
+# el índice (codigoPatron, cerradoAt DESC)). Pendientes: a lo sumo uno por patrón.
 _SQL_CONTROLES = """
-SELECT id, "codigoPatron", estado, "cerradoAt",
-       ("archivoNombre" IS NOT NULL) AS tiene_archivo
+SELECT id, "codigoPatron", estado, "cerradoAt", tiene_archivo
+FROM (
+    SELECT id, "codigoPatron", estado, "cerradoAt",
+           ("archivoNombre" IS NOT NULL) AS tiene_archivo,
+           ROW_NUMBER() OVER (
+               PARTITION BY "codigoPatron"
+               ORDER BY "cerradoAt" DESC NULLS LAST, id DESC
+           ) AS rn
+    FROM everwear.mostrador_control
+    WHERE "codigoPatron" = ANY(%s) AND estado = 'cerrado'
+) t
+WHERE rn <= %s
+UNION ALL
+SELECT id, "codigoPatron", estado, NULL, FALSE
 FROM everwear.mostrador_control
-WHERE "codigoPatron" = ANY(%s)
-ORDER BY "codigoPatron", COALESCE("cerradoAt", "mandadoAt") DESC
+WHERE "codigoPatron" = ANY(%s) AND estado = 'pendiente'
 """
 
 
 def fetch_patrones_linea(linea_id: int) -> dict:
+    m = maestro_magnus()
+    if linea_id not in m["lineas"] or linea_id not in m["por_linea"]:
+        raise LookupError("Línea inexistente")
+    codigos = m["por_linea"][linea_id]
+
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, nombre FROM catalogo.linea WHERE id = %s", (linea_id,))
-        lin = cur.fetchone()
-        if not lin:
-            raise LookupError("Línea inexistente")
-        cur.execute(_SQL_PATRONES, (linea_id,))
-        patrones = cur.fetchall()
-        codigos = [c for c, _ in patrones]
-        controles = []
-        if codigos:
-            cur.execute(_SQL_CONTROLES, (codigos,))
-            controles = cur.fetchall()
+        cur.execute(_SQL_CONTROLES, (codigos, MAX_CONTROLES_VISIBLES, codigos))
+        controles = cur.fetchall()
     finally:
         conn.close()
 
@@ -156,21 +183,29 @@ def fetch_patrones_linea(linea_id: int) -> dict:
                 "id": int(cid),
                 "fecha": cerrado_at.isoformat() if cerrado_at else None,
                 "tieneArchivo": bool(tiene_archivo),
+                "_orden": (cerrado_at.timestamp() if cerrado_at else 0.0, int(cid)),
             })
 
-    detalles = detalles_patron()
     filas = []
-    for codigo, sub in patrones:
+    for codigo in codigos:
+        info = m["patrones"][codigo]
         d = por_codigo.get(codigo, {"pendiente": False, "controles": []})
+        # Más nuevo arriba → más viejo abajo (el UNION no garantiza el orden).
+        ctrls = sorted(d["controles"], key=lambda c: c["_orden"], reverse=True)
+        for c in ctrls:
+            del c["_orden"]
         filas.append({
             "codigo": codigo,
-            "detalle": detalles.get(codigo, ""),
-            "subLinea": (sub or "").strip(),
+            "detalle": info["detalle"],
+            "subLinea": info["rubro"],
             "pendiente": d["pendiente"],
-            "controlado": len(d["controles"]) > 0,
-            "controles": d["controles"],
+            "controlado": len(ctrls) > 0,
+            "controles": ctrls[:MAX_CONTROLES_VISIBLES],
         })
-    return {"linea": {"id": int(lin[0]), "nombre": (lin[1] or "").strip()}, "patrones": filas}
+    return {
+        "linea": {"id": linea_id, "nombre": _nombre_linea(linea_id, m["lineas"][linea_id])},
+        "patrones": filas,
+    }
 
 
 # ── Mandar a control ──────────────────────────────────────────────────────
@@ -180,12 +215,11 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
     codigo = (codigo_patron or "").strip()
     if not codigo:
         raise ValueError("Falta el código patrón")
+    if codigo not in maestro_magnus()["patrones"]:
+        raise LookupError("Código patrón inexistente")
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM catalogo.patron WHERE codigo_patron = %s", (codigo,))
-        if not cur.fetchone():
-            raise LookupError("Código patrón inexistente")
         cur.execute(
             """
             INSERT INTO everwear.mostrador_control ("codigoPatron", estado, "mandadoPor")
@@ -204,13 +238,10 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
 
 # ── Pendientes (vista Control) ────────────────────────────────────────────
 _SQL_PENDIENTES = """
-SELECT mc.id, mc."codigoPatron", mc."mandadoAt", l.id, l.nombre
-FROM everwear.mostrador_control mc
-LEFT JOIN catalogo.patron p     ON p.codigo_patron = mc."codigoPatron"
-LEFT JOIN catalogo.sub_linea sl ON sl.id = p.sub_linea_id
-LEFT JOIN catalogo.linea l      ON l.id = sl.linea_id
-WHERE mc.estado = 'pendiente'
-ORDER BY mc."mandadoAt", mc.id
+SELECT id, "codigoPatron", "mandadoAt"
+FROM everwear.mostrador_control
+WHERE estado = 'pendiente'
+ORDER BY "mandadoAt", id
 """
 
 
@@ -222,20 +253,20 @@ def fetch_pendientes() -> dict:
         filas = cur.fetchall()
     finally:
         conn.close()
-    detalles = detalles_patron() if filas else {}
-    return {
-        "pendientes": [
-            {
-                "id": int(i),
-                "codigo": codigo,
-                "detalle": detalles.get(codigo, ""),
-                "lineaId": int(lid) if lid is not None else None,
-                "linea": (lnom or "").strip(),
-                "mandadoAt": m.isoformat() if m else None,
-            }
-            for i, codigo, m, lid, lnom in filas
-        ]
-    }
+    m = maestro_magnus() if filas else {"lineas": {}, "patrones": {}}
+    salida = []
+    for i, codigo, mandado in filas:
+        info = m["patrones"].get(codigo)
+        lid = info["linea"] if info else None
+        salida.append({
+            "id": int(i),
+            "codigo": codigo,
+            "detalle": info["detalle"] if info else "",
+            "lineaId": lid,
+            "linea": _nombre_linea(lid, m["lineas"][lid]) if lid is not None else "",
+            "mandadoAt": mandado.isoformat() if mandado else None,
+        })
+    return {"pendientes": salida}
 
 
 # ── Excel de un control cerrado ───────────────────────────────────────────

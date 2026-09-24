@@ -8,13 +8,12 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Mostradores → Administrar — todas las líneas del catálogo (mismo catálogo que
-// /ventas/lineas). Al abrir una línea se traen sus códigos patrón con el detalle
-// (Magnus) y, por patrón:
+// Mostradores → Administrar — las líneas de Magnus (Stk_Nivel1, "Línea"). Al abrir
+// una línea se traen sus códigos patrón con el detalle (Magnus) y, por patrón:
 //   · botón "Mandar a control" → queda pendiente en Mostradores → Control;
 //   · fila en verde si ya tiene al menos un control cerrado;
-//   · las fechas de los controles cerrados, una arriba de otra; click en una
-//     descarga el Excel de ese control.
+//   · hasta 3 fechas de controles cerrados, una arriba de otra (más nuevo arriba);
+//     click en una descarga el Excel de ese control.
 // Los patrones se piden por línea al desplegarla (una consulta chica, cacheada
 // el detalle en el back) y quedan en memoria mientras la vista está abierta.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -36,6 +35,13 @@ const fmtFecha = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("es-AR", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
 const fmtFechaHora = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString("es-AR", { timeZone: TZ, dateStyle: "short", timeStyle: "short" }) : "";
+
+// Hasta 3 controles por patrón, uno arriba de otro: el más nuevo arriba, el más viejo abajo.
+const MAX_CONTROLES = 3;
+const ultimosControles = (cs: Control[]) =>
+  [...cs]
+    .sort((a, b) => (b.fecha ? Date.parse(b.fecha) : 0) - (a.fecha ? Date.parse(a.fecha) : 0) || b.id - a.id)
+    .slice(0, MAX_CONTROLES);
 
 async function pedir<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: "no-store", ...init });
@@ -243,7 +249,7 @@ export default function AdministrarPage() {
                                         <span className="text-zinc-600">—</span>
                                       ) : (
                                         <div className="flex flex-col items-start gap-0.5">
-                                          {p.controles.map((c) =>
+                                          {ultimosControles(p.controles).map((c) =>
                                             c.tieneArchivo ? (
                                               <a
                                                 key={c.id}
