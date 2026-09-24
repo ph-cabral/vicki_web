@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from db import get_connection
@@ -112,6 +112,9 @@ from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
 # mesa, de un mes. Ver premios.py.
 from premios import fetch_premios
+# /mostradores/* — control de códigos patrón por línea (Administrar / Control).
+# Ver mostradores.py y ever/sql/mostradores_control.sql.
+import mostradores
 # /sistema/bloqueos — watchdog de cadenas de bloqueo de Magnus. El job de SQL
 # Agent detecta y registra; acá sólo se lee el estado y se disparan las dos
 # acciones (matar la cabeza / dejarla), que corren dentro de SP auditados.
@@ -2093,6 +2096,75 @@ def rrhh_premios(mes: str = Query(..., description="Mes 'YYYY-MM'")):
         return fetch_premios(mes)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Mostradores: control de códigos patrón por línea ───────────────────────
+@app.get("/mostradores/lineas")
+def mostradores_lineas():
+    """Todas las líneas del catálogo con cuántos patrones tienen y cuántos ya
+    fueron controlados al menos una vez. Ver mostradores.py."""
+    try:
+        return mostradores.fetch_lineas()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/mostradores/patrones")
+def mostradores_patrones(linea: int = Query(..., ge=1)):
+    """Códigos patrón de UNA línea con su detalle (Magnus), si está pendiente
+    de control y las fechas de sus controles cerrados."""
+    try:
+        return mostradores.fetch_patrones_linea(linea)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+class MostradorMandarIn(BaseModel):
+    codigoPatron: str
+    usuarioId: int | None = None
+
+
+@app.post("/mostradores/mandar")
+def mostradores_mandar(body: MostradorMandarIn):
+    """Deja un código patrón pendiente de control (uno solo por patrón)."""
+    try:
+        return mostradores.mandar_a_control(body.codigoPatron, body.usuarioId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/mostradores/pendientes")
+def mostradores_pendientes():
+    """Patrones mandados a control y todavía sin cerrar (vista Control)."""
+    try:
+        return mostradores.fetch_pendientes()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/mostradores/controles/{control_id}/excel")
+def mostradores_control_excel(control_id: int):
+    """Excel guardado de un control cerrado."""
+    try:
+        res = mostradores.fetch_excel(control_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+    if res is None:
+        raise HTTPException(status_code=404, detail="El control no tiene Excel")
+    nombre, contenido = res
+    # Nombre ASCII en el header (los acentos rompen Content-Disposition).
+    seguro = "".join(c if c.isascii() and c not in '"\\' else "_" for c in nombre) or "control.xlsx"
+    return Response(
+        content=contenido,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{seguro}"'},
+    )
+
 
 # ── Compras: línea (Stk_Nivel1) de una lista puntual de artículos ───────────
 # Para la sección "Faltantes por línea" del dashboard /compras (2026-08-26). Es POST y no GET porque la lista de faltantes de un mes

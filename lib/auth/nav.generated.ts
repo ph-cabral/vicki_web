@@ -71,6 +71,16 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/manguera/corte"
     }
   ],
+  "mostradores": [
+    {
+      "label": "Administrar",
+      "href": "/mostradores/administrar"
+    },
+    {
+      "label": "Control",
+      "href": "/mostradores/control"
+    }
+  ],
   "picking": [
     {
       "label": "Picker",
@@ -184,6 +194,12 @@ export const GENERATED_MODULES: { key: string; label: string; href: string; hasI
     "label": "Manguera",
     "href": "/manguera",
     "hasIndex": true
+  },
+  {
+    "key": "mostradores",
+    "label": "Mostradores",
+    "href": "/mostradores",
+    "hasIndex": false
   },
   {
     "key": "picking",

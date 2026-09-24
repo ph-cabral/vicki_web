@@ -36,6 +36,12 @@ const RAW_MODULES: Omit<ModuleDef, "children" | "hasIndex">[] = [
     color: "bg-orange-600 hover:bg-orange-500",
   },
   {
+    key: "mostradores",
+    label: "Mostradores",
+    href: "/mostradores",
+    color: "bg-sky-700 hover:bg-sky-600",
+  },
+  {
     key: "deposito",
     label: "Depósito",
     href: "/deposito",
@@ -226,6 +232,8 @@ const ROUTE_MODULE: { prefix: string; mod: ModuleKey }[] = [
   { prefix: "/api/reportes", mod: "manguera" }, // ranking de cortes
   { prefix: "/fabrica", mod: "manguera" },
   { prefix: "/api/fabrica", mod: "manguera" },
+  { prefix: "/mostradores", mod: "mostradores" },
+  { prefix: "/api/mostradores", mod: "mostradores" },
   { prefix: "/deposito", mod: "deposito" },
   { prefix: "/api/deposito", mod: "deposito" },
   { prefix: "/picking", mod: "picking" },
