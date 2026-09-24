@@ -4,6 +4,7 @@ import { PackageSearch, ClipboardList } from "lucide-react";
 import { WmsTab } from "../components/wmsTab";
 import { MesaControlTab } from "../components/mesaControl";
 import { PedidosAsignadosTab } from "../components/pedidosAsignados";
+import { AsignarPedidosTab } from "../components/asignarPedidos";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
 
@@ -14,11 +15,12 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //
 // "Mesas" tiene 2 sub-vistas propias (agregado 2026-07-31): "Resumen" (la Mesa de Control de siempre, agregado mensual) y
 // "Pedidos asignados" (detalle por pedido, deposito.control_asignacion — ver
-// pedidosAsignados.tsx).
+// pedidosAsignados.tsx). 2026-09-24: "Asignar pedidos" (asignarPedidos.tsx) —
+// elegir quién controla cada pedido listo o en preparación.
 // ──────────────────────────────────────────────────────────────────────────────
 
 type Tab = "wms" | "mesas";
-type MesasSubTab = "resumen" | "asignados";
+type MesasSubTab = "resumen" | "asignados" | "asignar";
 
 const NAV: { id: Tab; label: string; icon: typeof PackageSearch }[] = [
   { id: "wms", label: "WMS", icon: PackageSearch },
@@ -28,6 +30,7 @@ const NAV: { id: Tab; label: string; icon: typeof PackageSearch }[] = [
 const MESAS_SUB: { id: MesasSubTab; label: string }[] = [
   { id: "resumen", label: "Resumen" },
   { id: "asignados", label: "Pedidos asignados" },
+  { id: "asignar", label: "Asignar pedidos" },
 ];
 
 export default function DepositoDepositoPage() {
@@ -88,6 +91,7 @@ export default function DepositoDepositoPage() {
               </div>
               {mesasSub === "resumen" && <MesaControlTab />}
               {mesasSub === "asignados" && <PedidosAsignadosTab />}
+              {mesasSub === "asignar" && <AsignarPedidosTab />}
             </main>
           </div>
         )}

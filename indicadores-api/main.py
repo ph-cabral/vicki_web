@@ -106,6 +106,7 @@ from errores_mesa import (
 from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
     estado_grupos, decidir_grupo,
+    fetch_tablero_asignacion, fetch_controladores, preasignar,
 )
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
@@ -1806,6 +1807,15 @@ class DecisionGrupoIn(BaseModel):
     codCliente: int
     accion: str   # "tomar" | "esperar"
 
+class PreasignarIn(BaseModel):
+    nroPedido: int
+    nroRemito: int = 0
+    nroOperario: int | None = None   # None + urgente=False -> quitar
+    urgente: bool = False
+    usuario: str | None = None
+    codCliente: int | None = None
+    cliente: str | None = None
+
 @app.get("/deposito/pedido/{nro}")
 def deposito_pedido(nro: int):
     """Lookup por Nro Pedido (NroMovVenta): Fecha (registracion) + fechaArmado
@@ -2008,6 +2018,39 @@ def deposito_errores_mesa_cola_diag(limit: int = Query(default=20, le=200)):
         return fetch_cola_diag(limit)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/control-asignacion/tablero")
+def deposito_control_asignacion_tablero():
+    """Vista "Asignar pedidos" (/deposito/deposito → Mesas): unidades listas
+    para control (cola sin asignar) y en preparación, con su preasignación y
+    la reserva por cliente. Ver PREASIGNACIÓN MANUAL en control_asignacion.py."""
+    try:
+        return fetch_tablero_asignacion()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/deposito/control-asignacion/controladores")
+def deposito_control_asignacion_controladores():
+    """Opciones del selector de controlador de la vista "Asignar pedidos":
+    widget abierto, unidad en curso y cantidad preasignada por operario."""
+    try:
+        return fetch_controladores()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/control-asignacion/preasignar")
+def deposito_control_asignacion_preasignar(body: PreasignarIn):
+    """Preasigna una unidad a un controlador (sale apenas termine lo actual),
+    la marca urgente (primero libre) o quita la preasignación. 409 si ya la
+    está controlando alguien; 404 si el operario no existe."""
+    try:
+        return preasignar(body.nroPedido, body.nroRemito, body.nroOperario,
+                          body.urgente, body.usuario, body.codCliente, body.cliente)
+    except ValueError as e:
+        msg = str(e)
+        raise HTTPException(status_code=409 if msg.startswith("Ya lo") else 404, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
 @app.get("/deposito/control-asignacion/pedidos")
 def deposito_control_asignacion_pedidos(

@@ -616,16 +616,6 @@ def fetch_pedidos_cumplidos_abiertos_legacy(limit: int = MAGNUS_ABIERTOS_LIMIT) 
 # Seeks: VenFer_PedidoReng clustered (NroMovVenta, NroRenglon) y
 # Ven_PedImpresoCA clustered (NroMovVenta, CodCentroPrep, NroCentroArmado).
 #
-# AJUSTE 2026-09-24 — FechaFin SOLA NO ALCANZA: el CP2 escribe FechaInicio/
-# FechaFin apenas el armador abre la tarea (3-4 s de diferencia) con
-# Ven_PedImpresoCA.Estado = 0 y la tanda de VenFer_PedidoRengPreparacion
-# también en Estado 0; recién al terminar pasa a Estado = 1. Caso 762126
-# (cliente 8051): CP2 con FechaFin 23/09 15:30 y Estado 0 -> entró a la cola
-# y mesa no lo pudo controlar. Ahora el CP2 cuenta como terminado sólo con
-# Estado = 1 AND FechaFin > 0. Medido desde FechaAsignacion >= 82420: las 123
-# filas CP2 con Estado 1 tienen FechaFin; 4 filas CP2 con FechaFin y Estado 0
-# (758960, 761772 anulados; 762126, 762188 abiertos). CP1 sigue por ubicación.
-#
 # De regalo, Ven_PedImpresoCA es el puente Magnus<->WMS que ya existía:
 #   ObsArmadorMovil  -> la ubicación que el widget muestra (antes salía de
 #                       OTItem, con el problema de arriba)
@@ -647,7 +637,7 @@ _SQL_GATE_CENTROS = """
             WHERE c.NroMovVenta   = r.NroMovVenta
               AND c.CodCentroPrep = r.CodCentroPrep
               AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
-                   OR (ISNULL(c.Estado, 0) = 1 AND ISNULL(c.FechaFin, 0) > 0))
+                   OR ISNULL(c.FechaFin, 0) > 0)
           )
 """
 
@@ -1149,6 +1139,9 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     purgar_cola_obsoleta). Agregar solo lo nuevo no alcanzaba — las filas
     viejas de pedidos ya cerrados se quedaban en la cola y se seguían
     entregando."""
+    global _cola_refrescada
+    import time as _t
+    _cola_refrescada = _t.monotonic()
     purgar_cola_obsoleta()
     completar_historial()
     candidatos = fetch_pedidos_listos_para_control(limit) + fetch_acopio_vueltas_espera_control(limit)
@@ -1179,6 +1172,19 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     finally:
         conn.close()
     return nuevos
+
+
+_cola_refrescada = 0.0   # monotonic del último refrescar_cola de este proceso
+
+
+def refrescar_cola_si_hace_falta(max_edad_s: float = 20.0) -> None:
+    """refrescar_cola, pero como mucho una vez cada `max_edad_s` por proceso.
+    La usan la vista "Asignar pedidos" y el polling del widget, que pueden
+    llamar seguido; asignar_siguiente sigue refrescando siempre."""
+    import time as _t
+    if _t.monotonic() - _cola_refrescada < max_edad_s:
+        return
+    refrescar_cola()
 
 
 def _fetch_pedido_cerrado(nro_pedido: int) -> bool:
@@ -1315,7 +1321,7 @@ def _fetch_asignacion_activa(nro_operario: int) -> dict | None:
 #                   incluido el gate de centros CP1/CP2).
 #   · en prep.   -> ya se mandó a armar y todavía no terminó: fila de
 #                   Ven_PedImpresoCA con FechaAsignacion en los últimos
-#                   RESERVA_PREP_DIAS días (CP1 sin ubicación o CP2 sin Estado 1),
+#                   RESERVA_PREP_DIAS días (CP1 sin ubicación o CP2 sin FechaFin),
 #                   o remito 71 emitido (EstadoRemito 1/2) con FechaArmado = 0.
 #                   Un pedido abierto que nunca se mandó al depósito NO traba al
 #                   grupo, y uno mandado hace más de RESERVA_PREP_DIAS tampoco
@@ -1373,6 +1379,24 @@ CREATE INDEX IF NOT EXISTS idx_control_asignacion_asignadoen
 CREATE INDEX IF NOT EXISTS idx_control_asignacion_sin_cierre
     ON deposito.control_asignacion ("asignadoEn")
     WHERE "asignadoEn" IS NOT NULL AND "cerradoEn" IS NULL;
+CREATE TABLE IF NOT EXISTS deposito.control_preasignacion (
+    "nroPedido"   integer NOT NULL,
+    "nroRemito"   integer NOT NULL DEFAULT 0,
+    "nroOperario" integer,
+    "asignadoA"   text,
+    "codCliente"  integer,
+    cliente       text,
+    "creadoPor"   text,
+    "creadoEn"    timestamp NOT NULL DEFAULT now(),
+    PRIMARY KEY ("nroPedido", "nroRemito")
+);
+CREATE INDEX IF NOT EXISTS idx_control_preasignacion_operario
+    ON deposito.control_preasignacion ("nroOperario");
+CREATE TABLE IF NOT EXISTS deposito.control_operario_latido (
+    "nroOperario" integer PRIMARY KEY,
+    nombre        text,
+    "vistoEn"     timestamp NOT NULL DEFAULT now()
+);
 """
 _reserva_ddl_ok = False
 
@@ -1490,8 +1514,10 @@ def _unidades_asignadas(cur, cod_clientes: list[int]) -> set[tuple[int, int]]:
     return {(int(a), int(b or 0)) for a, b in cur.fetchall()}
 
 
-def _tocar_operario(nro_operario: int) -> None:
-    """Latido: el operario sigue en su puesto -> sus reservas no vencen."""
+def _tocar_operario(nro_operario: int, nombre: str | None = None) -> None:
+    """Latido: el operario sigue en su puesto -> sus reservas no vencen.
+    También deja la marca en control_operario_latido (la vista "Asignar
+    pedidos" la usa para mostrar quién tiene el widget abierto)."""
     try:
         conn = get_pg_connection()
         try:
@@ -1500,6 +1526,13 @@ def _tocar_operario(nro_operario: int) -> None:
                 'UPDATE deposito.control_reserva_cliente SET "vistoEn" = now() '
                 'WHERE "nroOperario" = %s',
                 (nro_operario,),
+            )
+            cur.execute(
+                'INSERT INTO deposito.control_operario_latido ("nroOperario", nombre) '
+                'VALUES (%s, %s) ON CONFLICT ("nroOperario") DO UPDATE '
+                'SET "vistoEn" = now(), '
+                '    nombre = COALESCE(EXCLUDED.nombre, deposito.control_operario_latido.nombre)',
+                (nro_operario, nombre),
             )
             conn.commit()
         finally:
@@ -1651,22 +1684,39 @@ def _reclamar(cur, nro_operario: int, nombre: str, cod_cliente_afin,
     ni de un cliente que ESTE operario dejó en espera. Orden: 410 primero de
     todo (regla 2026-08-25), después los clientes reservados por él, después
     afinidad, prioridad y fecha. `solo_cliente` = reclamar solo de ese cliente
-    (botón Tomar)."""
+    (botón Tomar).
+
+    PREASIGNACIÓN (2026-09-24, vista "Asignar pedidos"): una fila preasignada
+    a OTRO operario no se le entrega nunca a este; la preasignada a ESTE sale
+    primero de todo y la "urgente" (preasignación sin operario) sale segunda,
+    las dos por encima de los 410 y SALTEANDO la reserva por cliente (es una
+    decisión manual del supervisor). Al entregarse, la preasignación se borra."""
     cur.execute(
         """
         UPDATE deposito.control_asignacion
         SET "asignadoA" = %(nombre)s, "nroOperarioAsignado" = %(op)s, "asignadoEn" = now()
         WHERE id = (
             SELECT ca.id FROM deposito.control_asignacion ca
+            LEFT JOIN deposito.control_preasignacion p
+                   ON p."nroPedido" = ca."nroPedido" AND p."nroRemito" = ca."nroRemito"
             WHERE ca."asignadoEn" IS NULL
               AND (%(solo)s::int IS NULL OR ca."codCliente" = %(solo)s::int)
-              AND NOT EXISTS (
-                    SELECT 1 FROM deposito.control_reserva_cliente r
-                    WHERE r."codCliente" = ca."codCliente"
-                      AND r."vistoEn" >= now() - make_interval(mins => %(inact)s)
-                      AND (r."nroOperario" <> %(op)s OR r.estado = 'espera')
+              -- preasignada a otro operario: nunca
+              AND COALESCE(p."nroOperario", %(op)s) = %(op)s
+              AND (
+                    p."nroPedido" IS NOT NULL      -- preasignada a él o urgente
+                    OR NOT EXISTS (
+                        SELECT 1 FROM deposito.control_reserva_cliente r
+                        WHERE r."codCliente" = ca."codCliente"
+                          AND r."vistoEn" >= now() - make_interval(mins => %(inact)s)
+                          AND (r."nroOperario" <> %(op)s OR r.estado = 'espera')
+                    )
                   )
-            ORDER BY CASE WHEN ca."compCodigo" = 410 THEN 0 ELSE 1 END ASC,
+            ORDER BY CASE WHEN p."nroOperario" = %(op)s THEN 0
+                          WHEN p."nroPedido" IS NOT NULL THEN 1
+                          ELSE 2 END ASC,
+                     p."creadoEn" ASC NULLS LAST,
+                     CASE WHEN ca."compCodigo" = 410 THEN 0 ELSE 1 END ASC,
                      EXISTS (
                         SELECT 1 FROM deposito.control_reserva_cliente r
                         WHERE r."codCliente" = ca."codCliente" AND r."nroOperario" = %(op)s
@@ -1683,7 +1733,14 @@ def _reclamar(cur, nro_operario: int, nombre: str, cod_cliente_afin,
         {"nombre": nombre, "op": nro_operario, "solo": solo_cliente,
          "inact": RESERVA_INACTIVO_MIN, "afin": cod_cliente_afin},
     )
-    return cur.fetchone()
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            'DELETE FROM deposito.control_preasignacion '
+            'WHERE "nroPedido" = %s AND "nroRemito" = %s',
+            (row[1], row[2] or 0),
+        )
+    return row
 
 
 def _alta_reserva(cur, nro_operario: int, nombre: str, fila: dict) -> None:
@@ -1723,7 +1780,11 @@ def estado_grupos(nro_operario: int) -> dict:
     _tocar_operario(nro_operario)
     grupos = list(evaluar_reservas(nro_operario).values())
     grupos.sort(key=lambda g: (not g["oferta"], not g["autoAsignar"], -g["listos"], g["codCliente"]))
-    return {"grupos": grupos}
+    try:
+        pre = preasignado_listo(nro_operario)
+    except Exception:  # noqa: BLE001 — informativo, no rompe el polling
+        pre = {"preasignados": [], "preasignadoListo": False}
+    return {"grupos": grupos, **pre}
 
 
 def decidir_grupo(nro_operario: int, cod_cliente: int, accion: str) -> dict:
@@ -1869,7 +1930,7 @@ def asignar_siguiente(nro_operario: int) -> dict:
         raise ValueError(f"Operario {nro_operario} no encontrado")
 
     _asegurar_tabla_reserva()
-    _tocar_operario(nro_operario)
+    _tocar_operario(nro_operario, nombre)
 
     activa = _fetch_asignacion_activa(nro_operario)
     if activa is not None and not _fetch_asignacion_cerrada(activa):
@@ -1934,6 +1995,416 @@ def asignar_siguiente(nro_operario: int) -> dict:
 
     out["grupo"] = grupo_de_cliente(nro_operario, out.get("codCliente"))
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PREASIGNACIÓN MANUAL (2026-09-24) — vista "Asignar pedidos"
+# (/deposito/deposito → Mesas → Asignar pedidos)
+#
+# Para pedidos urgentes o con el cliente esperando: el supervisor elige quién
+# controla una unidad (pedido 10/100/210/310/410 o vuelta de acopio 70/75) y
+# esa unidad le sale a ese operario apenas termine lo que está controlando.
+# También se puede marcar "Urgente" sin operario: sale primera al primero que
+# se libere.
+#
+# Tabla deposito.control_preasignacion, PK ("nroPedido", "nroRemito") — la
+# misma clave que la cola, pero en tabla APARTE porque la unidad puede estar
+# todavía en preparación (no tiene fila en la cola) y porque la purga borra y
+# vuelve a insertar filas de la cola (gate CP2). "nroOperario" NULL = urgente.
+#
+# Efecto en la cola (ver _reclamar): preasignada a otro -> nunca; a él ->
+# primero de todo; urgente -> segunda; ambas saltean la reserva por cliente.
+# La preasignación se borra al entregarse; las que quedan huérfanas (unidad
+# cerrada/anulada, ya no está ni lista ni en preparación) se limpian al abrir
+# la vista, con 15 min de gracia.
+#
+# Widget: el polling de /grupo trae "preasignadoListo" = tiene una unidad
+# preasignada lista en la cola Y ya cerró lo que estaba controlando -> el
+# widget pide Asignar solo.
+# ══════════════════════════════════════════════════════════════════════════
+
+PREASIG_GRACIA_MIN = 15
+CONTROLADORES_DIAS = 60
+
+# Pedidos (no acopio) mandados a armar y todavía NO listos para mesa: tienen
+# fila de Ven_PedImpresoCA asignada en los últimos RESERVA_PREP_DIAS días y no
+# pasan el gate de la cola (sin ubicación cargada, o algún centro CP1/CP2
+# pendiente). Mismo universo "en preparación" que la reserva por cliente.
+# Seek: VF_PEDCAB_Cla_EstadoCliente (EstadoPedido) + CA/Reng por clustered.
+# Medido 2026-09-24: 73 pedidos.
+_SQL_PREP_PEDIDOS = """
+SELECT cab.NroMovVenta, cab.FechaPedido, cc.DetalleCorto, cli.Cliente_Nombre,
+       cab.CodCliente, cab.Prioridad, cab.CompCodigo,
+       mand.FechaAsignacion, mand.HoraAsignacion
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+CROSS APPLY (
+    SELECT TOP 1 c.FechaAsignacion, c.HoraAsignacion
+    FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+    WHERE c.NroMovVenta = cab.NroMovVenta
+    ORDER BY c.FechaAsignacion ASC, c.HoraAsignacion ASC
+) mand
+LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo = cc.CompCodigo
+LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente = cli.CodCliente
+WHERE cab.EstadoPedido = 2
+  AND cab.CompCodigo IN (10, 100, 210, 310, 410)
+  AND EXISTS (
+        SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+        WHERE c.NroMovVenta = cab.NroMovVenta
+          AND c.FechaAsignacion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias})
+  AND NOT (
+        EXISTS (
+            SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+            WHERE c.NroMovVenta = cab.NroMovVenta
+              AND LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> '')
+        AND NOT EXISTS ({gate_centros})
+      )
+"""
+
+# Vueltas de acopio mandadas y sin terminar de armar (remito 71 emitido,
+# FechaArmado 0). Mismo criterio que la rama "en preparación" de
+# _SQL_GRUPO_CLIENTES; sin filtro de estado del pedido (ver gotcha ahí).
+_SQL_PREP_ACOPIO = """
+SELECT rmt.NroMovVenta, cab.NroMovVenta, cab.FechaPedido, cc.DetalleCorto,
+       cli.Cliente_Nombre, cab.CodCliente, cab.Prioridad, cab.CompCodigo,
+       rmt.FecRegistracion
+FROM EVERWEAR.dbo.VenFer_RmtoCabecera rmt
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMovPedido
+LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo = cc.CompCodigo
+LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente = cli.CodCliente
+WHERE rmt.CompCodigo = 71
+  AND cab.CompCodigo IN (70, 75)
+  AND ISNULL(rmt.FechaCierre, 0) = 0
+  AND ISNULL(rmt.FechaArmado, 0) = 0
+  AND rmt.EstadoRemito IN (1, 2)
+  AND rmt.FecRegistracion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias}
+"""
+
+
+def _txt(v) -> str | None:
+    return (str(v).strip() or None) if v is not None else None
+
+
+def fetch_en_preparacion() -> list[dict]:
+    """Unidades mandadas a armar que todavía no están listas para mesa."""
+    out: list[dict] = []
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(_SQL_PREP_PEDIDOS.format(
+            dias=int(RESERVA_PREP_DIAS),
+            gate_centros=_SQL_GATE_CENTROS.format(nro="cab.NroMovVenta")))
+        for (nro, f_ped, tipo, cliente, cod_cli, prio, comp, f_asig, h_asig) in cur.fetchall():
+            desde = _magnus_dt(f_asig, h_asig)
+            out.append({
+                "nroPedido": int(nro), "nroRemito": 0,
+                "fecha": (BASE_DATE + timedelta(days=int(f_ped))).date().isoformat() if f_ped else None,
+                "tipoPedido": _txt(tipo), "cliente": _txt(cliente),
+                "codCliente": int(cod_cli) if cod_cli is not None else None,
+                "prioridad": int(prio) if prio is not None else None,
+                "compCodigo": int(comp) if comp is not None else None,
+                "desde": desde.isoformat() if desde else None,
+                "ubicacion": None, "armador": None,
+            })
+        cur.execute(_SQL_PREP_ACOPIO.format(dias=int(RESERVA_PREP_DIAS)))
+        for (nro_rmt, nro, f_ped, tipo, cliente, cod_cli, prio, comp, f_reg) in cur.fetchall():
+            desde = _magnus_dt(f_reg, 0)
+            out.append({
+                "nroPedido": int(nro), "nroRemito": int(nro_rmt),
+                "fecha": (BASE_DATE + timedelta(days=int(f_ped))).date().isoformat() if f_ped else None,
+                "tipoPedido": _txt(tipo), "cliente": _txt(cliente),
+                "codCliente": int(cod_cli) if cod_cli is not None else None,
+                "prioridad": int(prio) if prio is not None else None,
+                "compCodigo": int(comp) if comp is not None else None,
+                "desde": desde.date().isoformat() if desde else None,
+                "ubicacion": None, "armador": None,
+            })
+    finally:
+        conn.close()
+    return out
+
+
+def _preasig_json(r: dict | None) -> dict | None:
+    if not r:
+        return None
+    return {
+        "nroOperario": r.get("nroOperario"),
+        "asignadoA": r.get("asignadoA"),
+        "urgente": r.get("nroOperario") is None,
+        "creadoPor": r.get("creadoPor"),
+        "creadoEn": r["creadoEn"].isoformat() if r.get("creadoEn") else None,
+    }
+
+
+def fetch_tablero_asignacion() -> dict:
+    """Vista "Asignar pedidos": todas las unidades para controlar —listas (en
+    la cola, sin asignar) y en preparación— con su preasignación y la reserva
+    por cliente."""
+    _asegurar_tabla_reserva()
+    try:
+        refrescar_cola_si_hace_falta(15)
+    except Exception:  # noqa: BLE001 — se muestra lo que haya en la cola
+        pass
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT "nroPedido", "nroRemito", fecha, "tipoPedido", cliente, "codCliente", '
+            '       "compCodigo", "prioridad", ubicacion, "nombreArmador", "createdAt" '
+            'FROM deposito.control_asignacion WHERE "asignadoEn" IS NULL'
+        )
+        cols = [c[0] for c in cur.description]
+        listos = [dict(zip(cols, r)) for r in cur.fetchall()]
+        cur.execute(
+            'SELECT "nroPedido", "nroRemito", "nroOperario", "asignadoA", "creadoPor", "creadoEn", '
+            '       "creadoEn" < now() - make_interval(mins => %s) AS vieja '
+            'FROM deposito.control_preasignacion',
+            (PREASIG_GRACIA_MIN,),
+        )
+        cols = [c[0] for c in cur.description]
+        pre = {(int(r[0]), int(r[1] or 0)): dict(zip(cols, r)) for r in cur.fetchall()}
+        cur.execute(
+            'SELECT "codCliente", "asignadoA", estado FROM deposito.control_reserva_cliente '
+            'WHERE "vistoEn" >= now() - make_interval(mins => %s)',
+            (RESERVA_INACTIVO_MIN,),
+        )
+        reservas = {int(c): {"asignadoA": a, "estado": e} for c, a, e in cur.fetchall()}
+    finally:
+        conn.close()
+
+    prep_ok = True
+    try:
+        prep = fetch_en_preparacion()
+    except Exception:  # noqa: BLE001 — Magnus caído: solo los listos
+        prep, prep_ok = [], False
+
+    claves_listos = {(int(r["nroPedido"]), int(r["nroRemito"] or 0)) for r in listos}
+    pedidos: list[dict] = []
+    for r in listos:
+        k = (int(r["nroPedido"]), int(r["nroRemito"] or 0))
+        pedidos.append({
+            "nroPedido": k[0], "nroRemito": k[1], "estado": "listo",
+            "fecha": r["fecha"].isoformat() if r.get("fecha") else None,
+            "tipoPedido": r.get("tipoPedido"), "cliente": r.get("cliente"),
+            "codCliente": r.get("codCliente"), "prioridad": r.get("prioridad"),
+            "compCodigo": r.get("compCodigo"), "ubicacion": r.get("ubicacion"),
+            "armador": r.get("nombreArmador"),
+            "desde": r["createdAt"].isoformat() if r.get("createdAt") else None,
+        })
+    for u in prep:
+        k = (u["nroPedido"], u["nroRemito"])
+        if k in claves_listos:
+            continue
+        pedidos.append({**u, "estado": "prep"})
+
+    for p in pedidos:
+        p["preasignado"] = _preasig_json(pre.get((p["nroPedido"], p["nroRemito"])))
+        res = reservas.get(int(p["codCliente"])) if p.get("codCliente") is not None else None
+        p["reservadoPor"] = res["asignadoA"] if res else None
+
+    # Limpieza de preasignaciones huérfanas (unidad cerrada/anulada). Solo si
+    # Magnus contestó: si no, "no está en preparación" no significa nada.
+    if prep_ok:
+        vivas = {(p["nroPedido"], p["nroRemito"]) for p in pedidos}
+        huerfanas = [k for k, r in pre.items() if k not in vivas and r.get("vieja")]
+        if huerfanas:
+            try:
+                conn = get_pg_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.executemany(
+                        'DELETE FROM deposito.control_preasignacion '
+                        'WHERE "nroPedido" = %s AND "nroRemito" = %s',
+                        huerfanas,
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    pedidos.sort(key=lambda p: (
+        0 if p["preasignado"] else 1,
+        0 if p["estado"] == "listo" else 1,
+        0 if p.get("compCodigo") == 410 else 1,
+        p.get("prioridad") if p.get("prioridad") is not None else 999,
+        p.get("desde") or "",
+    ))
+    return {"pedidos": pedidos, "magnusOk": prep_ok, "actualizado": datetime.now().isoformat()}
+
+
+def fetch_controladores() -> dict:
+    """Opciones del selector: operarios que usaron el widget de Mesa (latido o
+    asignaciones en los últimos CONTROLADORES_DIAS días) o que figuran como
+    controlador en errores_mesa. Por cada uno: si tiene el widget abierto
+    (latido < RESERVA_INACTIVO_MIN), la unidad que está controlando (asignada
+    en el día sin cierre registrado) y cuántas tiene preasignadas."""
+    _asegurar_tabla_reserva()
+    completar_historial()   # throttled: marca el cierre de lo que ya terminó
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            WITH ops AS (
+                SELECT "nroOperario" AS nro, nombre, "vistoEn"
+                FROM deposito.control_operario_latido
+                WHERE "vistoEn" > now() - make_interval(days => %(dias)s)
+                UNION ALL
+                SELECT "nroOperarioAsignado", "asignadoA", NULL
+                FROM deposito.control_asignacion
+                WHERE "asignadoEn" > now() - make_interval(days => %(dias)s)
+                  AND "nroOperarioAsignado" IS NOT NULL
+                UNION ALL
+                SELECT "nroControladorReal", "nombreControladorReal", NULL
+                FROM deposito.errores_mesa
+                WHERE "createdAt" > now() - make_interval(days => %(dias)s)
+                  AND "nroControladorReal" IS NOT NULL
+            )
+            SELECT nro, MAX(nombre) AS nombre, MAX("vistoEn") AS visto
+            FROM ops GROUP BY nro
+            """,
+            {"dias": CONTROLADORES_DIAS},
+        )
+        ops = {int(n): {"nroOperario": int(n), "nombre": (nom or "").strip() or f"Operario {n}",
+                        "vistoEn": v} for n, nom, v in cur.fetchall() if n is not None}
+        cur.execute(
+            """
+            SELECT DISTINCT ON ("nroOperarioAsignado")
+                   "nroOperarioAsignado", "nroPedido", "nroRemito", cliente, "asignadoEn"
+            FROM deposito.control_asignacion
+            WHERE "asignadoEn" >= CURRENT_DATE AND "cerradoEn" IS NULL
+              AND "nroOperarioAsignado" IS NOT NULL
+            ORDER BY "nroOperarioAsignado", "asignadoEn" DESC
+            """
+        )
+        en_curso = {int(r[0]): {"nroPedido": r[1], "nroRemito": r[2] or 0, "cliente": r[3],
+                                "asignadoEn": r[4].isoformat() if r[4] else None}
+                    for r in cur.fetchall()}
+        cur.execute(
+            'SELECT "nroOperario", COUNT(*) FROM deposito.control_preasignacion '
+            'WHERE "nroOperario" IS NOT NULL GROUP BY 1'
+        )
+        n_pre = {int(a): int(b) for a, b in cur.fetchall()}
+        cur.execute("SELECT LOCALTIMESTAMP")   # mismo tipo que "vistoEn" (sin zona)
+        ahora = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    out = []
+    for nro, o in ops.items():
+        visto = o.pop("vistoEn")
+        o["activo"] = bool(visto and (ahora - visto).total_seconds() < RESERVA_INACTIVO_MIN * 60)
+        o["enCurso"] = en_curso.get(nro)
+        o["preasignados"] = n_pre.get(nro, 0)
+        out.append(o)
+    out.sort(key=lambda o: (not o["activo"], o["nombre"].lower()))
+    return {"controladores": out}
+
+
+def preasignar(nro_pedido: int, nro_remito: int, nro_operario: int | None,
+               urgente: bool, usuario: str | None,
+               cod_cliente: int | None = None, cliente: str | None = None) -> dict:
+    """Alta/cambio/baja de la preasignación de una unidad.
+    nro_operario -> se la controla ese operario apenas termine lo actual.
+    urgente sin operario -> sale primera al primero que se libere.
+    ninguno de los dos -> se quita la preasignación."""
+    _asegurar_tabla_reserva()
+    nro_remito = int(nro_remito or 0)
+    nombre = None
+    if nro_operario is not None:
+        nombre = fetch_operario_nombre(int(nro_operario))
+        if not nombre:
+            raise ValueError(f"Operario {nro_operario} no encontrado")
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        cur.execute(
+            'SELECT "asignadoA", "codCliente", cliente FROM deposito.control_asignacion '
+            'WHERE "nroPedido" = %s AND "nroRemito" = %s',
+            (nro_pedido, nro_remito),
+        )
+        fila = cur.fetchone()
+        if fila and fila[0]:
+            conn.rollback()
+            raise ValueError(f"Ya lo está controlando {fila[0]}")
+        if fila:
+            cod_cliente = fila[1] if fila[1] is not None else cod_cliente
+            cliente = fila[2] or cliente
+
+        if nro_operario is None and not urgente:
+            cur.execute(
+                'DELETE FROM deposito.control_preasignacion '
+                'WHERE "nroPedido" = %s AND "nroRemito" = %s',
+                (nro_pedido, nro_remito),
+            )
+            conn.commit()
+            return {"nroPedido": nro_pedido, "nroRemito": nro_remito, "preasignado": None}
+
+        cur.execute(
+            """
+            INSERT INTO deposito.control_preasignacion
+                ("nroPedido", "nroRemito", "nroOperario", "asignadoA", "codCliente", cliente, "creadoPor")
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT ("nroPedido", "nroRemito") DO UPDATE
+               SET "nroOperario" = EXCLUDED."nroOperario", "asignadoA" = EXCLUDED."asignadoA",
+                   "creadoPor" = EXCLUDED."creadoPor", "creadoEn" = now()
+            RETURNING "nroOperario", "asignadoA", "creadoPor", "creadoEn"
+            """,
+            (nro_pedido, nro_remito, nro_operario, nombre, cod_cliente, cliente, usuario),
+        )
+        cols = [c[0] for c in cur.description]
+        r = dict(zip(cols, cur.fetchone()))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"nroPedido": nro_pedido, "nroRemito": nro_remito, "preasignado": _preasig_json(r)}
+
+
+def preasignado_listo(nro_operario: int) -> dict:
+    """Para el polling del widget. "preasignados" = unidades preasignadas a
+    este operario (con si ya están listas en la cola). "preasignadoListo" =
+    hay alguna lista Y lo que está controlando ya cerró en Magnus (o no tiene
+    nada) -> el widget puede pedir Asignar solo. Sin preasignaciones no toca
+    Magnus."""
+    def _leer():
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT p."nroPedido", p."nroRemito", p.cliente, '
+                '       (ca.id IS NOT NULL) AS listo '
+                'FROM deposito.control_preasignacion p '
+                'LEFT JOIN deposito.control_asignacion ca '
+                '       ON ca."nroPedido" = p."nroPedido" AND ca."nroRemito" = p."nroRemito" '
+                '      AND ca."asignadoEn" IS NULL '
+                'WHERE p."nroOperario" = %s ORDER BY p."creadoEn"',
+                (nro_operario,),
+            )
+            return [{"nroPedido": a, "nroRemito": b or 0, "cliente": c, "listo": bool(d)}
+                    for a, b, c, d in cur.fetchall()]
+        finally:
+            conn.close()
+
+    pres = _leer()
+    if not pres:
+        return {"preasignados": [], "preasignadoListo": False}
+    if not any(p["listo"] for p in pres):
+        # Puede haber terminado de armarse y la cola no se refrescó todavía.
+        try:
+            refrescar_cola_si_hace_falta(20)
+            pres = _leer()
+        except Exception:  # noqa: BLE001
+            pass
+    listo = any(p["listo"] for p in pres)
+    if listo:
+        activa = _fetch_asignacion_activa(nro_operario)
+        if activa is not None and not _fetch_asignacion_cerrada(activa):
+            listo = False
+    return {"preasignados": pres, "preasignadoListo": listo}
 
 
 # ── Historial de control: "Pedidos asignados" (vista /deposito/deposito → Mesas) ──
