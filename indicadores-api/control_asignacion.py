@@ -616,6 +616,16 @@ def fetch_pedidos_cumplidos_abiertos_legacy(limit: int = MAGNUS_ABIERTOS_LIMIT) 
 # Seeks: VenFer_PedidoReng clustered (NroMovVenta, NroRenglon) y
 # Ven_PedImpresoCA clustered (NroMovVenta, CodCentroPrep, NroCentroArmado).
 #
+# AJUSTE 2026-09-24 — FechaFin SOLA NO ALCANZA: el CP2 escribe FechaInicio/
+# FechaFin apenas el armador abre la tarea (3-4 s de diferencia) con
+# Ven_PedImpresoCA.Estado = 0 y la tanda de VenFer_PedidoRengPreparacion
+# también en Estado 0; recién al terminar pasa a Estado = 1. Caso 762126
+# (cliente 8051): CP2 con FechaFin 23/09 15:30 y Estado 0 -> entró a la cola
+# y mesa no lo pudo controlar. Ahora el CP2 cuenta como terminado sólo con
+# Estado = 1 AND FechaFin > 0. Medido desde FechaAsignacion >= 82420: las 123
+# filas CP2 con Estado 1 tienen FechaFin; 4 filas CP2 con FechaFin y Estado 0
+# (758960, 761772 anulados; 762126, 762188 abiertos). CP1 sigue por ubicación.
+#
 # De regalo, Ven_PedImpresoCA es el puente Magnus<->WMS que ya existía:
 #   ObsArmadorMovil  -> la ubicación que el widget muestra (antes salía de
 #                       OTItem, con el problema de arriba)
@@ -637,7 +647,7 @@ _SQL_GATE_CENTROS = """
             WHERE c.NroMovVenta   = r.NroMovVenta
               AND c.CodCentroPrep = r.CodCentroPrep
               AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
-                   OR ISNULL(c.FechaFin, 0) > 0)
+                   OR (ISNULL(c.Estado, 0) = 1 AND ISNULL(c.FechaFin, 0) > 0))
           )
 """
 
@@ -1305,7 +1315,7 @@ def _fetch_asignacion_activa(nro_operario: int) -> dict | None:
 #                   incluido el gate de centros CP1/CP2).
 #   · en prep.   -> ya se mandó a armar y todavía no terminó: fila de
 #                   Ven_PedImpresoCA con FechaAsignacion en los últimos
-#                   RESERVA_PREP_DIAS días (CP1 sin ubicación o CP2 sin FechaFin),
+#                   RESERVA_PREP_DIAS días (CP1 sin ubicación o CP2 sin Estado 1),
 #                   o remito 71 emitido (EstadoRemito 1/2) con FechaArmado = 0.
 #                   Un pedido abierto que nunca se mandó al depósito NO traba al
 #                   grupo, y uno mandado hace más de RESERVA_PREP_DIAS tampoco

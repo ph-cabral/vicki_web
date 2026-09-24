@@ -60,13 +60,18 @@ de picking):
     faltante    → no alcanza ni sumando guardado: no está en el depósito
 
 El guardado que habilita `reponer` se cuenta SÓLO en el depósito 1, el central
-(ver DEPOSITO_CENTRAL): lo que está en otro depósito no se baja al estante.
+(ver DEPOSITO_CENTRAL): lo que está en otro depósito no se baja al estante. Y
+se cuenta NETO de lo que las OT de reposición vivas ya van a sacar de esas
+ubicaciones (SQL_ORIGEN_COMPROMETIDO, 2026-09-24) — el mismo neteo que hace el
+armado de la OT; si no coinciden, el widget avisa algo que "armar OT" después
+no puede cargar.
 
 Y el `faltante` se abre en dos, porque no son el mismo aviso:
 
     faltante             hay algo para bajar aunque no alcance → se muestra
-    faltante + SinRepo   no hay NADA en el depósito central para reponer (ni en
-                         guardado ni en camino), o el renglón es de playa: el
+    faltante + SinRepo   después de restar lo que viene en camino, lo que
+                         queda no tiene NADA libre en guardado del depósito
+                         central (o el renglón no tiene posición): el
                          que repone no puede hacer nada con el aviso, así que
                          NO viaja en `porPasillo` (lo que lee el widget). Sigue
                          en `ots` y contado en resumen.faltanteSinRepo para la
@@ -661,6 +666,18 @@ def fetch_picking_disponible(
         )
 
         if codigos:
+            # Lo que las OT de reposición vivas YA van a sacar de cada ubicación
+            # de guardado (renglón origen, OTItemTipo = 1). El WMS no reserva
+            # stock al crear la OT, así que UbicacionDetalle todavía lo muestra
+            # como disponible: sin restarlo, un guardado ya comprometido
+            # habilitaba "reponer" y el armado de la OT (que sí lo resta)
+            # contestaba que no había nada. Caso 0027, pasillo 45, 24/09/2026.
+            tomado: dict[tuple[str, str], float] = {}
+            for art, ubic, cant in _chunked_query(
+                cur, SQL_ORIGEN_COMPROMETIDO, codigos, vivos=vivos
+            ):
+                k = (_art(art), _txt(ubic).upper())
+                tomado[k] = tomado.get(k, 0.0) + _num(cant)
             for art, ubic, cant, es_pick, es_guard in _chunked_query(cur, SQL_STOCK_UBIC, codigos):
                 art, ubic, cant = _art(art), _txt(ubic), _num(cant)
                 stock[(art, ubic)] = stock.get((art, ubic), 0.0) + cant
@@ -672,7 +689,8 @@ def fetch_picking_disponible(
                 elif deposito_de(u) != DEPOSITO_CENTRAL:
                     continue          # otro depósito: no se baja a este estante
                 elif _int(es_guard) == 1:
-                    guardado[art] = guardado.get(art, 0.0) + cant
+                    libre = max(0.0, cant - tomado.get((art, u), 0.0))
+                    guardado[art] = guardado.get(art, 0.0) + libre
                 elif _int(es_pick) == 1:
                     otro_picking[art] = otro_picking.get(art, 0.0) + cant
             for art, ubic, en_camino in _chunked_query(
@@ -833,14 +851,19 @@ def fetch_picking_disponible(
                 libre_guard[cod] = max(0.0, en_guard - a_reponer)
             else:
                 sit = "faltante"
+                if not sin_pos:
+                    # lo poco que hay se lo lleva este renglón (viaje parcial):
+                    # no queda para el próximo que pida el mismo artículo.
+                    libre_guard[cod] = 0.0
 
             # Sin nada para bajar al estante el aviso no sirve: el que repone no
             # puede hacer nada. Se marca y se saca de la vista por pasillo (el
             # widget), no del detalle por OT. La playa se repone como cualquier
             # otra posición de picking.
-            sin_repo = sit == "faltante" and (
-                sin_pos or (en_guard <= 0 and en_camino <= 0)
-            )
+            # La reposición en camino ya se restó de `a_reponer`: si lo que
+            # queda no tiene guardado LIBRE, es faltante de compras aunque haya
+            # una OT de reposición viva (esa OT cubre otra parte, no ésta).
+            sin_repo = sit == "faltante" and (sin_pos or en_guard <= 0)
             if sit != "ok":
                 problemas += 1
                 tot[sit] += 1
