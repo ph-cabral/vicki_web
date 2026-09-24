@@ -26,6 +26,7 @@ from db import get_connection
 from clientes import fetch_cliente
 from cartera import cliente_es_de_vendedor
 from vendedores import MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor
+from vendedores import clave as clave_vendedor
 from subempresas import filas_dos, sql_prueba, unir
 from catalogo_pg import (
     mapa_articulo_sub_linea,
@@ -695,7 +696,7 @@ def fetch_top_clientes(
     )
 
     limit_i = int(limit)
-    cache_key = (vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    cache_key = (clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym)
     ahora = time.monotonic()
     if not forzar:
         cacheado = _TOP_CLIENTES_CACHE.get(cache_key)
@@ -881,7 +882,7 @@ def fetch_top_lineas(
     )
 
     limit_i = int(limit)
-    cache_key = (vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    cache_key = (clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym)
     ahora = time.monotonic()
     if not forzar:
         cacheado = _TOP_LINEAS_CACHE.get(cache_key)
@@ -1169,7 +1170,7 @@ def fetch_clientes_por_linea(
     dia_hasta = (date(anio_actual, 12, 31) - BASE_DATE).days
 
     limit_i = int(limit)
-    cache_key = (linea_norm, vendedor, limit_i, anio_anterior, anio_actual)
+    cache_key = (linea_norm, clave_vendedor(vendedor), limit_i, anio_anterior, anio_actual)
     ahora = time.monotonic()
     if not forzar:
         cacheado = _TOP_CLIENTES_LINEA_CACHE.get(cache_key)
@@ -1420,7 +1421,7 @@ def fetch_clientes_por_sub_linea(
     dia_hasta = (date(anio_actual, 12, 31) - BASE_DATE).days
 
     limit_i = int(limit)
-    cache_key = (linea_norm, sub_linea_norm, vendedor, limit_i, anio_anterior, anio_actual)
+    cache_key = (linea_norm, sub_linea_norm, clave_vendedor(vendedor), limit_i, anio_anterior, anio_actual)
     ahora = time.monotonic()
     if not forzar:
         cacheado = _TOP_CLIENTES_SUBLINEA_CACHE.get(cache_key)

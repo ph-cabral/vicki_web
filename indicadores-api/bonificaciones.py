@@ -60,6 +60,7 @@ import time
 from datetime import date, timedelta
 
 from vendedores import MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor
+from vendedores import clave as clave_vendedor
 from db import get_connection
 from subempresas import (COMPROBANTES_AJUSTE_PRUEBA, filas_dos, sql_prueba,
                          unir)
@@ -417,7 +418,7 @@ def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
     ventas._rango_ytd_y_mes — `dias_total` es la unión de los otros dos y es
     el que va al WHERE.
     """
-    key = ("aj-vent", dias_acum, dias_mes, vendedor)
+    key = ("aj-vent", dias_acum, dias_mes, clave_vendedor(vendedor))
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -487,7 +488,7 @@ def ajuste_por_cliente(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
 
     Mismos rangos y mismo recorte por vendedor que `ajuste_ventanas`, de una
     sola pasada por sub-empresa. Cachea 15 min como el resto del módulo."""
-    key = ("aj-cli", dias_acum, dias_mes, vendedor)
+    key = ("aj-cli", dias_acum, dias_mes, clave_vendedor(vendedor))
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit

@@ -63,7 +63,7 @@ import time
 
 from db import get_connection
 from vendedores import (MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor,
-                        dueno_de)
+                        dueno_de, mapa_dueno, clave as clave_vendedor)
 from subempresas import filas_dos, sql_prueba, unir
 from catalogo_pg import codigos_de_linea_id, linea_por_defecto, linea_por_id
 from ventas import (
@@ -318,7 +318,7 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
     )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
-    key = ("cli", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    key = ("cli", _clave_linea(lin), clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -398,7 +398,7 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
     )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
-    key = ("pat", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    key = ("pat", _clave_linea(lin), clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
@@ -511,7 +511,12 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
     )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
-    key = ("ven", _clave_linea(lin), vendedor, limit_i, desde_ym, hasta_ym, mes_ym)
+    # El ranking colapsa las filas de los antecesores con `dueno_de`, así que
+    # también la vista de admin (vendedor None) depende del mapeo de
+    # sucesión: va en la clave para que un alta/baja en /admin/usuarios se
+    # vea en la próxima consulta y no a los 15 minutos.
+    key = ("ven", _clave_linea(lin), clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym,
+           tuple(sorted(mapa_dueno().items())))
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit

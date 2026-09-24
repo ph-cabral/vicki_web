@@ -178,6 +178,24 @@ def dueno_de(codigo) -> int:
     return mapa_dueno().get(c, c)
 
 
+def clave(vendedor):
+    """Lo que tiene que ir en la clave de CUALQUIER cache de resultados que
+    dependa del recorte por vendedor: los CÓDIGOS que suma, no el código del
+    vendedor solo.
+
+    Con el vendedor pelado en la clave, el resultado cacheado (15 min en
+    ventas.py / bulones.py / bonificaciones.py) sobrevivía a un alta o baja de
+    antecesor en /admin/usuarios: el mapeo se invalidaba, pero la vista
+    seguía devolviendo lo calculado con los códigos viejos hasta que vencía
+    su propio TTL — el que heredaba no veía la venta del antecesor. Con la
+    tupla de códigos en la clave, cambiar el mapeo cambia la clave y la
+    próxima consulta se recalcula sola. `codigos_de` está cacheado, no suma
+    viajes a Postgres. None (admin / toda la empresa) queda None."""
+    if vendedor is None:
+        return None
+    return codigos_de(vendedor)
+
+
 def invalidar_cache() -> None:
     """Se llama al editar el mapeo (o desde un test) para no esperar el TTL."""
     _CACHE.clear()
