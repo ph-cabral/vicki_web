@@ -14,9 +14,13 @@ export const maxDuration = 60;
 // la ficha de un cliente puntual ("qué otros clientes compraron esta misma
 // línea"). Ver fetch_clientes_por_linea en ventas.py.
 //
-// OJO (2026-09-15): el ranking "Top líneas" del PIE de la página ahora usa
-// /api/ventas/vendedor/clientes-por-sub-linea (catálogo de Postgres) — esta
-// ruta quedó sólo para el drill-down de arriba, que sigue siendo Magnus.
+// La línea es la del catálogo de Postgres (catalogo_pg.codigos_de_linea):
+// todos los artículos cuyos patrones cuelgan de esa línea.
+//
+// Usos: (1) drill-down de arriba; (2) desde 2026-09-24, click en una línea
+// SIN apertura comercial del ranking "Top líneas" del pie (no se despliega
+// en sub_líneas, abre directo la línea entera). Las líneas CON apertura
+// siguen abriendo por sub_línea (/clientes-por-sub-linea).
 //
 // Ya NO se pasan desde/hasta: el back devuelve los 2 años completos y el
 // filtro YTD/Meses lo hace el front sobre el desglose ya traído.

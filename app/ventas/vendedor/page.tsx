@@ -181,8 +181,9 @@ interface TopLinea {
   subLineas: TopSubLinea[];
   // Sólo las líneas con algún patrón "Apertura Comercial" = SI en el DePara
   // se pueden desplegar (ver catalogo_pg.lineas_con_apertura_comercial /
-  // fetch_top_lineas, 2026-09-15). Las demás muestran el total pero sin
-  // chevron ni click — no tienen sub_línea "comercial" que mostrar.
+  // fetch_top_lineas, 2026-09-15). Las demás no se despliegan (sin chevron):
+  // desde 2026-09-24 el click en la fila abre el modal con los clientes de
+  // la línea completa (abrirModalLinea → /clientes-por-linea).
   aperturaComercial: boolean;
 }
 
@@ -701,6 +702,22 @@ export default function VentasVendedorPage() {
       irASubLinea(subLinea, linea, false);
     },
     [irASubLinea],
+  );
+
+  // Entrada desde el ranking del pie (Top líneas) — click en una LÍNEA SIN
+  // apertura comercial (2026-09-24). Esas líneas no se despliegan en
+  // sub_líneas, así que el click abre directo el modal con los clientes de
+  // la línea COMPLETA: todos los artículos cuyos patrones cuelgan de esa
+  // línea en el catálogo de Postgres (catalogo_pg.codigos_de_linea, mismo
+  // mapa con el que fetch_top_lineas armó la fila). Reusa el modo "linea"
+  // y /clientes-por-linea del drill-down de la ficha de cliente.
+  const abrirModalLinea = useCallback(
+    (linea: string) => {
+      setModalOpen(true);
+      setFiltroVisible(true);
+      irALinea(linea, false);
+    },
+    [irALinea],
   );
 
   // Abre el modal vacío en modo "cliente", listo para buscar — para no
@@ -2239,26 +2256,26 @@ export default function VentasVendedorPage() {
                                   return (
                                   <Fragment key={l.linea}>
                                     <tr
+                                      // Con apertura comercial: despliega sus
+                                      // sub_líneas. Sin apertura (2026-09-24):
+                                      // abre el modal filtrado por la LÍNEA
+                                      // entera (ver abrirModalLinea).
                                       onClick={
                                         l.aperturaComercial
                                           ? () => toggleLinea(l.linea)
-                                          : undefined
+                                          : () => abrirModalLinea(l.linea)
                                       }
-                                      className={`border-t border-l-2 transition-colors ${
-                                        l.aperturaComercial ? "cursor-pointer" : ""
-                                      } ${
+                                      className={`border-t border-l-2 transition-colors cursor-pointer ${
                                         lineaAbierta
                                           ? "border-t-zinc-800/60 border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
-                                          : l.aperturaComercial
-                                            ? "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
-                                            : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60"
+                                          : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
                                       }`}
                                       title={
                                         l.aperturaComercial
                                           ? lineaAbierta
                                             ? "Contraer sub_líneas"
                                             : "Expandir para ver sub_líneas"
-                                          : undefined
+                                          : "Ver clientes que compraron esta línea"
                                       }
                                     >
                                       <td className="px-3 py-2 text-zinc-500 tabular-nums">
@@ -2278,7 +2295,15 @@ export default function VentasVendedorPage() {
                                           ) : (
                                             <span className="inline-block w-[14px] shrink-0" />
                                           )}
-                                          {l.linea}
+                                          <span
+                                            className={
+                                              l.aperturaComercial
+                                                ? undefined
+                                                : "hover:text-yellow-400 hover:underline transition-colors"
+                                            }
+                                          >
+                                            {l.linea}
+                                          </span>
                                         </span>
                                       </td>
                                       <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
