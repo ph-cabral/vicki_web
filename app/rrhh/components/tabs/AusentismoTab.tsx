@@ -6,6 +6,7 @@ import KpiCard from "@/app/rrhh/components/KpiCard";
 import PieChartCard from "@/app/rrhh/components/charts/PieChartCard";
 import BarChartCard from "@/app/rrhh/components/charts/BarChartCard";
 import AusentismoSectorMesChart from "@/app/rrhh/components/charts/AusentismoSectorMesChart";
+import AusentismoHorasSectorChart from "@/app/rrhh/components/charts/AusentismoHorasSectorChart";
 import {
   TabHeader,
   Panel,
@@ -213,6 +214,11 @@ export default function AusentismoTab() {
       {/* Anual: independiente del selector de mes (tiene su propio año). */}
       <Panel>
         <AusentismoSectorMesChart />
+      </Panel>
+
+      {/* Horas de novedades por sector y mes (propio selector de año). */}
+      <Panel>
+        <AusentismoHorasSectorChart />
       </Panel>
 
       {objetivoNum != null && (
