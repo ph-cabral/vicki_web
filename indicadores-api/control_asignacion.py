@@ -606,8 +606,12 @@ def fetch_pedidos_cumplidos_abiertos_legacy(limit: int = MAGNUS_ABIERTOS_LIMIT) 
 # y 762126: CP1 con ubicación, CP2 con FechaFin = 0 y sin tanda). Ahora, además
 # de la fila con ubicación, CADA centro que tenga renglones no anulados del
 # pedido tiene que estar terminado: una fila de Ven_PedImpresoCA de ESE
-# centro con ubicación cargada o con FechaFin > 0 (la señal de fin del CP2;
-# coincide con la FechaDesde de su tanda en VenFer_PedidoRengPreparacion).
+# centro con ubicación cargada (CP1) o, para el CP2, con Estado = 1.
+# AJUSTE 2026-09-24: el CP2 NO se mide por fecha. FechaInicio/FechaFin se
+# escriben apenas el armador abre la tarea; la fecha marca cuándo termina el
+# trabajo físico (cortar la cinta/manguera, armar el acople) pero Estado sólo
+# pasa a 1 cuando el CP2 está realmente cumplido (WMS o Mesa de Control). Caso
+# 762126: CP2 con FechaFin y Estado 0 entró a la cola y mesa no pudo cerrarlo.
 # Centro sin fila CA (no se mandó a preparar) = espera. Ver
 # _SQL_GATE_CENTROS; se aplica también en la purga (SQL_PEDIDOS_YA_NO_VAN)
 # para sacar lo que ya estaba en la cola con un centro pendiente.
@@ -636,8 +640,10 @@ _SQL_GATE_CENTROS = """
             FROM EVERWEAR.dbo.Ven_PedImpresoCA c
             WHERE c.NroMovVenta   = r.NroMovVenta
               AND c.CodCentroPrep = r.CodCentroPrep
-              AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
-                   OR ISNULL(c.FechaFin, 0) > 0)
+              AND (   (r.CodCentroPrep = 2 AND ISNULL(c.Estado, 0) = 1)
+                   OR (r.CodCentroPrep <> 2
+                       AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
+                            OR ISNULL(c.FechaFin, 0) > 0)))
           )
 """
 

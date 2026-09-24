@@ -415,6 +415,63 @@ def _resolver_articulos(nro_pedido: int, codigos: list[str] | None) -> list[str]
     return out or None
 
 
+# ── Anti-duplicado (2026-09-24) ──────────────────────────────────────────────
+# Si en el widget (Mesa de Control o Calidad) apretaban "Finalizar" varias
+# veces, cada click volvía a mandar el mismo lote y quedaban filas repetidas
+# (ej. ids 150/151, pedido 759147, 1 segundo de diferencia). Ahora, antes de
+# insertar, se descarta toda fila EXACTAMENTE IGUAL a una ya guardada:
+#   mismo nroPedido + origen + artículo(s) (por CÓDIGO, no por la descripción,
+#   que puede cambiar en Magnus) + detalleError + observacion.
+# `registradoPor` NO entra en la clave: el mismo error del mismo artículo del
+# mismo pedido es el mismo hecho aunque lo cargue otra persona.
+# No hay ventana de tiempo: si ya está, no se vuelve a cargar.
+#
+# Concurrencia: pg_advisory_xact_lock por pedido serializa 2 requests
+# simultáneos del mismo pedido (doble click muy rápido o 2 PCs) hasta el
+# commit; se libera solo al terminar la transacción. Barato: la lectura de
+# existentes usa idx_errores_mesa_nropedido y trae pocas filas por pedido.
+# Se hace así (y no con UNIQUE INDEX) porque la tabla ya tiene duplicados
+# históricos y `articulos` guarda "código - descripción".
+_LOCK_NS_ERRORES_MESA = 7301   # namespace del advisory lock (arbitrario, fijo)
+
+
+class ErrorDuplicado(ValueError):
+    """Todo el lote ya estaba registrado — main.py lo devuelve como 400 con
+    este mensaje (el widget lo muestra tal cual)."""
+
+
+def _norm_txt(v) -> str:
+    return (v or "").strip()
+
+
+def _codigos_de_articulos(articulos) -> tuple:
+    """["COD - DESCRIPCION", ...] -> ("COD", ...). NULL/vacío -> ()."""
+    return tuple(sorted(_norm_txt(a).split(" - ", 1)[0].strip() for a in (articulos or []) if _norm_txt(a)))
+
+
+def _clave_error(articulos, detalle_error, observacion) -> tuple:
+    return (_codigos_de_articulos(articulos), _norm_txt(detalle_error), _norm_txt(observacion))
+
+
+def _claves_existentes(cur, nro_pedido: int, origen: str) -> set:
+    """Toma el lock del pedido (hasta el commit/rollback de ESTA transacción)
+    y devuelve las claves ya guardadas para ese pedido + origen."""
+    cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (_LOCK_NS_ERRORES_MESA, nro_pedido))
+    cur.execute(
+        """
+        SELECT articulos, "detalleError", observacion
+        FROM deposito.errores_mesa
+        WHERE "nroPedido" = %s AND origen = %s
+        """,
+        (nro_pedido, origen),
+    )
+    return {_clave_error(a, d, o) for a, d, o in cur.fetchall()}
+
+
+def _msg_duplicado(n: int) -> str:
+    return "Ya estaba registrado" if n == 1 else f"Ya estaban registrados ({n})"
+
+
 # ── Insert (Postgres) ─────────────────────────────────────────────────────────
 def insert_error_mesa(
     nro_pedido: int, nro_operario: int, detalle_error: str, articulos: list[str] | None = None
@@ -469,6 +526,8 @@ def insert_error_mesa(
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        if _clave_error(articulos_resueltos, detalle_error, None) in _claves_existentes(cur, nro_pedido, "mesa_control"):
+            raise ErrorDuplicado(_msg_duplicado(1))
         cur.execute(
             """
             INSERT INTO deposito.errores_mesa
@@ -553,9 +612,16 @@ def insert_error_mesa_items(
 
     conn = get_pg_connection()
     resultados = []
+    duplicados = 0
     try:
         cur = conn.cursor()
+        existentes = _claves_existentes(cur, nro_pedido, "mesa_control")
         for detalle_error, articulos_resueltos in filas:
+            clave = _clave_error(articulos_resueltos, detalle_error, None)
+            if clave in existentes:
+                duplicados += 1
+                continue
+            existentes.add(clave)   # también evita repetidos dentro del mismo lote
             cur.execute(
                 """
                 INSERT INTO deposito.errores_mesa
@@ -575,6 +641,10 @@ def insert_error_mesa_items(
                 "id": new_id, "detalleError": detalle_error,
                 "articulos": articulos_resueltos, "createdAt": created_at.isoformat(),
             })
+        if not resultados:
+            # todo el lote ya estaba cargado (típico: doble click en Finalizar)
+            conn.rollback()
+            raise ErrorDuplicado(_msg_duplicado(duplicados))
         conn.commit()
     finally:
         conn.close()
@@ -584,6 +654,7 @@ def insert_error_mesa_items(
         "nroPedido": nro_pedido,
         "registradoPor": registrado_por,
         "cantidad": len(resultados),
+        "duplicados": duplicados,
         "items": resultados,
     }
 
@@ -769,6 +840,8 @@ def insert_error_calidad(
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        if _clave_error(articulos_resueltos, detalle_error, observacion) in _claves_existentes(cur, nro_pedido, "calidad"):
+            raise ErrorDuplicado(_msg_duplicado(1))
         cur.execute(
             """
             INSERT INTO deposito.errores_mesa
@@ -864,9 +937,16 @@ def insert_error_calidad_items(
 
     conn = get_pg_connection()
     resultados = []
+    duplicados = 0
     try:
         cur = conn.cursor()
+        existentes = _claves_existentes(cur, nro_pedido, "calidad")
         for detalle_error, observacion_item, articulos_resueltos in filas:
+            clave = _clave_error(articulos_resueltos, detalle_error, observacion_item)
+            if clave in existentes:
+                duplicados += 1
+                continue
+            existentes.add(clave)   # también evita repetidos dentro del mismo lote
             cur.execute(
                 """
                 INSERT INTO deposito.errores_mesa
@@ -888,6 +968,10 @@ def insert_error_calidad_items(
                 "id": new_id, "detalleError": detalle_error, "observacion": observacion_item,
                 "articulos": articulos_resueltos, "createdAt": created_at.isoformat(),
             })
+        if not resultados:
+            # todo el lote ya estaba cargado (típico: doble click en Finalizar)
+            conn.rollback()
+            raise ErrorDuplicado(_msg_duplicado(duplicados))
         conn.commit()
     finally:
         conn.close()
@@ -900,6 +984,7 @@ def insert_error_calidad_items(
         "nroControladorReal": ctrl["nroControlador"],
         "nombreControladorReal": ctrl["nombreControlador"],
         "cantidad": len(resultados),
+        "duplicados": duplicados,
         "items": resultados,
     }
 
