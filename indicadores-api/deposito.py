@@ -1909,6 +1909,7 @@ _FALT_SELECT = """
     {fecha}                    AS FechaFaltante,
     cab.EstadoPedido,
     cab.CompCodigo,
+    cab.CodCliente,
     LTRIM(RTRIM(r.CodArticu))  AS CodArticulo,
     LTRIM(RTRIM(r.Ubicacion))  AS Ubicacion,
     r.Estado                   AS EstadoRenglon,
@@ -1964,8 +1965,9 @@ def _sql_faltante_pedidos(por: str = "fecha") -> str:
             "ORDER BY x.FechaFaltante, x.NroMovVenta, x.NroRenglon")
 
 
-# Acumulado del rango agrupado por artículo, resuelto ENTERO en el motor (una
-# sola consulta, sin traer el detalle), por día real del faltante.
+# Acumulado del rango agrupado por artículo, resuelto ENTERO en el motor.
+# SIN USO desde 2026-09-23: fetch_faltante_mes agrupa en Python porque tiene
+# que restar renglón por renglón la mercadería en tránsito a central.
 SQL_FALTANTE_AGRUPADO = f"""
 SELECT
     x.CodArticulo,
@@ -2094,6 +2096,142 @@ def _rango_faltante_pedidos(desde=None, hasta=None):
     return d_i, h_i
 
 
+# ── Mercadería en tránsito sucursal → central (2026-09-23) ──────────────────
+# Cuando una sucursal le manda mercadería a central (multidepósito "DE LILSER A
+# CENTRAL" cód. 2 y "DE EVER WEAR RUTA A CENTRAL" cód. 4), Magnus la carga en
+# el depósito 1 en el mismo instante (Estado 3: salida 75/78 + ingreso 73
+# INGRESO PLAYA DE PEDIDOS en el mismo segundo) pero viaja 1 a 5 días en el
+# transporte. Si en ese lapso un pedido cierra corto de ese artículo, la
+# diferencia NO es falta de existencia: está en el camión.
+# Regla: al faltante de un renglón se le resta lo transferido a central del
+# mismo artículo con fecha entre (día del faltante - TRANSITO_DIAS) y el día
+# del faltante. Cada unidad transferida se descuenta UNA sola vez (pozo por
+# artículo, FIFO por día del faltante), primero contra el pedido del cliente
+# que figura en la observación de la transferencia ("6721- HARO CLAUDIO",
+# "CLIENTE: 8960 ...") y después contra cualquier otro renglón del artículo.
+# Estado 1 (pendiente) no se cuenta: todavía no movió stock.
+TRANSITO_CODIGOS_A_CENTRAL = (2, 4)
+TRANSITO_DIAS = 5
+
+SQL_TRANSITO_A_CENTRAL = f"""
+SELECT LTRIM(RTRIM(r.CodArticulo)) AS CodArticulo,
+       m.Fecha,
+       m.Codigo,
+       m.NumeroMov,
+       LEFT(m.Observaciones, 80)   AS Obs,
+       SUM(r.Cantidad)             AS Cantidad
+FROM EVERWEAR.dbo.Stk_MovEncMultideposito m
+INNER JOIN EVERWEAR.dbo.Stk_MovRenMultideposito r
+        ON r.Deposito  = m.Deposito
+       AND r.NumeroMov = m.NumeroMov
+       AND r.Codigo    = m.Codigo
+WHERE m.Codigo IN ({",".join(str(c) for c in TRANSITO_CODIGOS_A_CENTRAL)})
+  AND m.Estado = 3
+  AND m.Fecha BETWEEN ? AND ?
+GROUP BY LTRIM(RTRIM(r.CodArticulo)), m.Fecha, m.Codigo, m.NumeroMov, LEFT(m.Observaciones, 80)
+"""
+
+_RE_CLI_OBS = re.compile(r"^\s*(?:CLIENTE\s*:?\s*)?(\d{2,7})\b", re.IGNORECASE)
+
+
+def _cliente_de_obs(obs) -> int | None:
+    m = _RE_CLI_OBS.match(_txt(obs))
+    return int(m.group(1)) if m else None
+
+
+def _transito_a_central(cur, d_min: int, d_max: int) -> dict[str, list[dict]]:
+    """{CodArticulo -> [transferencias a central]} con fecha en
+    [d_min - TRANSITO_DIAS, d_max]. Volumen chico (~120/mes): una consulta
+    por rango de fecha, sin IN de artículos."""
+    cur.execute(SQL_TRANSITO_A_CENTRAL, (d_min - TRANSITO_DIAS, d_max))
+    out: dict[str, list[dict]] = {}
+    for cod, fecha, codigo, nro, obs, cant in cur.fetchall():
+        c = _txt(cod)
+        q = float(_safe(cant) or 0)
+        if not c or q <= 0:
+            continue
+        out.setdefault(c, []).append({
+            "Fecha": int(fecha), "Codigo": int(codigo), "NumeroMov": int(nro),
+            "Cliente": _cliente_de_obs(obs), "Resto": q,
+        })
+    for lst in out.values():
+        lst.sort(key=lambda t: (t["Fecha"], t["NumeroMov"]))
+    return out
+
+
+def _transito_para_filas(cur, filas: list[dict]) -> dict[str, list[dict]]:
+    """Trae el pozo de tránsito que cubre el rango de días de 'filas'."""
+    dias = [int(f["FechaFaltante"]) for f in filas if f.get("FechaFaltante")]
+    if not dias:
+        return {}
+    return _transito_a_central(cur, min(dias), max(dias))
+
+
+def _aplicar_transito(filas: list[dict], transito: dict[str, list[dict]]) -> dict[tuple, float]:
+    """Reparte el pozo de tránsito entre los renglones faltantes.
+    filas: dicts con NroMovVenta, NroRenglon, CodCliente, CodArticulo,
+    FechaFaltante, CantidadPedida, CantidadCumplida (salida de
+    _sql_faltante_pedidos). Devuelve {(NroMovVenta, NroRenglon) -> unidades
+    en tránsito}."""
+    asignado: dict[tuple, float] = {}
+    if not transito:
+        return asignado
+    orden = sorted(
+        (f for f in filas if _txt(f.get("CodArticulo")) in transito),
+        key=lambda f: (int(f.get("FechaFaltante") or 0), int(f["NroMovVenta"]),
+                       int(f.get("NroRenglon") or 0)),
+    )
+    # Dos pasadas: 1) transferencias rotuladas para el cliente del pedido,
+    # 2) el resto del pozo del artículo contra lo que siga faltando.
+    for pasada in (1, 2):
+        for f in orden:
+            key = (int(f["NroMovVenta"]), int(f.get("NroRenglon") or 0))
+            falta = (float(_safe(f.get("CantidadPedida")) or 0)
+                     - float(_safe(f.get("CantidadCumplida")) or 0)
+                     - asignado.get(key, 0.0))
+            if falta <= 0:
+                continue
+            dia = int(f.get("FechaFaltante") or 0)
+            cli = _cli_int(f.get("CodCliente"))
+            for t in transito[_txt(f.get("CodArticulo"))]:
+                if t["Resto"] <= 0 or not (dia - TRANSITO_DIAS <= t["Fecha"] <= dia):
+                    continue
+                if pasada == 1 and (cli is None or t["Cliente"] != cli):
+                    continue
+                q = min(falta, t["Resto"])
+                t["Resto"] -= q
+                falta -= q
+                asignado[key] = round(asignado.get(key, 0.0) + q, 3)
+                if falta <= 0:
+                    break
+    return asignado
+
+
+def _cli_int(v) -> int | None:
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _transito_de_filas(cur, filas: list[dict], d_i: int, por: str) -> dict[tuple, float]:
+    """{(NroMovVenta, NroRenglon) -> unidades en tránsito} para 'filas'.
+    El pozo se reparte en orden de día, así que antes se cargan de contexto
+    los faltantes de los TRANSITO_DIAS días previos al rango (no se devuelven):
+    si no, consultar un solo día le asignaría tránsito que en los hechos ya
+    cubrió un faltante anterior, y el número cambiaría según el rango pedido."""
+    if not filas:
+        return {}
+    cur.execute(_sql_faltante_pedidos(por),
+                _params_faltante(d_i - TRANSITO_DIAS, d_i - 1, por))
+    cols = [c[0] for c in cur.description]
+    vistos = {(int(f["NroMovVenta"]), int(f["NroRenglon"] or 0)) for f in filas}
+    ctx = [f for f in (dict(zip(cols, r)) for r in cur.fetchall())
+           if (int(f["NroMovVenta"]), int(f["NroRenglon"] or 0)) not in vistos]
+    todas = ctx + filas
+    return _aplicar_transito(todas, _transito_para_filas(cur, todas))
+
+
 def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
     """Renglones que faltaron: pedidos Cerrados/Facturados cuyo renglón se
     cumplió por debajo de lo pedido. Sin params → último día cerrado.
@@ -2109,8 +2247,25 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
         cur.execute(_sql_faltante_pedidos(por), _params_faltante(d_i, h_i, por))
         cols = [c[0] for c in cur.description]
         filas = [dict(zip(cols, r)) for r in cur.fetchall()]
+        transito = _transito_de_filas(cur, filas, d_i, por)
     finally:
         conn.close()
+
+    # Renglón cubierto entero por mercadería en tránsito → no es faltante. Se
+    # devuelve aparte para que quien persiste pueda borrarlo si ya lo tenía.
+    cubiertos = []
+    vivas = []
+    for f in filas:
+        key = (int(f["NroMovVenta"]), int(f.get("NroRenglon") or 0))
+        dif0 = (float(_safe(f.get("CantidadPedida")) or 0)
+                - float(_safe(f.get("CantidadCumplida")) or 0))
+        if transito.get(key, 0) >= dif0 - 1e-9:
+            cubiertos.append({"NroMovVenta": key[0], "Renglon": key[1],
+                              "CodArticulo": _txt(f.get("CodArticulo")),
+                              "EnTransito": transito[key]})
+        else:
+            vivas.append(f)
+    filas = vivas
 
     pedidos = sorted({int(f["NroMovVenta"]) for f in filas if f.get("NroMovVenta") is not None})
     info = _info_pedidos(pedidos)
@@ -2125,7 +2280,8 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
         pedida = float(_safe(f.get("CantidadPedida")) or 0)
         cumplida = float(_safe(f.get("CantidadCumplida")) or 0)
         precio = float(_safe(f.get("PrecioVenta")) or 0)
-        dif = round(pedida - cumplida, 3)
+        en_transito = transito.get((nro, int(f.get("NroRenglon") or 0)), 0.0)
+        dif = round(pedida - cumplida - en_transito, 3)
         rows.append({
             "NroMovVenta":   nro,
             "Renglon":       _int(f.get("NroRenglon")),
@@ -2140,7 +2296,9 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
             "Nombre":        nombres.get(cod, ""),
             "CantPedida":    pedida,
             "CantCumplida":  cumplida,
+            # Diferencia ya neta de lo que venía en tránsito a central.
             "Diferencia":    dif,
+            "EnTransito":    en_transito,
             "PrecioVenta":   precio,
             # Importe = lo que faltó, no lo pedido (la fuente vieja valorizaba
             # la cantidad pedida entera contra un precio aproximado).
@@ -2160,6 +2318,11 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
         "articulos": len({r["CodArticulo"] for r in rows}),
         "unidades":  round(sum(r["Diferencia"] for r in rows), 3),
         "importe":   round(sum(r["Importe"] for r in rows), 2),
+        # Descontado por mercadería en tránsito sucursal → central.
+        "transitoUnidades": round(sum(transito.get((c["NroMovVenta"], c["Renglon"]), 0)
+                                      for c in cubiertos)
+                                  + sum(r["EnTransito"] for r in rows), 3),
+        "transitoCubiertos": len(cubiertos),
     }
     return {
         "desde": _int_a_fecha(d_i),
@@ -2168,12 +2331,15 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
         "total": len(rows),
         "rows":  rows,
         "resumen": resumen,
+        # Renglones que dejaron de ser faltante porque venían en tránsito.
+        "cubiertosTransito": cubiertos,
     }
 
 
 def fetch_faltante_mes(mes: str):
     """Acumulado de un mes agrupado por artículo (1 fila por artículo), para el
-    registro mensual. UNA consulta agregada al motor + los nombres por IN-list.
+    registro mensual. Detalle angosto del mes neto de tránsito a central,
+    agrupado en Python, + los nombres por IN-list.
     'mes' = 'YYYY-MM'. El mes en curso se corta en el último día cerrado."""
     anio, mm = (int(x) for x in mes.split("-"))
     primero = date(anio, mm, 1)
@@ -2189,14 +2355,34 @@ def fetch_faltante_mes(mes: str):
                 "total": 0, "rows": [], "resumen": {"articulos": 0, "unidades": 0,
                                                     "importe": 0, "renglones": 0}}
 
+    # Detalle angosto del mes (no el agrupado del motor) porque hay que restar
+    # renglón por renglón lo que venía en tránsito a central; un mes son
+    # ~1.500 renglones, se agrupa acá. Mismo criterio que fetch_faltante_pedidos.
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        cur.execute(SQL_FALTANTE_AGRUPADO, _params_faltante(d_i, h_i, "fecha"))
-        filas = cur.fetchall()
+        cur.execute(_sql_faltante_pedidos("fecha"), _params_faltante(d_i, h_i, "fecha"))
+        cols = [c[0] for c in cur.description]
+        det = [dict(zip(cols, r)) for r in cur.fetchall()]
+        transito = _transito_de_filas(cur, det, d_i, "fecha")
     finally:
         conn.close()
+
+    agg: dict[str, list] = {}
+    for f in det:
+        key = (int(f["NroMovVenta"]), int(f.get("NroRenglon") or 0))
+        u = (float(_safe(f.get("CantidadPedida")) or 0)
+             - float(_safe(f.get("CantidadCumplida")) or 0)
+             - transito.get(key, 0.0))
+        if u <= 1e-9:
+            continue
+        a = agg.setdefault(_txt(f.get("CodArticulo")), [0.0, 0.0, 0, set()])
+        a[0] += u
+        a[1] += u * float(_safe(f.get("PrecioVenta")) or 0)
+        a[2] += 1
+        a[3].add(key[0])
+    filas = [(c, a[0], a[1], a[2], len(a[3])) for c, a in agg.items()]
 
     nombres = _nombres_articulos([f[0] for f in filas])
     rows = []

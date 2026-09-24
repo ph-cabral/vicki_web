@@ -39,7 +39,8 @@ interface Item {
   Ubicacion: number | string | null;
   CodArticulo: string;
   Nombre: string;
-  CantPend: number;
+  CantPend: number; // ya neta de lo que venía en tránsito a central
+  EnTransito?: number; // descontado por transferencia sucursal → central
   Cliente: number | string | null;
   Importe: number;
   TipoArticulo: string | null;
@@ -818,6 +819,14 @@ export default function FaltantesPage() {
                                 <span className="text-zinc-500">
                                   ({fmtNum(it.CantPend)})
                                 </span>
+                                {(it.EnTransito ?? 0) > 0 && (
+                                  <span
+                                    className="ml-1 text-sky-400"
+                                    title="Descontado: una sucursal lo transfirió a central y viene en el transporte"
+                                  >
+                                    +{fmtNum(it.EnTransito ?? 0)} en tránsito
+                                  </span>
+                                )}
                               </span>
                             ))}
                           </div>
@@ -1135,6 +1144,14 @@ function CardDetalle({
       </div>
       <Row label="Ubicación" value={it.Ubicacion ?? "—"} big />
       <Row label="Cant. pendiente" value={fmtNum(it.CantPend)} big />
+      {(it.EnTransito ?? 0) > 0 && (
+        <Row
+          label="En tránsito (descontado)"
+          value={
+            <span className="text-sky-400">{fmtNum(it.EnTransito ?? 0)}</span>
+          }
+        />
+      )}
       <Row label="Vendedor" value={it.Vendedor || "—"} />
       <Row label="Cliente" value={it.Cliente ?? "—"} />
       <Row label="Importe" value={`$${fmtNum(it.Importe)}`} />

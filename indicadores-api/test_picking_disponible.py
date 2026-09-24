@@ -444,6 +444,22 @@ check("A-COMPET hay (sin contar 2 veces la misma posición)", g11["Hay"], 80.0)
 check("A-COMPET pedido total 60+50+50", g11["Pedido"], 160.0)
 check("A-COMPET a reponer (30 de la 3ª + 50 anticipados de la 17)", g11["AReponer"], 80.0)
 
+print("\n=== detalle por OT (click en la columna OT del widget) ===")
+det = g11["Detalle"]
+check("A-COMPET una línea por OT", len(det), 3)
+check("A-COMPET en orden FIFO (asignadas primero, la 17 sin armador al final)",
+      [x["OTId"] for x in det], [2, 3, 17])
+check("A-COMPET cantidades por OT", [x["Cantidad"] for x in det], [60.0, 50.0, 50.0])
+check("A-COMPET cuánto le falta a cada una", [x["Falta"] for x in det], [0.0, 30.0, 50.0])
+check("A-COMPET cliente y pedido", (det[0]["Cliente"], det[0]["NroMovVenta"]),
+      ("CLIENTE DOS", 900002))
+check("A-COMPET preparador", det[0]["Armador"], "Carossio Jose")
+check("A-COMPET sin armador va vacío (no '— Sin asignar')", det[2]["Armador"], "")
+check("suma del detalle = pedido de la fila", sum(x["Cantidad"] for x in det), g11["Pedido"])
+d18 = pas["18"]["rows"][0]["Detalle"][0]
+check("pedido sin OT: OTId nulo y marcado", (d18["OTId"], d18["SinOT"]), (None, True))
+check("pedido sin OT: trae el nº de pedido", bool(d18["NroMovVenta"]), True)
+
 g12 = pas["12"]["rows"][0]
 check("A-GUARD suma los 2 renglones de la misma OT", g12["Pedido"], 50.0)
 check("A-GUARD una sola OT", g12["OTs"], 1)

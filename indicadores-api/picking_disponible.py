@@ -852,6 +852,7 @@ def fetch_picking_disponible(
                 "ots": set(), "sin_asignar": set(), "operarios": set(),
                 "pedido": 0.0, "reponer": 0.0,
                 "hay": {}, "sit": "ok", "posiciones": set(), "sin_repo": True,
+                "detalle": {},
             })
             e["ots"].add(ot["OTId"])
             if not ot["Asignada"]:
@@ -861,6 +862,22 @@ def fetch_picking_disponible(
             e["reponer"] += a_reponer
             e["hay"][pos] = en_pos
             e["posiciones"].add(pos)
+            # Qué pedido pide cuánto de este artículo (click en la columna OT
+            # del widget). Se suma por OT: una OT con el mismo artículo en dos
+            # posiciones del mismo pasillo es una sola línea. El dict conserva
+            # el orden del recorrido, así que sale en orden FIFO — el primero es
+            # el que se lleva el estante y los de abajo son los que quedan cortos.
+            d = e["detalle"].setdefault(ot["OTId"], {
+                "OTId":        None if ot["SinOT"] else ot["OTId"],
+                "NroMovVenta": ot["NroMovVenta"],
+                "Cliente":     ot["Cliente"],
+                "Armador":     "" if not ot["Asignada"] else _nombre_operario(ot["Armador"]),
+                "SinOT":       ot["SinOT"],
+                "Cantidad":    0.0,
+                "Falta":       0.0,
+            })
+            d["Cantidad"] += pedido
+            d["Falta"] += a_reponer
             if PEOR[sit] < PEOR[e["sit"]]:
                 e["sit"] = sit
             # El artículo se oculta sólo si NINGUNO de sus renglones con
@@ -947,6 +964,10 @@ def fetch_picking_disponible(
             "AReponer":    _r3(e["reponer"]),
             "Posiciones":  sorted(e["posiciones"]),
             "Situacion":   e["sit"],
+            "Detalle": [
+                dict(d, Cantidad=_r3(d["Cantidad"]), Falta=_r3(d["Falta"]))
+                for d in e["detalle"].values()
+            ],
         })
     por_pasillo = []
     for pas in sorted(grupos, key=_orden_pasillo):

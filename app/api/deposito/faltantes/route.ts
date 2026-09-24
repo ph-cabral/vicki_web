@@ -41,6 +41,11 @@ export const maxDuration = 60;
 // Magnus, que es justamente la clave con la que ya se guardan las marcas en
 // preparado.faltante_existencia.
 //
+// Mercadería en tránsito (2026-09-23): lo que una sucursal transfirió a
+// central del mismo artículo en los 5 días previos ya viene descontado de
+// Diferencia (EnTransito). El renglón cubierto entero no viene en rows sino en
+// cubiertosTransito, y se borra de faltante_pedido si estaba persistido.
+//
 // Se sigue persistiendo preparado.faltante_wms con el pick de OT (llamada
 // aparte, best-effort): /ventas/faltantes lo usa como fallback de "En stock" y
 // quedaría sin alimentar si se sacaba de acá.
@@ -59,7 +64,8 @@ interface FaltanteRow {
   Nombre: string;
   CantPedida: number;
   CantCumplida: number;
-  Diferencia: number;
+  Diferencia: number; // ya neta de lo que venía en tránsito a central
+  EnTransito?: number; // unidades descontadas por transferencia sucursal → central
   PrecioVenta: number;
   Importe: number;
   EstadoPedido: number | null;
@@ -135,6 +141,7 @@ export async function GET(req: NextRequest) {
     hasta: string | null;
     rows: FaltanteRow[];
     resumen?: Record<string, number>;
+    cubiertosTransito?: { NroMovVenta: number; Renglon: number }[];
   };
   try {
     const res = await fetch(
@@ -194,6 +201,30 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // ── Renglones que dejaron de ser faltante por mercadería en tránsito ───────
+  // (transferencia sucursal → central cargada en Magnus pero todavía en el
+  // camión, ver indicadores-api/deposito.py "tránsito"). Si ya estaban
+  // persistidos de una corrida anterior se sacan, para que el registro
+  // mensual no los siga sumando.
+  const cubiertos = json.cubiertosTransito ?? [];
+  if (cubiertos.length) {
+    try {
+      const CH = 500;
+      for (let i = 0; i < cubiertos.length; i += CH) {
+        const keys = cubiertos
+          .slice(i, i + CH)
+          .map((c) => Prisma.sql`(${c.NroMovVenta}::int, ${c.Renglon}::int)`);
+        await prisma.$executeRaw`
+          DELETE FROM preparado.faltante_pedido
+          WHERE ("nroMovVenta", "nroRenglon") IN (${Prisma.join(keys)})
+        `;
+      }
+    } catch (e) {
+      persistWarn = true;
+      console.error("delete faltante_pedido cubiertos por tránsito", e);
+    }
+  }
+
   // ── Registro del acumulado mensual ─────────────────────────────────────────
   // Se dispara con cada lectura de la vista (idempotente: recalcula el mes
   // entero y pisa). El registro diario garantizado lo hace el job que pega a
@@ -243,6 +274,7 @@ export async function GET(req: NextRequest) {
       FechaCierre: r.FechaCierre ?? null,
       CantPedida: r.CantPedida,
       CantCumplida: r.CantCumplida,
+      EnTransito: r.EnTransito ?? 0,
       Cancelado: r.EstadoRenglon === 4,
     }))
     .sort((a, b) =>
@@ -260,6 +292,7 @@ export async function GET(req: NextRequest) {
     total: rows.length,
     rows,
     resumen: json.resumen ?? null,
+    cubiertosTransito: cubiertos.length,
     persistWarn,
     mesWarn,
   });
