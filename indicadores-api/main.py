@@ -2149,10 +2149,29 @@ def mostradores_pendientes():
 
 
 @app.get("/mostradores/conteo")
-def mostradores_conteo():
-    """PDA: patrones pendientes con sus artículos y lo ya contado."""
+def mostradores_conteo(usuarioId: int | None = Query(None)):
+    """PDA: patrones pendientes (con quién lo tomó), el activo del usuario y
+    los artículos SÓLO del activo con lo ya contado."""
     try:
-        return mostradores.fetch_conteo()
+        return mostradores.fetch_conteo(usuarioId)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+class MostradorTomarIn(BaseModel):
+    controlId: int
+    usuarioId: int | None = None
+
+
+@app.post("/mostradores/tomar")
+def mostradores_tomar(body: MostradorTomarIn):
+    """PDA: el usuario toma un patrón pendiente (de a uno por usuario)."""
+    try:
+        return mostradores.tomar_control(body.controlId, body.usuarioId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

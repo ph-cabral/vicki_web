@@ -245,9 +245,10 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
 # cuántos contó cada uno). Todo sale de 2 consultas chicas a Postgres agrupadas
 # por control (PK de mostrador_conteo empieza por "controlId") + el cache.
 _SQL_PENDIENTES = """
-SELECT c.id, c."codigoPatron", c."mandadoAt", u.nombre
+SELECT c.id, c."codigoPatron", c."mandadoAt", u.nombre, t.nombre, c."tomadoPor", c."tomadoAt"
 FROM everwear.mostrador_control c
 LEFT JOIN everwear.usuario u ON u.id = c."mandadoPor"
+LEFT JOIN everwear.usuario t ON t.id = c."tomadoPor"
 WHERE c.estado = 'pendiente'
 ORDER BY c."mandadoAt", c.id
 """
@@ -264,6 +265,7 @@ def fetch_pendientes() -> dict:
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        _asegurar_toma(cur)
         cur.execute(_SQL_PENDIENTES)
         filas = cur.fetchall()
         avance: dict[int, list] = {}
@@ -278,9 +280,9 @@ def fetch_pendientes() -> dict:
         return {"pendientes": []}
 
     m = maestro_magnus()
-    arts = _articulos_de_patrones([c for _, c, _, _ in filas])
+    arts = _articulos_de_patrones([f[1] for f in filas])
     salida = []
-    for i, codigo, mandado, mandado_por in filas:
+    for i, codigo, mandado, mandado_por, tomado_nom, tomado_por, tomado_at in filas:
         cid = int(i)
         info = m["patrones"].get(codigo)
         lid = info["linea"] if info else None
@@ -296,6 +298,8 @@ def fetch_pendientes() -> dict:
             "linea": _nombre_linea(lid, m["lineas"][lid]) if lid is not None else "",
             "mandadoAt": mandado.isoformat() if mandado else None,
             "mandadoPor": (mandado_por or "").strip(),
+            "tomadoPor": (tomado_nom or "").strip() or (f"Usuario #{tomado_por}" if tomado_por is not None else ""),
+            "tomadoAt": tomado_at.isoformat() if tomado_at else None,
             "total": total,
             "contados": contados,
             "avance": round(contados * 100 / total, 1) if total else 0,
@@ -365,6 +369,44 @@ def _asegurar_tabla_conteo(cur) -> None:
             _ddl_conteo_ok = True
 
 
+# ── Toma de patrón (PDA) ──────────────────────────────────────────────────
+# En el PDA cada usuario TOMA un patrón pendiente y trabaja sólo ese: de a uno
+# por usuario (para tomar otro tiene que finalizar el activo) y un patrón tomado
+# no lo puede tomar otro usuario. Columnas "tomadoPor"/"tomadoAt" en
+# mostrador_control (sql/mostradores_toma.sql; también se agregan solas) +
+# índice único parcial por usuario sobre los pendientes: la regla "uno por
+# usuario" la garantiza la base aunque dos PDA tomen a la vez. Al finalizar el
+# control pasa a 'cerrado' y sale del índice (el usuario queda libre).
+_DDL_TOMA = (
+    'ALTER TABLE everwear.mostrador_control ADD COLUMN IF NOT EXISTS "tomadoPor" INT',
+    'ALTER TABLE everwear.mostrador_control ADD COLUMN IF NOT EXISTS "tomadoAt" TIMESTAMPTZ',
+    """CREATE UNIQUE INDEX IF NOT EXISTS mostrador_control_tomado_uk
+         ON everwear.mostrador_control ("tomadoPor")
+         WHERE estado = 'pendiente' AND "tomadoPor" IS NOT NULL""",
+)
+_ddl_toma_ok = False
+
+
+def _asegurar_toma(cur) -> None:
+    global _ddl_toma_ok
+    if _ddl_toma_ok:
+        return
+    with _ddl_lock:
+        if not _ddl_toma_ok:
+            cur.execute(
+                """SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'everwear' AND table_name = 'mostrador_control'
+                     AND column_name = 'tomadoAt'"""
+            )
+            if not cur.fetchone():
+                for ddl in _DDL_TOMA:
+                    cur.execute(ddl)
+            else:
+                cur.execute(_DDL_TOMA[2])
+            cur.connection.commit()
+            _ddl_toma_ok = True
+
+
 # Artículos de los patrones: entra por el índice KF_ART_Cla_ArticuloPatron y
 # por K_BAR_Cla_ArticuloBarra (CodArticulo, CodBarra). Medido: 3.400 filas
 # (patrones 1678 + 139, los más grandes) en < 1 ms de servidor.
@@ -432,12 +474,21 @@ def _articulos_de_patrones(codigos: list[str]) -> dict[str, list[dict]]:
 
 
 _SQL_PENDIENTES_CONTEO = """
-SELECT id, "codigoPatron" FROM everwear.mostrador_control
-WHERE estado = 'pendiente' ORDER BY "mandadoAt", id
+SELECT c.id, c."codigoPatron", c."tomadoPor", u.nombre, c."tomadoAt"
+FROM everwear.mostrador_control c
+LEFT JOIN everwear.usuario u ON u.id = c."tomadoPor"
+WHERE c.estado = 'pendiente'
+ORDER BY c."mandadoAt", c.id
+"""
+# Contados por control (entra por la PK de mostrador_conteo, que empieza por
+# "controlId"): para la lista de patrones no hace falta traer las filas.
+_SQL_CONTADOS_POR_CONTROL = """
+SELECT "controlId", count(*) FROM everwear.mostrador_conteo
+WHERE "controlId" = ANY(%s) GROUP BY "controlId"
 """
 _SQL_CONTEOS = """
 SELECT "controlId", "codArticulo", cantidad, "contadoAt"
-FROM everwear.mostrador_conteo WHERE "controlId" = ANY(%s)
+FROM everwear.mostrador_conteo WHERE "controlId" = %s
 """
 
 
@@ -448,46 +499,42 @@ def _num(v) -> float | int | None:
     return int(f) if f.is_integer() else f
 
 
-def fetch_conteo() -> dict:
-    """Todo lo que necesita el PDA en una sola llamada: patrones pendientes y
-    sus artículos con lo ya contado."""
+def fetch_conteo(usuario_id: int | None) -> dict:
+    """Todo lo que necesita el PDA en una sola llamada:
+      · patrones: TODOS los pendientes (la vista principal), con avance y quién
+        lo tomó;
+      · activoId: el patrón que tiene tomado este usuario (a lo sumo uno);
+      · articulos: SÓLO los del patrón activo, con lo ya contado (los demás no
+        se mandan: hay patrones de miles de artículos)."""
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         _asegurar_tabla_conteo(cur)
+        _asegurar_toma(cur)
         cur.execute(_SQL_PENDIENTES_CONTEO)
-        pend = [(int(i), c) for i, c in cur.fetchall()]
+        pend = [(int(i), c, tp, (nom or "").strip(), ta) for i, c, tp, nom, ta in cur.fetchall()]
+        activo = next((p for p in pend if usuario_id is not None and p[2] == usuario_id), None)
+        contados_por: dict[int, int] = {}
         conteos = {}
         if pend:
-            cur.execute(_SQL_CONTEOS, ([i for i, _ in pend],))
+            cur.execute(_SQL_CONTADOS_POR_CONTROL, ([p[0] for p in pend],))
+            contados_por = {int(cid): int(n) for cid, n in cur.fetchall()}
+        if activo:
+            cur.execute(_SQL_CONTEOS, (activo[0],))
             for cid, cod, cant, at in cur.fetchall():
-                conteos[(int(cid), cod)] = (_num(cant), at.isoformat() if at else None)
+                conteos[cod] = (_num(cant), at.isoformat() if at else None)
     finally:
         conn.close()
     if not pend:
-        return {"patrones": [], "articulos": []}
+        return {"patrones": [], "activoId": None, "articulos": []}
 
     m = maestro_magnus()
-    arts = _articulos_de_patrones([c for _, c in pend])
+    arts = _articulos_de_patrones([p[1] for p in pend])
     patrones, articulos = [], []
-    for cid, codigo in pend:
+    for cid, codigo, tomado_por, tomado_nom, tomado_at in pend:
         info = m["patrones"].get(codigo, {})
         det_pat = info.get("detalle", "")
         lista = arts.get(codigo, [])
-        contados = 0
-        for a in lista:
-            c = conteos.get((cid, a["cod"]))
-            if c:
-                contados += 1
-            articulos.append({
-                "controlId": cid,
-                "patron": codigo,
-                "cod": a["cod"],
-                "detalle": f"{det_pat} {a['medida']}".strip(),
-                "barras": a["barras"],
-                "contado": c[0] if c else None,
-                "contadoAt": c[1] if c else None,
-            })
         lid = info.get("linea")
         patrones.append({
             "controlId": cid,
@@ -495,9 +542,77 @@ def fetch_conteo() -> dict:
             "detalle": det_pat,
             "linea": _nombre_linea(lid, m["lineas"][lid]) if lid in m["lineas"] else "",
             "total": len(lista),
-            "contados": contados,
+            "contados": contados_por.get(cid, 0),
+            "tomadoPorId": tomado_por,
+            "tomadoPor": tomado_nom or (f"Usuario #{tomado_por}" if tomado_por is not None else ""),
+            "tomadoAt": tomado_at.isoformat() if tomado_at else None,
         })
-    return {"patrones": patrones, "articulos": articulos}
+        if activo and cid == activo[0]:
+            for a in lista:
+                c = conteos.get(a["cod"])
+                articulos.append({
+                    "controlId": cid,
+                    "patron": codigo,
+                    "cod": a["cod"],
+                    "detalle": f"{det_pat} {a['medida']}".strip(),
+                    "barras": a["barras"],
+                    "contado": c[0] if c else None,
+                    "contadoAt": c[1] if c else None,
+                })
+    return {"patrones": patrones, "activoId": activo[0] if activo else None, "articulos": articulos}
+
+
+def tomar_control(control_id: int, usuario_id: int | None) -> dict:
+    """El usuario toma un patrón pendiente para contarlo en el PDA. De a uno por
+    usuario (índice único parcial) y un patrón tomado no lo toma otro."""
+    import psycopg2
+
+    if usuario_id is None:
+        raise ValueError("Falta el usuario")
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        _asegurar_toma(cur)
+        cur.execute(
+            """SELECT "codigoPatron" FROM everwear.mostrador_control
+               WHERE estado = 'pendiente' AND "tomadoPor" = %s AND id <> %s""",
+            (usuario_id, control_id),
+        )
+        otro = cur.fetchone()
+        if otro:
+            raise LookupError(f"Ya tenés el patrón {otro[0]} activo: finalizalo antes de tomar otro")
+        try:
+            cur.execute(
+                """
+                UPDATE everwear.mostrador_control
+                   SET "tomadoPor" = %s,
+                       "tomadoAt" = CASE WHEN "tomadoPor" = %s THEN "tomadoAt" ELSE now() END
+                 WHERE id = %s AND estado = 'pendiente'
+                   AND ("tomadoPor" IS NULL OR "tomadoPor" = %s)
+                RETURNING "codigoPatron"
+                """,
+                (usuario_id, usuario_id, control_id, usuario_id),
+            )
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            raise LookupError("Ya tenés otro patrón activo: finalizalo antes de tomar otro")
+        fila = cur.fetchone()
+        if not fila:
+            conn.rollback()
+            cur.execute(
+                """SELECT c.estado, u.nombre FROM everwear.mostrador_control c
+                   LEFT JOIN everwear.usuario u ON u.id = c."tomadoPor"
+                   WHERE c.id = %s""",
+                (control_id,),
+            )
+            est = cur.fetchone()
+            if not est or est[0] != "pendiente":
+                raise LookupError("El patrón ya no está en control")
+            raise LookupError(f"El patrón lo tomó {(est[1] or 'otro usuario').strip()}")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "controlId": control_id, "patron": fila[0]}
 
 
 def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int | None) -> dict:
@@ -519,14 +634,17 @@ def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int
     try:
         cur = conn.cursor()
         _asegurar_tabla_conteo(cur)
+        _asegurar_toma(cur)
         cur.execute(
-            """SELECT "codigoPatron" FROM everwear.mostrador_control
+            """SELECT "codigoPatron", "tomadoPor" FROM everwear.mostrador_control
                WHERE id = %s AND estado = 'pendiente'""",
             (control_id,),
         )
         fila = cur.fetchone()
         if not fila:
             raise LookupError("El patrón ya no está en control")
+        if fila[1] != usuario_id:
+            raise LookupError("El patrón no está tomado por vos")
         patron = fila[0]
 
         mconn = get_connection("EVERWEAR")
@@ -627,8 +745,9 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         _asegurar_tabla_detalle(cur)
         # FOR UPDATE: dos PDA finalizando a la vez → el segundo espera y ya lo
         # encuentra cerrado (409).
+        _asegurar_toma(cur)
         cur.execute(
-            """SELECT "codigoPatron" FROM everwear.mostrador_control
+            """SELECT "codigoPatron", "tomadoPor" FROM everwear.mostrador_control
                WHERE id = %s AND estado = 'pendiente' FOR UPDATE""",
             (control_id,),
         )
@@ -636,6 +755,9 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         if not fila:
             conn.rollback()
             raise LookupError("El control ya fue finalizado o no existe")
+        if fila[1] is not None and fila[1] != usuario_id:
+            conn.rollback()
+            raise LookupError("El patrón lo tiene tomado otro usuario")
         patron = fila[0]
 
         cur.execute(

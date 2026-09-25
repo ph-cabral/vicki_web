@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 //   · "Controlados": líneas con algún patrón controlado; al abrirlas muestra SÓLO
 //     los patrones con ≥1 control cerrado (fila verde + hasta 3 fechas, click →
 //     Excel del control).
+// La columna "Fechas de control" (Excel descargable) se ve en las dos solapas.
 // En las dos, "Mandar a control" deja el patrón pendiente para el PDA.
 // Panel derecho "En control": avance general (patrones controlados / total) y,
 // por cada patrón pendiente, quién lo está contando y el % de avance
@@ -40,6 +41,7 @@ interface EnControl {
   linea: string;
   mandadoAt: string | null;
   mandadoPor: string;
+  tomadoPor: string; // usuario que lo tomó en el PDA ("" = nadie)
   total: number;
   contados: number;
   avance: number;
@@ -249,7 +251,7 @@ export default function AdministrarPage() {
 
   return (
     <div className="dark min-h-screen bg-[#111111] text-white">
-      <div className="container mx-auto px-4 sm:px-6 py-8 max-w-7xl">
+      <div className="w-full mx-auto px-4 sm:px-6 py-8">
         <InicioButton label="Inicio" iconSize={16} className="text-sm text-zinc-500 hover:text-yellow-400 transition-colors mb-4" />
         <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -280,7 +282,7 @@ export default function AdministrarPage() {
           </div>
         )}
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px] items-start">
           {/* ── Líneas / patrones ─────────────────────────────────────────── */}
           <div className="min-w-0">
             <div className="mb-3 inline-flex w-full sm:w-auto gap-1 rounded-lg bg-[#171717] border border-zinc-800 p-1">
@@ -369,7 +371,7 @@ export default function AdministrarPage() {
                                       <TableHead className={`${thBase} pl-8`}>Código patrón</TableHead>
                                       <TableHead className={thBase}>Detalle</TableHead>
                                       <TableHead className={thBase}>Control</TableHead>
-                                      {vista === "controlados" && <TableHead className={thBase}>Fechas de control</TableHead>}
+                                      <TableHead className={thBase}>Fechas de control</TableHead>
                                     </TableRow>
                                   </TableHeader>
                                   <TableBody>
@@ -395,33 +397,31 @@ export default function AdministrarPage() {
                                             </button>
                                           )}
                                         </TableCell>
-                                        {vista === "controlados" && (
-                                          <TableCell className="px-2.5">
-                                            {p.controles.length === 0 ? (
-                                              <span className="text-zinc-600">—</span>
-                                            ) : (
-                                              <div className="flex flex-col items-start gap-0.5">
-                                                {ultimosControles(p.controles).map((c) =>
-                                                  c.tieneArchivo ? (
-                                                    <a
-                                                      key={c.id}
-                                                      href={`/api/mostradores/controles/${c.id}/excel`}
-                                                      title={`Descargar el Excel del control (${fmtFechaHora(c.fecha)})`}
-                                                      className="inline-flex items-center gap-1 text-xs tabular-nums text-emerald-300 hover:text-yellow-400 hover:underline transition-colors"
-                                                    >
-                                                      <Download className="h-3 w-3" />
-                                                      {fmtFecha(c.fecha)}
-                                                    </a>
-                                                  ) : (
-                                                    <span key={c.id} className="text-xs tabular-nums text-zinc-400">
-                                                      {fmtFecha(c.fecha)}
-                                                    </span>
-                                                  ),
-                                                )}
-                                              </div>
-                                            )}
-                                          </TableCell>
-                                        )}
+                                        <TableCell className="px-2.5">
+                                          {p.controles.length === 0 ? (
+                                            <span className="text-zinc-600">—</span>
+                                          ) : (
+                                            <div className="flex flex-col items-start gap-0.5">
+                                              {ultimosControles(p.controles).map((c) =>
+                                                c.tieneArchivo ? (
+                                                  <a
+                                                    key={c.id}
+                                                    href={`/api/mostradores/controles/${c.id}/excel`}
+                                                    title={`Descargar el Excel del control (${fmtFechaHora(c.fecha)})`}
+                                                    className="inline-flex items-center gap-1 text-xs tabular-nums text-emerald-300 hover:text-yellow-400 hover:underline transition-colors"
+                                                  >
+                                                    <Download className="h-3 w-3" />
+                                                    {fmtFecha(c.fecha)}
+                                                  </a>
+                                                ) : (
+                                                  <span key={c.id} className="text-xs tabular-nums text-zinc-400">
+                                                    {fmtFecha(c.fecha)}
+                                                  </span>
+                                                ),
+                                              )}
+                                            </div>
+                                          )}
+                                        </TableCell>
                                       </TableRow>
                                     ))}
                                   </TableBody>
@@ -513,6 +513,11 @@ export default function AdministrarPage() {
                             </span>
                           )}
                         </div>
+                        {c.tomadoPor && (
+                          <div className="mt-2 inline-flex items-center gap-1 rounded border border-yellow-400/40 bg-yellow-400/10 px-1.5 py-0.5 text-[11px] text-yellow-300">
+                            Tomado por <b className="font-semibold">{c.tomadoPor}</b>
+                          </div>
+                        )}
                         <div className="mt-2 flex flex-col gap-0.5">
                           {c.usuarios.length === 0 ? (
                             <span className="inline-flex items-center gap-1.5 text-xs text-zinc-600">

@@ -6,15 +6,16 @@ const API_URL = process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001"
 export const dynamic = "force-dynamic";
 
 // Conteo en PDA (Mostradores → Control).
-//   GET  -> { patrones: [{ controlId, codigo, detalle, linea, total, contados }],
-//             articulos: [{ controlId, patron, cod, detalle, barras, contado, contadoAt }] }
+//   GET  -> { patrones: [{ controlId, codigo, detalle, linea, total, contados, tomadoPorId, tomadoPor, tomadoAt }],
+//             activoId,   // patrón tomado por el usuario de la sesión (o null)
+//             articulos: [{ controlId, patron, cod, detalle, barras, contado, contadoAt }] }  // sólo del activo
 //   POST { controlId, codArticulo, cantidad } -> { ok, controlId, cod, cantidad, contadoAt }
 // El usuario sale de la sesión, nunca del body.
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   try {
-    const res = await fetch(`${API_URL}/mostradores/conteo`, {
+    const res = await fetch(`${API_URL}/mostradores/conteo?usuarioId=${session.uid}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(30000),
     });

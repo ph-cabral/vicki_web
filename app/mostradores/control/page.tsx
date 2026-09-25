@@ -1,14 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowLeft, Check, Flag, Keyboard, Loader2, RefreshCw, ScanLine } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  ArrowLeft,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Flag,
+  Keyboard,
+  Loader2,
+  Lock,
+  Play,
+  RefreshCw,
+  ScanLine,
+  User,
+} from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Mostradores → Control — vista para PDA.
 //
-// Lista SOLO los artículos de los patrones que mandó a control el administrador
-// (se arranca y se termina patrón por patrón). Un input queda siempre enfocado:
+// Vista principal: los PATRONES mandados a control desde Administrar. Cada
+// usuario TOMA uno (doble toque) y trabaja sólo ese: de a uno por usuario —
+// para tomar otro tiene que finalizar el activo — y un patrón tomado por otro
+// usuario aparece bloqueado ("Lo tiene X"). La regla la garantiza la base
+// (índice único parcial en mostrador_control."tomadoPor").
+//
+// Conteo del patrón activo: un input queda siempre enfocado:
 //   · escaneo  → el lector "tipea" el código + Enter; si coincide con un código
 //                de artículo o de barras abre directo la carga de cantidad.
 //   · escrito  → filtra la lista de abajo (código, barras o detalle, por
@@ -16,16 +35,18 @@ import { InicioButton } from "@/components/ui/InicioButton";
 // Carga de cantidad: un solo input numérico enfocado (teclado numérico), Enter
 // o "Guardar" y vuelve a la lista. Contar de nuevo un artículo reemplaza el
 // valor. Conteo ciego: no se muestra el stock de sistema.
-//
 // El teclado en pantalla arranca OCULTO (inputMode="none") para que no tape la
 // lista mientras se escanea; tocar el input o el botón del teclado lo muestra.
 //
-// Finalizar: botón "Finalizar" del encabezado o deslizar de derecha a izquierda
-// sobre la lista → tarjeta "Finalizar control" por patrón (doble toque para
-// confirmar). Cierra el control y guarda código / controlado / sistema /
-// diferencia / usuario en everwear.mostrador_control_detalle.
+// Finalizar (sin botón): deslizar hacia la IZQUIERDA sobre el conteo trae desde
+// la derecha una tarjeta "Finalizar" que sigue al dedo. Si se suelta pasada la
+// mitad (o con envión) queda la pantalla "¿Finalizamos?" con el botón
+// "Finalizar", que es la confirmación. Para salir sin finalizar: deslizar
+// hacia la DERECHA o el atrás del PDA. El arrastre mueve el DOM directo (sin
+// re-render de la lista) para que vaya fluido en el PDA.
 //
-// Datos: GET/POST /api/mostradores/conteo, POST /api/mostradores/finalizar.
+// Datos: GET/POST /api/mostradores/conteo, POST /api/mostradores/tomar,
+// POST /api/mostradores/finalizar.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Barra {
@@ -51,13 +72,17 @@ interface Patron {
   linea: string;
   total: number;
   contados: number;
+  tomadoPorId: number | null;
+  tomadoPor: string;
+  tomadoAt: string | null;
 }
 
 interface ResultadoFin {
-  patron: string;
-  contados: number;
-  sinContarConStock: number;
-  conDiferencia: number;
+  patron?: string;
+  contados?: number;
+  sinContarConStock?: number;
+  conDiferencia?: number;
+  error?: string;
 }
 
 interface Seleccion {
@@ -65,7 +90,17 @@ interface Seleccion {
   barra: Barra | null; // código escaneado, si vino por lector
 }
 
+interface Arrastre {
+  x: number;
+  y: number;
+  t: number;
+  eje: "h" | "v" | null;
+  dx: number;
+  modo: "abrir" | "cerrar";
+}
+
 const MAX_FILAS = 120;
+const ANIM_MS = 200;
 
 const norm = (s: string) =>
   s
@@ -86,11 +121,29 @@ function vibrar(ms: number | number[]) {
   }
 }
 
+function BarraAvance({ valor, total }: { valor: number; total: number }) {
+  const pct = total > 0 ? Math.min(100, (valor * 100) / total) : 0;
+  return (
+    <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+      <div
+        className={`h-full rounded-full ${valor >= total && total > 0 ? "bg-emerald-400" : "bg-yellow-400"}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
 export default function ControlStockPage() {
   const [patrones, setPatrones] = useState<Patron[]>([]);
+  const [activoId, setActivoId] = useState<number | null>(null);
   const [articulos, setArticulos] = useState<Articulo[]>([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [enConteo, setEnConteo] = useState(false); // vista de conteo del patrón activo
+  const [tomando, setTomando] = useState<number | null>(null);
+  const [confirmarTomar, setConfirmarTomar] = useState<number | null>(null);
+  const tomarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [busqueda, setBusqueda] = useState("");
   const [teclado, setTeclado] = useState(false); // teclado en pantalla del buscador
@@ -101,14 +154,15 @@ export default function ControlStockPage() {
   const [guardando, setGuardando] = useState(false);
   const [errorCant, setErrorCant] = useState<string | null>(null);
 
-  // Finalizar control
+  // Finalizar control (tarjeta deslizable)
   const [fin, setFin] = useState(false);
-  const [confirmar, setConfirmar] = useState<number | null>(null); // controlId esperando 2º toque
-  const [finalizando, setFinalizando] = useState<number | null>(null);
+  const [finalizando, setFinalizando] = useState(false);
   const [errorFin, setErrorFin] = useState<string | null>(null);
-  const [resultado, setResultado] = useState<ResultadoFin | null>(null);
-  const confirmarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toqueIni = useRef<{ x: number; y: number } | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const arrastre = useRef<Arrastre | null>(null);
+  const animando = useRef(false);
+  const limpiarOverlay = useRef(false);
+  const ignorarPop = useRef(0);
 
   const buscarRef = useRef<HTMLInputElement>(null);
   const cantRef = useRef<HTMLInputElement>(null);
@@ -116,7 +170,13 @@ export default function ControlStockPage() {
   selRef.current = sel;
   const finRef = useRef(false);
   finRef.current = fin;
+  const conteoRef = useRef(false);
+  conteoRef.current = enConteo;
+  const finalizandoRef = useRef(false);
+  finalizandoRef.current = finalizando;
   const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const activo = useMemo(() => patrones.find((p) => p.controlId === activoId) ?? null, [patrones, activoId]);
 
   // ── Datos ──────────────────────────────────────────────────────────────────
   const cargar = useCallback(async () => {
@@ -125,10 +185,11 @@ export default function ControlStockPage() {
     try {
       const res = await fetch("/api/mostradores/conteo", { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as
-        | { patrones?: Patron[]; articulos?: Articulo[]; error?: string }
+        | { patrones?: Patron[]; activoId?: number | null; articulos?: Articulo[]; error?: string }
         | null;
       if (!res.ok || !json) throw new Error(json?.error ?? `HTTP ${res.status}`);
       setPatrones(json.patrones ?? []);
+      setActivoId(json.activoId ?? null);
       setArticulos(json.articulos ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo cargar");
@@ -145,6 +206,14 @@ export default function ControlStockPage() {
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [cargar]);
+
+  // Si el patrón activo dejó de estarlo (se finalizó en otro lado), vuelve a la lista.
+  useEffect(() => {
+    if (!cargando && enConteo && !activo) {
+      setEnConteo(false);
+      setFin(false);
+    }
+  }, [cargando, enConteo, activo]);
 
   // Código escaneado (artículo o cualquiera de sus barras) → artículo.
   const porCodigo = useMemo(() => {
@@ -174,15 +243,93 @@ export default function ControlStockPage() {
   const total = articulos.length;
   const contados = useMemo(() => articulos.filter((a) => a.contado !== null).length, [articulos]);
 
-  // ── Foco permanente en el buscador ─────────────────────────────────────────
+  // ── Avisos ─────────────────────────────────────────────────────────────────
+  const mostrarAviso = useCallback((tipo: "ok" | "error", texto: string, ms?: number) => {
+    if (avisoTimer.current) clearTimeout(avisoTimer.current);
+    setAviso({ tipo, texto });
+    avisoTimer.current = setTimeout(() => setAviso(null), ms ?? (tipo === "ok" ? 2000 : 3500));
+  }, []);
+
+  // ── Navegación (el atrás del PDA cierra la capa de arriba) ─────────────────
+  const empujar = (estado: Record<string, boolean>) => {
+    try {
+      window.history.pushState(estado, "");
+    } catch {
+      /* nada */
+    }
+  };
+
+  useEffect(() => {
+    const onPop = () => {
+      if (ignorarPop.current > 0) {
+        ignorarPop.current -= 1;
+        return;
+      }
+      if (selRef.current) setSel(null);
+      else if (finRef.current) setFin(false);
+      else if (conteoRef.current) setEnConteo(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const abrirConteo = useCallback(() => {
+    setEnConteo(true);
+    empujar({ mostradorConteo: true });
+  }, []);
+
+  const cerrarConteo = useCallback(() => {
+    if (window.history.state?.mostradorConteo) window.history.back();
+    else setEnConteo(false);
+  }, []);
+
+  // ── Tomar un patrón (doble toque) ──────────────────────────────────────────
+  const tomar = async (p: Patron) => {
+    if (tomando !== null) return;
+    if (activo) {
+      vibrar([80, 60, 80]);
+      mostrarAviso("error", `Finalizá el patrón ${activo.codigo} antes de tomar otro`);
+      return;
+    }
+    if (confirmarTomar !== p.controlId) {
+      setConfirmarTomar(p.controlId);
+      vibrar(30);
+      if (tomarTimer.current) clearTimeout(tomarTimer.current);
+      tomarTimer.current = setTimeout(() => setConfirmarTomar(null), 4000);
+      return;
+    }
+    if (tomarTimer.current) clearTimeout(tomarTimer.current);
+    setConfirmarTomar(null);
+    setTomando(p.controlId);
+    try {
+      const res = await fetch("/api/mostradores/tomar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ controlId: p.controlId }),
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+      vibrar(40);
+      await cargar();
+      abrirConteo();
+    } catch (e) {
+      vibrar([80, 60, 80]);
+      mostrarAviso("error", e instanceof Error ? e.message : "No se pudo tomar el patrón", 4500);
+      cargar();
+    } finally {
+      setTomando(null);
+    }
+  };
+
+  // ── Foco permanente en el buscador (sólo en el conteo) ─────────────────────
   const enfocar = useCallback(() => {
-    if (selRef.current || finRef.current) return;
+    if (selRef.current || finRef.current || !conteoRef.current) return;
     const el = buscarRef.current;
     if (el && document.activeElement !== el) el.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => {
-    if (sel || fin) return;
+    if (sel || fin || !enConteo) return;
     enfocar();
     const t = () => setTimeout(enfocar, 0);
     window.addEventListener("scroll", t, { passive: true });
@@ -195,13 +342,7 @@ export default function ControlStockPage() {
       window.removeEventListener("click", t);
       window.removeEventListener("focus", t);
     };
-  }, [sel, fin, enfocar]);
-
-  const mostrarAviso = useCallback((tipo: "ok" | "error", texto: string) => {
-    if (avisoTimer.current) clearTimeout(avisoTimer.current);
-    setAviso({ tipo, texto });
-    avisoTimer.current = setTimeout(() => setAviso(null), tipo === "ok" ? 2000 : 3500);
-  }, []);
+  }, [sel, fin, enConteo, enfocar]);
 
   const mostrarTeclado = useCallback(() => {
     if (teclado) return;
@@ -220,26 +361,12 @@ export default function ControlStockPage() {
     setSel({ art, barra });
     setCantidad("");
     setErrorCant(null);
-    // El botón "atrás" del PDA vuelve a la lista en vez de salir de la página.
-    try {
-      window.history.pushState({ mostradorCant: true }, "");
-    } catch {
-      /* nada */
-    }
+    empujar({ mostradorCant: true });
   }, []);
 
   const cerrar = useCallback(() => {
     if (window.history.state?.mostradorCant) window.history.back();
     else setSel(null);
-  }, []);
-
-  useEffect(() => {
-    const onPop = () => {
-      setSel(null);
-      setFin(false);
-    };
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   // Al volver a la lista: buscador limpio, teclado oculto, foco listo para escanear.
@@ -250,21 +377,18 @@ export default function ControlStockPage() {
     }
     setBusqueda("");
     setTeclado(false);
-    requestAnimationFrame(() => buscarRef.current?.focus({ preventScroll: true }));
-  }, [sel]);
+    if (conteoRef.current && !finRef.current) {
+      requestAnimationFrame(() => buscarRef.current?.focus({ preventScroll: true }));
+    }
+  }, [sel, enConteo]);
 
-  // ── Finalizar control ──────────────────────────────────────────────────────
+  // ── Finalizar: tarjeta que entra deslizando ────────────────────────────────
   const abrirFin = useCallback(() => {
     setFin(true);
-    setConfirmar(null);
     setErrorFin(null);
-    setResultado(null);
     buscarRef.current?.blur();
-    try {
-      window.history.pushState({ mostradorFin: true }, "");
-    } catch {
-      /* nada */
-    }
+    vibrar(30);
+    empujar({ mostradorFin: true });
   }, []);
 
   const cerrarFin = useCallback(() => {
@@ -272,70 +396,146 @@ export default function ControlStockPage() {
     else setFin(false);
   }, []);
 
+  // Al terminar la animación del arrastre, la posición final la toma la clase;
+  // recién ahí se sacan los estilos en línea (si no, parpadea).
+  useLayoutEffect(() => {
+    if (!limpiarOverlay.current) return;
+    limpiarOverlay.current = false;
+    const el = overlayRef.current;
+    if (el) {
+      el.style.transition = "";
+      el.style.transform = "";
+    }
+  }, [fin]);
+
   // Al volver de la tarjeta: foco listo para escanear.
   useEffect(() => {
-    if (fin) return;
-    setConfirmar(null);
+    if (fin || !conteoRef.current) return;
     requestAnimationFrame(() => buscarRef.current?.focus({ preventScroll: true }));
   }, [fin]);
 
-  const finalizar = async (p: Patron) => {
-    if (finalizando !== null) return;
-    // Primer toque arma la confirmación; el segundo (dentro de 4 s) finaliza.
-    if (confirmar !== p.controlId) {
-      setConfirmar(p.controlId);
-      vibrar(30);
-      if (confirmarTimer.current) clearTimeout(confirmarTimer.current);
-      confirmarTimer.current = setTimeout(() => setConfirmar(null), 4000);
-      return;
-    }
-    if (confirmarTimer.current) clearTimeout(confirmarTimer.current);
-    setConfirmar(null);
-    setFinalizando(p.controlId);
+  const vistaConteo = enConteo && !!activo && !sel;
+
+  useEffect(() => {
+    if (!vistaConteo) return;
+    const ancho = () => window.innerWidth || 360;
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1 || animando.current || finalizandoRef.current) {
+        arrastre.current = null;
+        return;
+      }
+      const t = e.touches[0];
+      arrastre.current = {
+        x: t.clientX,
+        y: t.clientY,
+        t: performance.now(),
+        eje: null,
+        dx: 0,
+        modo: finRef.current ? "cerrar" : "abrir",
+      };
+    };
+
+    const onMove = (e: TouchEvent) => {
+      const d = arrastre.current;
+      if (!d) return;
+      const t = e.touches[0];
+      const dx = t.clientX - d.x;
+      const dy = t.clientY - d.y;
+      if (d.eje === null) {
+        if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        const horizontal = Math.abs(dx) > Math.abs(dy) * 1.2;
+        const sentido = d.modo === "abrir" ? dx < 0 : dx > 0;
+        d.eje = horizontal && sentido ? "h" : "v";
+        if (d.eje === "h" && overlayRef.current) overlayRef.current.style.transition = "none";
+      }
+      if (d.eje !== "h") return;
+      if (e.cancelable) e.preventDefault();
+      d.dx = dx;
+      const el = overlayRef.current;
+      if (!el) return;
+      const w = ancho();
+      const x = d.modo === "abrir" ? Math.max(0, w + dx) : Math.max(0, dx);
+      el.style.transform = `translate3d(${x}px,0,0)`;
+    };
+
+    const onEnd = () => {
+      const d = arrastre.current;
+      arrastre.current = null;
+      if (!d || d.eje !== "h") return;
+      const el = overlayRef.current;
+      if (!el) return;
+      const w = ancho();
+      const dist = Math.abs(d.dx);
+      const vel = dist / Math.max(1, performance.now() - d.t);
+      const pasa = dist > w * 0.4 || (dist > 60 && vel > 0.6);
+      const quedaAbierto = d.modo === "abrir" ? pasa : !pasa;
+      el.style.transition = `transform ${ANIM_MS}ms ease-out`;
+      el.style.transform = `translate3d(${quedaAbierto ? 0 : w}px,0,0)`;
+      animando.current = true;
+      setTimeout(() => {
+        animando.current = false;
+        if (quedaAbierto === finRef.current) {
+          // Volvió a donde estaba: nada cambia.
+          el.style.transition = "";
+          el.style.transform = "";
+          return;
+        }
+        limpiarOverlay.current = true;
+        if (quedaAbierto) abrirFin();
+        else cerrarFin();
+      }, ANIM_MS + 10);
+    };
+
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onEnd);
+    window.addEventListener("touchcancel", onEnd);
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
+    };
+  }, [vistaConteo, abrirFin, cerrarFin]);
+
+  const finalizar = async () => {
+    if (!activo || finalizando) return;
+    setFinalizando(true);
     setErrorFin(null);
     try {
       const res = await fetch("/api/mostradores/finalizar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ controlId: p.controlId }),
+        body: JSON.stringify({ controlId: activo.controlId }),
       });
-      const json = (await res.json().catch(() => null)) as (ResultadoFin & { error?: string }) | null;
+      const json = (await res.json().catch(() => null)) as ResultadoFin | null;
       if (!res.ok || !json) {
         if (res.status === 409) cargar();
         throw new Error(json?.error ?? `HTTP ${res.status}`);
       }
       vibrar([40, 60, 40]);
-      setResultado({
-        patron: json.patron ?? p.codigo,
-        contados: json.contados ?? 0,
-        sinContarConStock: json.sinContarConStock ?? 0,
-        conDiferencia: json.conDiferencia ?? 0,
-      });
-      // El patrón cerrado sale de la lista.
-      setPatrones((prev) => prev.filter((x) => x.controlId !== p.controlId));
-      setArticulos((prev) => prev.filter((a) => a.controlId !== p.controlId));
+      const partes = [`${json.contados ?? contados} contados`];
+      if (json.conDiferencia) partes.push(`${json.conDiferencia} con diferencia`);
+      mostrarAviso("ok", `✓ Patrón ${json.patron ?? activo.codigo} finalizado · ${partes.join(" · ")}`, 6000);
+      // Vuelve a la lista de patrones: saca del historial la tarjeta y el conteo.
+      const pasos = window.history.state?.mostradorFin ? 2 : window.history.state?.mostradorConteo ? 1 : 0;
+      setFin(false);
+      setEnConteo(false);
+      setActivoId(null);
+      setArticulos([]);
+      setPatrones((prev) => prev.filter((x) => x.controlId !== activo.controlId));
+      if (pasos) {
+        ignorarPop.current += 1;
+        window.history.go(-pasos);
+      }
       cargar();
     } catch (e) {
       setErrorFin(e instanceof Error ? e.message : "No se pudo finalizar");
       vibrar([80, 60, 80]);
     } finally {
-      setFinalizando(null);
+      setFinalizando(false);
     }
-  };
-
-  // Deslizar de derecha a izquierda sobre la lista abre "Finalizar control".
-  const onTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0];
-    toqueIni.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null;
-  };
-  const onTouchEnd = (e: React.TouchEvent) => {
-    const ini = toqueIni.current;
-    toqueIni.current = null;
-    if (!ini || !patrones.length) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - ini.x;
-    const dy = t.clientY - ini.y;
-    if (dx < -80 && Math.abs(dy) < Math.abs(dx) * 0.6) abrirFin();
   };
 
   // ── Escaneo / búsqueda ─────────────────────────────────────────────────────
@@ -417,7 +617,7 @@ export default function ControlStockPage() {
         setPatrones((prev) => prev.map((p) => (p.controlId === sel.art.controlId ? { ...p, contados: p.contados + 1 } : p)));
       }
       vibrar(40);
-      mostrarAviso("ok", `${sel.art.cod} · ${fmtCant(json.cantidad ?? n)}`);
+      mostrarAviso("ok", `✓ Guardado ${sel.art.cod} · ${fmtCant(json.cantidad ?? n)}`);
       cerrar();
     } catch (e) {
       setErrorCant(e instanceof Error ? e.message : "No se pudo guardar");
@@ -427,6 +627,25 @@ export default function ControlStockPage() {
       setGuardando(false);
     }
   };
+
+  const avisoEl = aviso && (
+    <div
+      className={`mx-3 mb-2 rounded px-3 py-2 text-sm font-medium ${
+        aviso.tipo === "ok"
+          ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"
+          : "bg-[#f85149]/15 text-[#f85149] border border-[#f85149]/40"
+      }`}
+    >
+      {aviso.texto}
+    </div>
+  );
+
+  const errorEl = error && (
+    <div className="m-3 flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
+      <AlertCircle className="h-4 w-4 shrink-0" />
+      {error}
+    </div>
+  );
 
   // ════════════════════════════════════════════════════════════════════════════
   // Vista: carga de cantidad
@@ -509,133 +728,163 @@ export default function ControlStockPage() {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  // Vista: finalizar control
+  // Vista principal: patrones mandados a control
   // ════════════════════════════════════════════════════════════════════════════
-  if (fin) {
+  if (!enConteo || !activo) {
+    const otros = patrones.filter((p) => p.controlId !== activoId);
     return (
-      <div className="dark min-h-[100dvh] bg-[#111111] text-white flex flex-col">
-        <header className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-[#171717]">
-          <button
-            type="button"
-            onClick={cerrarFin}
-            className="flex items-center gap-1 text-sm text-zinc-400 active:text-yellow-400 py-1 pr-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Volver
-          </button>
-          <span className="ml-auto text-yellow-400 font-bold text-sm uppercase tracking-wide">Finalizar control</span>
-        </header>
-
-        <div className="flex-1 flex flex-col gap-3 px-3 pt-3 pb-6">
-          {resultado && (
-            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
-              <div className="flex items-center gap-2 text-emerald-300 font-bold text-lg">
-                <Check className="h-5 w-5" />
-                Patrón {resultado.patron} finalizado
-              </div>
-              <div className="mt-2 text-sm text-zinc-300 space-y-0.5">
-                <div>
-                  Contados: <b className="tabular-nums text-zinc-100">{resultado.contados}</b>
-                </div>
-                {resultado.sinContarConStock > 0 && (
-                  <div>
-                    Sin contar con stock en sistema (registrados en 0):{" "}
-                    <b className="tabular-nums text-zinc-100">{resultado.sinContarConStock}</b>
-                  </div>
-                )}
-                <div>
-                  Con diferencia:{" "}
-                  <b className={`tabular-nums ${resultado.conDiferencia ? "text-[#f85149]" : "text-emerald-300"}`}>
-                    {resultado.conDiferencia}
-                  </b>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {errorFin && (
-            <div className="flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {errorFin}
-            </div>
-          )}
-
-          {patrones.map((p) => {
-            const sinContar = p.total - p.contados;
-            const armado = confirmar === p.controlId;
-            const enCurso = finalizando === p.controlId;
-            return (
-              <div key={p.controlId} className="rounded-lg border border-zinc-700 bg-[#1a1a1a] px-4 py-3">
-                <div className="text-xl font-bold text-zinc-100 tabular-nums">Patrón {p.codigo}</div>
-                <div className="text-sm text-zinc-300 leading-snug">{p.detalle || "—"}</div>
-                {p.linea && <div className="text-xs text-zinc-500 mt-0.5">{p.linea}</div>}
-
-                <div className="mt-3 flex items-end gap-4">
-                  <div>
-                    <div className="text-xs text-zinc-500 uppercase">Contados</div>
-                    <div className="text-2xl font-bold tabular-nums">
-                      <span className={p.contados === p.total ? "text-emerald-400" : "text-zinc-100"}>{p.contados}</span>
-                      <span className="text-zinc-500 text-lg">/{p.total}</span>
-                    </div>
-                  </div>
-                  {sinContar > 0 && (
-                    <div>
-                      <div className="text-xs text-zinc-500 uppercase">Sin contar</div>
-                      <div className="text-2xl font-bold tabular-nums text-amber-400">{sinContar}</div>
-                    </div>
-                  )}
-                </div>
-
-                {sinContar > 0 && p.contados > 0 && (
-                  <div className="mt-3 text-xs rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-3 py-2">
-                    Los sin contar que tengan stock en sistema se guardan con controlado 0.
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  disabled={p.contados === 0 || finalizando !== null}
-                  onClick={() => finalizar(p)}
-                  className={`mt-3 w-full rounded-lg font-bold text-lg py-4 flex items-center justify-center gap-2 disabled:opacity-50 ${
-                    armado ? "bg-[#f85149] active:bg-[#ff6a63] text-white" : "bg-yellow-400 active:bg-yellow-300 text-black"
-                  }`}
-                >
-                  {enCurso ? <Loader2 className="h-5 w-5 animate-spin" /> : <Flag className="h-5 w-5" />}
-                  {p.contados === 0 ? "Nada contado todavía" : armado ? "Tocá de nuevo para confirmar" : "Finalizar control"}
-                </button>
-              </div>
-            );
-          })}
-
-          {!patrones.length && !resultado && (
-            <div className="py-12 text-center text-zinc-500">No hay patrones en control.</div>
-          )}
-
-          {(resultado || !patrones.length) && (
+      <div className="dark min-h-[100dvh] bg-[#111111] text-white">
+        <div className="sticky top-0 z-10 bg-[#111111] border-b border-zinc-800">
+          <header className="flex items-center gap-2 px-3 py-2">
+            <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
+            <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
+            <span className="ml-auto text-xs text-zinc-500 tabular-nums">
+              {patrones.length} {patrones.length === 1 ? "patrón" : "patrones"}
+            </span>
             <button
               type="button"
-              onClick={cerrarFin}
-              className="w-full rounded-lg border-2 border-zinc-700 text-zinc-200 font-semibold py-3"
+              onClick={cargar}
+              disabled={cargando}
+              className="p-1.5 text-zinc-400 active:text-yellow-400"
+              title="Recargar"
             >
-              Volver a la lista
+              <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
             </button>
-          )}
+          </header>
+          {avisoEl}
         </div>
+
+        {errorEl}
+
+        {cargando && !patrones.length && (
+          <div className="py-12 text-center text-zinc-500">
+            <Loader2 className="h-5 w-5 animate-spin inline mr-2" />
+            Cargando…
+          </div>
+        )}
+
+        {!cargando && !error && !patrones.length && (
+          <div className="py-12 px-6 text-center text-zinc-500">No hay patrones mandados a control.</div>
+        )}
+
+        {activo && (
+          <section className="px-3 pt-3">
+            <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1.5">Tu patrón activo</div>
+            <button
+              type="button"
+              onClick={abrirConteo}
+              className="w-full text-left rounded-lg border-2 border-yellow-400 bg-yellow-400/5 active:bg-yellow-400/10 px-4 py-3"
+            >
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xl font-bold tabular-nums text-zinc-100">Patrón {activo.codigo}</div>
+                  <div className="text-sm text-zinc-300 leading-snug line-clamp-2">{activo.detalle || "—"}</div>
+                  {activo.linea && <div className="text-xs text-zinc-500 mt-0.5 truncate">{activo.linea}</div>}
+                </div>
+                <span className="shrink-0 flex items-center gap-1 rounded-md bg-yellow-400 text-black text-sm font-bold px-3 py-2">
+                  <Play className="h-4 w-4" />
+                  Seguir
+                </span>
+              </div>
+              <div className="mt-3">
+                <BarraAvance valor={activo.contados} total={activo.total} />
+                <div className="mt-1 text-xs tabular-nums text-zinc-400">
+                  {activo.contados} de {activo.total} artículos contados
+                </div>
+              </div>
+            </button>
+            {otros.length > 0 && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-500">
+                <Lock className="h-3.5 w-3.5" />
+                Finalizá este patrón para tomar otro.
+              </div>
+            )}
+          </section>
+        )}
+
+        {otros.length > 0 && (
+          <section className="px-3 pt-4 pb-6">
+            {activo && <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1.5">En control</div>}
+            <ul className="flex flex-col gap-2">
+              {otros.map((p) => {
+                const deOtro = p.tomadoPorId !== null;
+                const bloqueado = deOtro || !!activo;
+                const armado = confirmarTomar === p.controlId;
+                const enCurso = tomando === p.controlId;
+                return (
+                  <li key={p.controlId}>
+                    <button
+                      type="button"
+                      onClick={() => (deOtro ? undefined : tomar(p))}
+                      disabled={deOtro || tomando !== null}
+                      className={`w-full text-left rounded-lg border px-4 py-3 ${
+                        armado
+                          ? "border-yellow-400 bg-yellow-400/10"
+                          : bloqueado
+                            ? "border-zinc-800 bg-[#161616] opacity-60"
+                            : "border-zinc-700 bg-[#1a1a1a] active:bg-[#222]"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-lg font-bold tabular-nums text-zinc-100">Patrón {p.codigo}</div>
+                          <div className="text-sm text-zinc-300 leading-snug line-clamp-2">{p.detalle || "—"}</div>
+                          {p.linea && <div className="text-xs text-zinc-500 mt-0.5 truncate">{p.linea}</div>}
+                          <div className="mt-1 text-xs tabular-nums text-zinc-500">
+                            {p.contados > 0 ? `${p.contados} de ${p.total} contados` : `${p.total} artículos`}
+                          </div>
+                        </div>
+                        <div className="shrink-0 self-center">
+                          {deOtro ? (
+                            <span className="flex items-center gap-1 text-xs text-zinc-400 max-w-[8rem] text-right">
+                              <User className="h-3.5 w-3.5 shrink-0" />
+                              <span className="truncate">Lo tiene {p.tomadoPor}</span>
+                            </span>
+                          ) : activo ? (
+                            <Lock className="h-4 w-4 text-zinc-600" />
+                          ) : (
+                            <span
+                              className={`flex items-center gap-1 rounded-md text-sm font-bold px-3 py-2 ${
+                                armado ? "bg-yellow-400 text-black" : "border border-yellow-400/60 text-yellow-400"
+                              }`}
+                            >
+                              {enCurso && <Loader2 className="h-4 w-4 animate-spin" />}
+                              {armado ? "Tocá de nuevo" : "Tomar"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
       </div>
     );
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  // Vista: lista de artículos a controlar
+  // Vista: conteo del patrón activo (+ tarjeta "Finalizar" deslizable encima)
   // ════════════════════════════════════════════════════════════════════════════
   const visibles = filtrados.slice(0, MAX_FILAS);
   const ocultos = filtrados.length - visibles.length;
+  const sinContar = total - contados;
 
   return (
-    <div className="dark min-h-[100dvh] bg-[#111111] text-white" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+    <div className="dark min-h-[100dvh] bg-[#111111] text-white" style={{ touchAction: "pan-y" }}>
       <div className="sticky top-0 z-10 bg-[#111111] border-b border-zinc-800">
         <header className="flex items-center gap-2 px-3 pt-2">
-          <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={cerrarConteo}
+            className="p-1 -ml-1 text-zinc-400 active:text-yellow-400"
+            title="Patrones"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
           <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
           <span className="ml-auto text-sm tabular-nums text-zinc-400">
             <b className={contados === total && total > 0 ? "text-emerald-400" : "text-zinc-100"}>{contados}</b>/{total}
@@ -650,25 +899,17 @@ export default function ControlStockPage() {
           >
             <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
           </button>
-          {patrones.length > 0 && (
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={abrirFin}
-              className="flex items-center gap-1 rounded-md border border-yellow-400/60 text-yellow-400 active:bg-yellow-400/10 px-2 py-1 text-xs font-bold uppercase"
-              title="Finalizar control (o deslizá hacia la izquierda)"
-            >
-              <Flag className="h-3.5 w-3.5" />
-              Finalizar
-            </button>
-          )}
         </header>
 
-        {patrones.length > 0 && (
-          <div className="px-3 pt-1 text-xs text-zinc-500 truncate">
-            {patrones.map((p) => `${p.codigo} ${p.detalle}`).join(" · ")}
-          </div>
-        )}
+        <div className="px-3 pt-1 flex items-center gap-2 text-xs">
+          <span className="min-w-0 flex-1 truncate text-zinc-400">
+            <b className="text-zinc-200 tabular-nums">{activo.codigo}</b> {activo.detalle}
+          </span>
+          <span className="shrink-0 flex items-center text-zinc-600">
+            <ChevronLeft className="h-3.5 w-3.5" />
+            deslizá para finalizar
+          </span>
+        </div>
 
         <div className="flex items-center gap-2 px-3 py-2">
           <div className="relative flex-1">
@@ -703,26 +944,10 @@ export default function ControlStockPage() {
           </button>
         </div>
 
-        {aviso && (
-          <div
-            className={`mx-3 mb-2 rounded px-3 py-2 text-sm font-medium ${
-              aviso.tipo === "ok"
-                ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"
-                : "bg-[#f85149]/15 text-[#f85149] border border-[#f85149]/40"
-            }`}
-          >
-            {aviso.tipo === "ok" ? "✓ Guardado " : ""}
-            {aviso.texto}
-          </div>
-        )}
+        {avisoEl}
       </div>
 
-      {error && (
-        <div className="m-3 flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          {error}
-        </div>
-      )}
+      {errorEl}
 
       {cargando && !articulos.length && (
         <div className="py-12 text-center text-zinc-500">
@@ -731,11 +956,7 @@ export default function ControlStockPage() {
         </div>
       )}
 
-      {!cargando && !error && !patrones.length && (
-        <div className="py-12 px-6 text-center text-zinc-500">No hay patrones mandados a control.</div>
-      )}
-
-      {!cargando && patrones.length > 0 && !filtrados.length && (
+      {!cargando && articulos.length > 0 && !filtrados.length && (
         <div className="py-12 px-6 text-center text-zinc-500">Sin coincidencias para “{busqueda}”.</div>
       )}
 
@@ -771,6 +992,65 @@ export default function ControlStockPage() {
           {ocultos} artículos más — escribí para filtrar.
         </div>
       )}
+
+      {/* Tarjeta "Finalizar": vive fuera de pantalla a la derecha; el arrastre
+          la mueve con estilos en línea y la clase fija la posición final. */}
+      <div
+        ref={overlayRef}
+        aria-hidden={!fin}
+        style={{ touchAction: "none" }}
+        className={`fixed inset-0 z-40 flex flex-col bg-[#161616] border-l-4 border-yellow-400 shadow-[-16px_0_32px_rgba(0,0,0,0.7)] transition-transform duration-200 ease-out ${
+          fin ? "translate-x-0" : "translate-x-full pointer-events-none"
+        }`}
+      >
+        {!fin ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6">
+            <div className="h-20 w-20 rounded-full border-2 border-yellow-400 flex items-center justify-center">
+              <Flag className="h-9 w-9 text-yellow-400" />
+            </div>
+            <div className="text-yellow-400 text-3xl font-extrabold uppercase tracking-widest">Finalizar</div>
+            <div className="text-sm text-zinc-500 tabular-nums">Patrón {activo.codigo}</div>
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
+              <div className="text-4xl font-extrabold text-zinc-100">¿Finalizamos?</div>
+              <div className="text-sm text-zinc-500 tabular-nums">
+                Patrón {activo.codigo} · {contados} de {total} contados
+              </div>
+              {contados > 0 && sinContar > 0 && (
+                <div className="mt-2 max-w-xs text-xs rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-3 py-2">
+                  {sinContar} sin contar: los que tengan stock en sistema se guardan con controlado 0.
+                </div>
+              )}
+            </div>
+            <div className="px-4 pb-6 flex flex-col gap-3">
+              {errorFin && (
+                <div className="flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {errorFin}
+                </div>
+              )}
+              {contados === 0 && (
+                <div className="text-center text-sm text-zinc-500">Todavía no contaste ningún artículo.</div>
+              )}
+              <button
+                type="button"
+                disabled={contados === 0 || finalizando}
+                onClick={finalizar}
+                className="w-full rounded-lg bg-yellow-400 active:bg-yellow-300 disabled:opacity-50 text-black font-bold text-xl py-5 flex items-center justify-center gap-2"
+              >
+                {finalizando ? <Loader2 className="h-5 w-5 animate-spin" /> : <Flag className="h-5 w-5" />}
+                Finalizar
+              </button>
+              <div className="flex items-center justify-center gap-1 text-xs text-zinc-600">
+                Deslizá a la derecha para volver
+                <ChevronRight className="h-3.5 w-3.5" />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
