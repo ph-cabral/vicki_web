@@ -49,8 +49,15 @@ interface CatalogoItem extends Acceso {
   grupo: string;
 }
 
-// Rutas donde no tiene sentido (no hay sesión todavía).
-const OCULTA_EN = ["/login"];
+// Rutas donde no se muestra ni se puede abrir con el gesto:
+//   · /login: no hay sesión todavía.
+//   · vistas de PDA (picker y control de mostradores): el input tiene foco
+//     permanente y el deslizamiento se usa para otras cosas; la sidebar
+//     abierta por error tapaba el escaneo.
+const OCULTA_EN = ["/login", "/picking/picker", "/mostradores/control"];
+
+const estaOculta = (pathname: string) =>
+  OCULTA_EN.some((p) => pathname === p || pathname.startsWith(p + "/"));
 
 // Gesto táctil.
 const ANCHO = 240; // w-60, en px: lo necesitamos como número para el arrastre
@@ -66,6 +73,7 @@ export function SidebarGlobal() {
   const [drag, setDrag] = useState<number | null>(null);
   const [sobre, setSobre] = useState<number | null>(null);
   const pathname = usePathname();
+  const oculta = estaOculta(pathname);
 
   // Se carga una sola vez, y recién cuando la sidebar se abre por primera vez.
   useEffect(() => {
@@ -120,8 +128,14 @@ export function SidebarGlobal() {
     setArrastre(v);
   }, []);
 
+  // Al entrar a una ruta sin sidebar se cierra (si no, quedaba el scroll del
+  // body bloqueado por el efecto de abajo).
   useEffect(() => {
-    if (!tactil) return;
+    if (oculta) cerrarRef.current();
+  }, [oculta]);
+
+  useEffect(() => {
+    if (!tactil || oculta) return;
 
     const onStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
@@ -170,7 +184,7 @@ export function SidebarGlobal() {
       document.removeEventListener("touchend", onEnd);
       document.removeEventListener("touchcancel", onEnd);
     };
-  }, [tactil, fijarArrastre]);
+  }, [tactil, oculta, fijarArrastre]);
 
   // Con la sidebar abierta en mobile no se scrollea lo de atrás.
   useEffect(() => {
@@ -257,8 +271,7 @@ export function SidebarGlobal() {
     [catalogo, moduloActual],
   );
 
-  if (!habilitada || OCULTA_EN.some((p) => pathname === p || pathname.startsWith(p + "/")))
-    return null;
+  if (!habilitada || oculta) return null;
 
   // Mientras dura el gesto el panel va en px y sin transición; si no, manda `open`.
   const arrastrando = arrastre !== null;
