@@ -238,12 +238,25 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
     return {"ok": True, "yaPendiente": not creado}
 
 
-# ── Pendientes (vista Control) ────────────────────────────────────────────
+# ── En control (panel derecho de Administrar) ────────────────────────────
+# Patrones pendientes con su avance: artículos contados en el PDA contra el
+# total del patrón (el mismo universo que lista el PDA, _articulos_de_patrones,
+# cacheado 10 min) y quién los está contando (usuarios de mostrador_conteo con
+# cuántos contó cada uno). Todo sale de 2 consultas chicas a Postgres agrupadas
+# por control (PK de mostrador_conteo empieza por "controlId") + el cache.
 _SQL_PENDIENTES = """
-SELECT id, "codigoPatron", "mandadoAt"
-FROM everwear.mostrador_control
-WHERE estado = 'pendiente'
-ORDER BY "mandadoAt", id
+SELECT c.id, c."codigoPatron", c."mandadoAt", u.nombre
+FROM everwear.mostrador_control c
+LEFT JOIN everwear.usuario u ON u.id = c."mandadoPor"
+WHERE c.estado = 'pendiente'
+ORDER BY c."mandadoAt", c.id
+"""
+_SQL_AVANCE_USUARIOS = """
+SELECT k."controlId", k."contadoPor", u.nombre, count(*), max(k."contadoAt")
+FROM everwear.mostrador_conteo k
+LEFT JOIN everwear.usuario u ON u.id = k."contadoPor"
+WHERE k."controlId" = ANY(%s)
+GROUP BY k."controlId", k."contadoPor", u.nombre
 """
 
 
@@ -253,20 +266,44 @@ def fetch_pendientes() -> dict:
         cur = conn.cursor()
         cur.execute(_SQL_PENDIENTES)
         filas = cur.fetchall()
+        avance: dict[int, list] = {}
+        if filas:
+            _asegurar_tabla_conteo(cur)
+            cur.execute(_SQL_AVANCE_USUARIOS, ([int(f[0]) for f in filas],))
+            for cid, uid, nombre, n, ult in cur.fetchall():
+                avance.setdefault(int(cid), []).append((uid, (nombre or "").strip(), int(n), ult))
     finally:
         conn.close()
-    m = maestro_magnus() if filas else {"lineas": {}, "patrones": {}}
+    if not filas:
+        return {"pendientes": []}
+
+    m = maestro_magnus()
+    arts = _articulos_de_patrones([c for _, c, _, _ in filas])
     salida = []
-    for i, codigo, mandado in filas:
+    for i, codigo, mandado, mandado_por in filas:
+        cid = int(i)
         info = m["patrones"].get(codigo)
         lid = info["linea"] if info else None
+        total = len(arts.get(codigo, []))
+        usuarios = sorted(avance.get(cid, []), key=lambda u: (-u[2], u[1]))
+        contados = sum(u[2] for u in usuarios)
+        ultimo = max((u[3] for u in usuarios if u[3]), default=None)
         salida.append({
-            "id": int(i),
+            "id": cid,
             "codigo": codigo,
             "detalle": info["detalle"] if info else "",
             "lineaId": lid,
             "linea": _nombre_linea(lid, m["lineas"][lid]) if lid is not None else "",
             "mandadoAt": mandado.isoformat() if mandado else None,
+            "mandadoPor": (mandado_por or "").strip(),
+            "total": total,
+            "contados": contados,
+            "avance": round(contados * 100 / total, 1) if total else 0,
+            "usuarios": [
+                {"nombre": nom or (f"Usuario #{uid}" if uid is not None else "Sin usuario"), "contados": n}
+                for uid, nom, n, _ in usuarios
+            ],
+            "ultimoConteoAt": ultimo.isoformat() if ultimo else None,
         })
     return {"pendientes": salida}
 

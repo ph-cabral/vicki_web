@@ -4,8 +4,9 @@ const API_URL = process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001"
 
 export const dynamic = "force-dynamic";
 
-// Patrones mandados a control y todavía sin cerrar (Mostradores → Control).
-//   GET -> { pendientes: [{ id, codigo, detalle, lineaId, linea, mandadoAt }] }
+// Patrones en control (pendientes) con avance — panel derecho de Mostradores → Administrar.
+//   GET -> { pendientes: [{ id, codigo, detalle, lineaId, linea, mandadoAt, mandadoPor,
+//                          total, contados, avance, usuarios: [{ nombre, contados }], ultimoConteoAt }] }
 export async function GET() {
   try {
     const res = await fetch(`${API_URL}/mostradores/pendientes`, {

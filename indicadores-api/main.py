@@ -2140,7 +2140,8 @@ def mostradores_mandar(body: MostradorMandarIn):
 
 @app.get("/mostradores/pendientes")
 def mostradores_pendientes():
-    """Patrones mandados a control y todavía sin cerrar (vista Control)."""
+    """Patrones en control (pendientes) con su avance: contados/total y quién
+    los está contando. Panel derecho de Mostradores → Administrar."""
     try:
         return mostradores.fetch_pendientes()
     except Exception as e:
