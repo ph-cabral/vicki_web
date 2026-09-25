@@ -525,3 +525,203 @@ def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int
         conn.close()
     return {"ok": True, "controlId": control_id, "cod": cod,
             "cantidad": _num(cant), "contadoAt": at.isoformat() if at else None}
+
+
+# ── Finalizar control (PDA) ───────────────────────────────────────────────
+# Al finalizar un patrón se pasa el control a 'cerrado' y se guarda el RESULTADO
+# en `everwear.mostrador_control_detalle` (sql/mostradores_control_detalle.sql;
+# también se crea sola), una fila por artículo:
+#   codigo      → CodArticulo
+#   controlado  → cantidad contada en el PDA
+#   sistema     → StkReal de Magnus AL MOMENTO DE CONTAR ese artículo (foto
+#                 tomada en guardar_conteo: se sigue vendiendo mientras se cuenta)
+#   diferencia  → controlado - sistema (columna generada)
+#   usuario     → quién contó el artículo (nombre; "usuarioId" = id)
+# Los artículos del patrón que NO se contaron pero tienen stock en sistema
+# (StkReal <> 0) se registran con controlado = 0, sistema = StkReal al finalizar,
+# usuario = quien finalizó y "controladoAt" NULL (así se distinguen de los
+# contados). Los no contados con stock 0 no generan fila (no hay diferencia).
+# El Excel de Administrar se arma al descargar desde esta tabla (no se guarda
+# el bytea): "archivoNombre" queda seteado para que el front muestre el link.
+_DDL_DETALLE = """
+CREATE TABLE IF NOT EXISTS everwear.mostrador_control_detalle (
+  "controlId"    BIGINT        NOT NULL REFERENCES everwear.mostrador_control(id) ON DELETE CASCADE,
+  codigo         TEXT          NOT NULL,
+  controlado     NUMERIC(13,3) NOT NULL,
+  sistema        NUMERIC(13,3) NOT NULL,
+  diferencia     NUMERIC(14,3) GENERATED ALWAYS AS (controlado - sistema) STORED,
+  usuario        TEXT,
+  "usuarioId"    INT,
+  "controladoAt" TIMESTAMPTZ,
+  PRIMARY KEY ("controlId", codigo)
+)
+"""
+_ddl_detalle_ok = False
+
+
+def _asegurar_tabla_detalle(cur) -> None:
+    global _ddl_detalle_ok
+    if _ddl_detalle_ok:
+        return
+    with _ddl_lock:
+        if not _ddl_detalle_ok:
+            cur.execute(_DDL_DETALLE)
+            cur.connection.commit()
+            _ddl_detalle_ok = True
+
+
+# Stock de los artículos del patrón que tienen stock ≠ 0 (índice por
+# ArticuloPatron; a lo sumo unos miles de filas en los patrones más grandes).
+_SQL_STOCK_PATRON = """
+SELECT RTRIM(CodArticulo), StkReal
+FROM StkFer_Articulos
+WHERE ArticuloPatron = ? AND StkReal <> 0
+"""
+
+
+def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: str | None) -> dict:
+    """Cierra un control pendiente y guarda el detalle controlado vs sistema."""
+    from psycopg2.extras import execute_values
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        _asegurar_tabla_conteo(cur)
+        _asegurar_tabla_detalle(cur)
+        # FOR UPDATE: dos PDA finalizando a la vez → el segundo espera y ya lo
+        # encuentra cerrado (409).
+        cur.execute(
+            """SELECT "codigoPatron" FROM everwear.mostrador_control
+               WHERE id = %s AND estado = 'pendiente' FOR UPDATE""",
+            (control_id,),
+        )
+        fila = cur.fetchone()
+        if not fila:
+            conn.rollback()
+            raise LookupError("El control ya fue finalizado o no existe")
+        patron = fila[0]
+
+        cur.execute(
+            """
+            SELECT k."codArticulo", k.cantidad, COALESCE(k."stockSistema", 0),
+                   k."contadoPor", u.nombre, k."contadoAt"
+            FROM everwear.mostrador_conteo k
+            LEFT JOIN everwear.usuario u ON u.id = k."contadoPor"
+            WHERE k."controlId" = %s
+            """,
+            (control_id,),
+        )
+        contados = cur.fetchall()
+        if not contados:
+            conn.rollback()
+            raise ValueError("No hay artículos contados en este control")
+
+        mconn = get_connection("EVERWEAR")
+        try:
+            mcur = mconn.cursor()
+            mcur.execute(_SQL_STOCK_PATRON, (patron,))
+            con_stock = mcur.fetchall()
+        finally:
+            mconn.close()
+
+        filas = [(control_id, cod, cant, sist, nom, uid, at)
+                 for cod, cant, sist, uid, nom, at in contados]
+        ya = {cod for cod, *_ in contados}
+        sin_contar = 0
+        for cod, stk in con_stock:
+            cod = (cod or "").strip()
+            if cod and cod not in ya:
+                filas.append((control_id, cod, 0, stk, usuario_nombre, usuario_id, None))
+                sin_contar += 1
+
+        cur.execute('DELETE FROM everwear.mostrador_control_detalle WHERE "controlId" = %s', (control_id,))
+        execute_values(
+            cur,
+            """INSERT INTO everwear.mostrador_control_detalle
+               ("controlId", codigo, controlado, sistema, usuario, "usuarioId", "controladoAt")
+               VALUES %s""",
+            filas,
+            page_size=1000,
+        )
+        cur.execute(
+            """
+            UPDATE everwear.mostrador_control
+               SET estado = 'cerrado', "cerradoPor" = %s, "cerradoAt" = now(),
+                   "archivoNombre" = %s
+             WHERE id = %s
+            RETURNING "cerradoAt"
+            """,
+            (usuario_id, f"Control patron {patron}.xlsx", control_id),
+        )
+        cerrado_at = cur.fetchone()[0]
+        cur.execute(
+            """SELECT count(*) FILTER (WHERE diferencia <> 0)
+               FROM everwear.mostrador_control_detalle WHERE "controlId" = %s""",
+            (control_id,),
+        )
+        con_dif = int(cur.fetchone()[0])
+        conn.commit()
+    finally:
+        conn.close()
+
+    # El nombre del Excel lleva la fecha de cierre (se arma recién acá).
+    return {
+        "ok": True,
+        "controlId": control_id,
+        "patron": patron,
+        "contados": len(contados),
+        "sinContarConStock": sin_contar,
+        "conDiferencia": con_dif,
+        "cerradoAt": cerrado_at.isoformat() if cerrado_at else None,
+    }
+
+
+# ── Detalle de un control cerrado (para el Excel) ─────────────────────────
+def fetch_detalle_control(control_id: int) -> dict | None:
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        _asegurar_tabla_detalle(cur)
+        cur.execute(
+            """SELECT "codigoPatron", "cerradoAt" FROM everwear.mostrador_control
+               WHERE id = %s AND estado = 'cerrado'""",
+            (control_id,),
+        )
+        cab = cur.fetchone()
+        if not cab:
+            return None
+        cur.execute(
+            """
+            SELECT codigo, controlado, sistema, diferencia, usuario, "controladoAt"
+            FROM everwear.mostrador_control_detalle
+            WHERE "controlId" = %s
+            ORDER BY codigo
+            """,
+            (control_id,),
+        )
+        filas = cur.fetchall()
+    finally:
+        conn.close()
+    patron, cerrado_at = cab
+    info = maestro_magnus()["patrones"].get(patron, {})
+    det_pat = info.get("detalle", "")
+    # Detalle por artículo desde el cache de artículos del patrón (no se guarda).
+    medidas = {a["cod"]: a["medida"] for a in _articulos_de_patrones([patron]).get(patron, [])}
+    return {
+        "controlId": control_id,
+        "patron": patron,
+        "detallePatron": det_pat,
+        "cerradoAt": cerrado_at.isoformat() if cerrado_at else None,
+        "filas": [
+            {
+                "codigo": cod,
+                "detalle": f"{det_pat} {medidas.get(cod, '')}".strip(),
+                "controlado": _num(ctl),
+                "sistema": _num(sis),
+                "diferencia": _num(dif),
+                "usuario": usr or "",
+                "controladoAt": at.isoformat() if at else None,
+            }
+            for cod, ctl, sis, dif, usr, at in filas
+        ],
+    }

@@ -2176,6 +2176,39 @@ def mostradores_conteo_guardar(body: MostradorConteoIn):
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
 
+class MostradorFinalizarIn(BaseModel):
+    controlId: int
+    usuarioId: int | None = None
+    usuarioNombre: str | None = None
+
+
+@app.post("/mostradores/finalizar")
+def mostradores_finalizar(body: MostradorFinalizarIn):
+    """PDA: cierra el control de un patrón y guarda controlado vs sistema en
+    everwear.mostrador_control_detalle."""
+    try:
+        return mostradores.finalizar_control(body.controlId, body.usuarioId, body.usuarioNombre)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/mostradores/controles/{control_id}/detalle")
+def mostradores_control_detalle(control_id: int):
+    """Detalle de un control cerrado (código, controlado, sistema, diferencia,
+    usuario). El Excel se arma en el proxy de Next con esto."""
+    try:
+        res = mostradores.fetch_detalle_control(control_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+    if res is None:
+        raise HTTPException(status_code=404, detail="Control inexistente o sin cerrar")
+    return res
+
+
 @app.get("/mostradores/controles/{control_id}/excel")
 def mostradores_control_excel(control_id: int):
     """Excel guardado de un control cerrado."""

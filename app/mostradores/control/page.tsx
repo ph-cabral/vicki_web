@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowLeft, Check, Keyboard, Loader2, RefreshCw, ScanLine } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, Flag, Keyboard, Loader2, RefreshCw, ScanLine } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,12 @@ import { InicioButton } from "@/components/ui/InicioButton";
 // El teclado en pantalla arranca OCULTO (inputMode="none") para que no tape la
 // lista mientras se escanea; tocar el input o el botón del teclado lo muestra.
 //
-// Datos: GET/POST /api/mostradores/conteo.
+// Finalizar: botón "Finalizar" del encabezado o deslizar de derecha a izquierda
+// sobre la lista → tarjeta "Finalizar control" por patrón (doble toque para
+// confirmar). Cierra el control y guarda código / controlado / sistema /
+// diferencia / usuario en everwear.mostrador_control_detalle.
+//
+// Datos: GET/POST /api/mostradores/conteo, POST /api/mostradores/finalizar.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Barra {
@@ -46,6 +51,13 @@ interface Patron {
   linea: string;
   total: number;
   contados: number;
+}
+
+interface ResultadoFin {
+  patron: string;
+  contados: number;
+  sinContarConStock: number;
+  conDiferencia: number;
 }
 
 interface Seleccion {
@@ -89,10 +101,21 @@ export default function ControlStockPage() {
   const [guardando, setGuardando] = useState(false);
   const [errorCant, setErrorCant] = useState<string | null>(null);
 
+  // Finalizar control
+  const [fin, setFin] = useState(false);
+  const [confirmar, setConfirmar] = useState<number | null>(null); // controlId esperando 2º toque
+  const [finalizando, setFinalizando] = useState<number | null>(null);
+  const [errorFin, setErrorFin] = useState<string | null>(null);
+  const [resultado, setResultado] = useState<ResultadoFin | null>(null);
+  const confirmarTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toqueIni = useRef<{ x: number; y: number } | null>(null);
+
   const buscarRef = useRef<HTMLInputElement>(null);
   const cantRef = useRef<HTMLInputElement>(null);
   const selRef = useRef<Seleccion | null>(null);
   selRef.current = sel;
+  const finRef = useRef(false);
+  finRef.current = fin;
   const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Datos ──────────────────────────────────────────────────────────────────
@@ -117,7 +140,7 @@ export default function ControlStockPage() {
   useEffect(() => {
     cargar();
     const onVis = () => {
-      if (document.visibilityState === "visible" && !selRef.current) cargar();
+      if (document.visibilityState === "visible" && !selRef.current && !finRef.current) cargar();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -153,13 +176,13 @@ export default function ControlStockPage() {
 
   // ── Foco permanente en el buscador ─────────────────────────────────────────
   const enfocar = useCallback(() => {
-    if (selRef.current) return;
+    if (selRef.current || finRef.current) return;
     const el = buscarRef.current;
     if (el && document.activeElement !== el) el.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => {
-    if (sel) return;
+    if (sel || fin) return;
     enfocar();
     const t = () => setTimeout(enfocar, 0);
     window.addEventListener("scroll", t, { passive: true });
@@ -172,7 +195,7 @@ export default function ControlStockPage() {
       window.removeEventListener("click", t);
       window.removeEventListener("focus", t);
     };
-  }, [sel, enfocar]);
+  }, [sel, fin, enfocar]);
 
   const mostrarAviso = useCallback((tipo: "ok" | "error", texto: string) => {
     if (avisoTimer.current) clearTimeout(avisoTimer.current);
@@ -211,7 +234,10 @@ export default function ControlStockPage() {
   }, []);
 
   useEffect(() => {
-    const onPop = () => setSel(null);
+    const onPop = () => {
+      setSel(null);
+      setFin(false);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -226,6 +252,91 @@ export default function ControlStockPage() {
     setTeclado(false);
     requestAnimationFrame(() => buscarRef.current?.focus({ preventScroll: true }));
   }, [sel]);
+
+  // ── Finalizar control ──────────────────────────────────────────────────────
+  const abrirFin = useCallback(() => {
+    setFin(true);
+    setConfirmar(null);
+    setErrorFin(null);
+    setResultado(null);
+    buscarRef.current?.blur();
+    try {
+      window.history.pushState({ mostradorFin: true }, "");
+    } catch {
+      /* nada */
+    }
+  }, []);
+
+  const cerrarFin = useCallback(() => {
+    if (window.history.state?.mostradorFin) window.history.back();
+    else setFin(false);
+  }, []);
+
+  // Al volver de la tarjeta: foco listo para escanear.
+  useEffect(() => {
+    if (fin) return;
+    setConfirmar(null);
+    requestAnimationFrame(() => buscarRef.current?.focus({ preventScroll: true }));
+  }, [fin]);
+
+  const finalizar = async (p: Patron) => {
+    if (finalizando !== null) return;
+    // Primer toque arma la confirmación; el segundo (dentro de 4 s) finaliza.
+    if (confirmar !== p.controlId) {
+      setConfirmar(p.controlId);
+      vibrar(30);
+      if (confirmarTimer.current) clearTimeout(confirmarTimer.current);
+      confirmarTimer.current = setTimeout(() => setConfirmar(null), 4000);
+      return;
+    }
+    if (confirmarTimer.current) clearTimeout(confirmarTimer.current);
+    setConfirmar(null);
+    setFinalizando(p.controlId);
+    setErrorFin(null);
+    try {
+      const res = await fetch("/api/mostradores/finalizar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ controlId: p.controlId }),
+      });
+      const json = (await res.json().catch(() => null)) as (ResultadoFin & { error?: string }) | null;
+      if (!res.ok || !json) {
+        if (res.status === 409) cargar();
+        throw new Error(json?.error ?? `HTTP ${res.status}`);
+      }
+      vibrar([40, 60, 40]);
+      setResultado({
+        patron: json.patron ?? p.codigo,
+        contados: json.contados ?? 0,
+        sinContarConStock: json.sinContarConStock ?? 0,
+        conDiferencia: json.conDiferencia ?? 0,
+      });
+      // El patrón cerrado sale de la lista.
+      setPatrones((prev) => prev.filter((x) => x.controlId !== p.controlId));
+      setArticulos((prev) => prev.filter((a) => a.controlId !== p.controlId));
+      cargar();
+    } catch (e) {
+      setErrorFin(e instanceof Error ? e.message : "No se pudo finalizar");
+      vibrar([80, 60, 80]);
+    } finally {
+      setFinalizando(null);
+    }
+  };
+
+  // Deslizar de derecha a izquierda sobre la lista abre "Finalizar control".
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    toqueIni.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null;
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const ini = toqueIni.current;
+    toqueIni.current = null;
+    if (!ini || !patrones.length) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - ini.x;
+    const dy = t.clientY - ini.y;
+    if (dx < -80 && Math.abs(dy) < Math.abs(dx) * 0.6) abrirFin();
+  };
 
   // ── Escaneo / búsqueda ─────────────────────────────────────────────────────
   const resolver = useCallback(
@@ -398,13 +509,130 @@ export default function ControlStockPage() {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
+  // Vista: finalizar control
+  // ════════════════════════════════════════════════════════════════════════════
+  if (fin) {
+    return (
+      <div className="dark min-h-[100dvh] bg-[#111111] text-white flex flex-col">
+        <header className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-[#171717]">
+          <button
+            type="button"
+            onClick={cerrarFin}
+            className="flex items-center gap-1 text-sm text-zinc-400 active:text-yellow-400 py-1 pr-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Volver
+          </button>
+          <span className="ml-auto text-yellow-400 font-bold text-sm uppercase tracking-wide">Finalizar control</span>
+        </header>
+
+        <div className="flex-1 flex flex-col gap-3 px-3 pt-3 pb-6">
+          {resultado && (
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3">
+              <div className="flex items-center gap-2 text-emerald-300 font-bold text-lg">
+                <Check className="h-5 w-5" />
+                Patrón {resultado.patron} finalizado
+              </div>
+              <div className="mt-2 text-sm text-zinc-300 space-y-0.5">
+                <div>
+                  Contados: <b className="tabular-nums text-zinc-100">{resultado.contados}</b>
+                </div>
+                {resultado.sinContarConStock > 0 && (
+                  <div>
+                    Sin contar con stock en sistema (registrados en 0):{" "}
+                    <b className="tabular-nums text-zinc-100">{resultado.sinContarConStock}</b>
+                  </div>
+                )}
+                <div>
+                  Con diferencia:{" "}
+                  <b className={`tabular-nums ${resultado.conDiferencia ? "text-[#f85149]" : "text-emerald-300"}`}>
+                    {resultado.conDiferencia}
+                  </b>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {errorFin && (
+            <div className="flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {errorFin}
+            </div>
+          )}
+
+          {patrones.map((p) => {
+            const sinContar = p.total - p.contados;
+            const armado = confirmar === p.controlId;
+            const enCurso = finalizando === p.controlId;
+            return (
+              <div key={p.controlId} className="rounded-lg border border-zinc-700 bg-[#1a1a1a] px-4 py-3">
+                <div className="text-xl font-bold text-zinc-100 tabular-nums">Patrón {p.codigo}</div>
+                <div className="text-sm text-zinc-300 leading-snug">{p.detalle || "—"}</div>
+                {p.linea && <div className="text-xs text-zinc-500 mt-0.5">{p.linea}</div>}
+
+                <div className="mt-3 flex items-end gap-4">
+                  <div>
+                    <div className="text-xs text-zinc-500 uppercase">Contados</div>
+                    <div className="text-2xl font-bold tabular-nums">
+                      <span className={p.contados === p.total ? "text-emerald-400" : "text-zinc-100"}>{p.contados}</span>
+                      <span className="text-zinc-500 text-lg">/{p.total}</span>
+                    </div>
+                  </div>
+                  {sinContar > 0 && (
+                    <div>
+                      <div className="text-xs text-zinc-500 uppercase">Sin contar</div>
+                      <div className="text-2xl font-bold tabular-nums text-amber-400">{sinContar}</div>
+                    </div>
+                  )}
+                </div>
+
+                {sinContar > 0 && p.contados > 0 && (
+                  <div className="mt-3 text-xs rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 px-3 py-2">
+                    Los sin contar que tengan stock en sistema se guardan con controlado 0.
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={p.contados === 0 || finalizando !== null}
+                  onClick={() => finalizar(p)}
+                  className={`mt-3 w-full rounded-lg font-bold text-lg py-4 flex items-center justify-center gap-2 disabled:opacity-50 ${
+                    armado ? "bg-[#f85149] active:bg-[#ff6a63] text-white" : "bg-yellow-400 active:bg-yellow-300 text-black"
+                  }`}
+                >
+                  {enCurso ? <Loader2 className="h-5 w-5 animate-spin" /> : <Flag className="h-5 w-5" />}
+                  {p.contados === 0 ? "Nada contado todavía" : armado ? "Tocá de nuevo para confirmar" : "Finalizar control"}
+                </button>
+              </div>
+            );
+          })}
+
+          {!patrones.length && !resultado && (
+            <div className="py-12 text-center text-zinc-500">No hay patrones en control.</div>
+          )}
+
+          {(resultado || !patrones.length) && (
+            <button
+              type="button"
+              onClick={cerrarFin}
+              className="w-full rounded-lg border-2 border-zinc-700 text-zinc-200 font-semibold py-3"
+            >
+              Volver a la lista
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
   // Vista: lista de artículos a controlar
   // ════════════════════════════════════════════════════════════════════════════
   const visibles = filtrados.slice(0, MAX_FILAS);
   const ocultos = filtrados.length - visibles.length;
 
   return (
-    <div className="dark min-h-[100dvh] bg-[#111111] text-white">
+    <div className="dark min-h-[100dvh] bg-[#111111] text-white" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <div className="sticky top-0 z-10 bg-[#111111] border-b border-zinc-800">
         <header className="flex items-center gap-2 px-3 pt-2">
           <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
@@ -422,6 +650,18 @@ export default function ControlStockPage() {
           >
             <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
           </button>
+          {patrones.length > 0 && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={abrirFin}
+              className="flex items-center gap-1 rounded-md border border-yellow-400/60 text-yellow-400 active:bg-yellow-400/10 px-2 py-1 text-xs font-bold uppercase"
+              title="Finalizar control (o deslizá hacia la izquierda)"
+            >
+              <Flag className="h-3.5 w-3.5" />
+              Finalizar
+            </button>
+          )}
         </header>
 
         {patrones.length > 0 && (
