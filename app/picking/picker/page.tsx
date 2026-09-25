@@ -25,8 +25,10 @@ import {
 //   · escaneo → va DERECHO a la pantalla de cantidad. Se acepta el lector que
 //     tipea el código + Enter/Tab, el que lo pega entero de golpe y el que lo
 //     tipea rápido SIN sufijo (ráfaga < 60 ms entre caracteres + 150 ms quieto).
-//     Cantidad: un único input con teclado numérico, Enter o "Enviar pedido" y
-//     vuelve al código limpio y enfocado.
+//     La detección del escaneo sigue activa aunque el teclado esté visible.
+//     Cantidad: un único input enfocado con el teclado numérico ABIERTO
+//     (VirtualKeyboard API, virtualkeyboardpolicy="manual"); Enter o
+//     "Enviar pedido" y vuelve al código limpio y enfocado.
 //   · "Consulta al depósito" está ARRIBA de la pantalla de cantidad (no en la
 //     de escaneo): la consulta sale con el código escaneado adelante.
 // El atrás del PDA cierra la capa de arriba (consulta → cantidad → código).
@@ -49,6 +51,17 @@ function vibrar(ms: number | number[]) {
     /* sin vibración */
   }
 }
+
+// Teclado en pantalla por API (Chrome Android): el input de cantidad lleva
+// virtualkeyboardpolicy="manual" y se le pide el teclado al enfocarlo, porque un
+// focus() disparado por el escaneo (no por un toque) no lo abre solo.
+const mostrarTecladoVirtual = () => {
+  try {
+    (navigator as Navigator & { virtualKeyboard?: { show: () => void } }).virtualKeyboard?.show();
+  } catch {
+    /* sin API: queda el comportamiento normal del navegador */
+  }
+};
 
 const empujar = (estado: Record<string, boolean>) => {
   try {
@@ -204,7 +217,10 @@ export default function PickerPage() {
   // Al volver al código: input limpio, teclado oculto, foco listo para escanear.
   useEffect(() => {
     if (sel) {
-      requestAnimationFrame(() => cantRef.current?.focus());
+      requestAnimationFrame(() => {
+        cantRef.current?.focus();
+        mostrarTecladoVirtual();
+      });
       return;
     }
     setCodigo("");
@@ -230,24 +246,29 @@ export default function PickerPage() {
     const nuevo = e.target.value;
     // Contra el valor del evento anterior (no el estado): un lector que tipea
     // rápido puede disparar varios eventos antes de re-renderizar.
-    const salto = nuevo.length - previoRef.current.length;
+    const previo = previoRef.current;
+    const salto = nuevo.length - previo.length;
     const ahora = Date.now();
     // Ráfaga: arrancó desde vacío y cada carácter llegó a < 60 ms del anterior
     // (velocidad de lector; una persona tipeando nunca llega).
     rafagaRef.current = previoRef.current === "" ? true : rafagaRef.current && ahora - ultimoCharEn.current < 60;
     ultimoCharEn.current = ahora;
     previoRef.current = nuevo;
+    const desdeVacio = previo === "";
     setCodigo(nuevo);
     if (rafagaTimer.current) clearTimeout(rafagaTimer.current);
     rafagaTimer.current = null;
-    if (teclado) return;
-    // Lectores que "pegan" el código entero sin Enter: con el teclado oculto
-    // sólo puede venir del lector, así que se abre igual.
-    if (salto >= 4) {
+    // Lectores que "pegan" el código entero sin Enter. Con el teclado oculto
+    // sólo puede venir del lector; con el teclado visible se exige además que
+    // el campo estuviera vacío (una sugerencia del teclado reemplaza lo ya
+    // tipeado, nunca llega a un campo vacío). Así escanear abre la cantidad
+    // aunque el picker haya tocado el campo antes.
+    if (salto >= 4 && (!teclado || desdeVacio)) {
       abrir(nuevo);
       return;
     }
-    // Lectores que tipean sin sufijo: cuando la ráfaga se corta 150 ms, se abre.
+    // Lectores que tipean sin sufijo: cuando la ráfaga se corta 150 ms, se abre
+    // (también con el teclado visible: tocando la pantalla nadie baja de 60 ms).
     if (rafagaRef.current && nuevo.trim().length >= 3) {
       rafagaTimer.current = setTimeout(() => {
         rafagaTimer.current = null;
@@ -318,7 +339,11 @@ export default function PickerPage() {
 
   // Al cerrar la consulta se vuelve a la cantidad del mismo código, enfocada.
   useEffect(() => {
-    if (!chatAbierto && selRef.current) requestAnimationFrame(() => cantRef.current?.focus());
+    if (!chatAbierto && selRef.current)
+      requestAnimationFrame(() => {
+        cantRef.current?.focus();
+        mostrarTecladoVirtual();
+      });
   }, [chatAbierto]);
 
   const enviarChat = async () => {
@@ -469,6 +494,9 @@ export default function PickerPage() {
             inputMode="numeric"
             enterKeyHint="send"
             autoComplete="off"
+            {...({ virtualkeyboardpolicy: "manual" } as Record<string, string>)}
+            onFocus={mostrarTecladoVirtual}
+            onClick={mostrarTecladoVirtual}
             placeholder="Cantidad"
             value={cantidad}
             onChange={(e) => setCantidad(e.target.value.replace(/[^\d.,]/g, ""))}
