@@ -22,11 +22,14 @@ import {
 //   · el input de código queda SIEMPRE enfocado (se re-enfoca en scroll,
 //     touchend, click, blur) y el teclado en pantalla arranca OCULTO
 //     (inputMode="none") para escanear; tocar el input o el botón ⌨ lo muestra.
-//   · escaneo → el lector "tipea" el código + Enter (o lo pega entero de golpe)
-//     y se abre la pantalla de cantidad: un único input con teclado numérico,
-//     Enter o "Enviar pedido" y vuelve al código limpio y enfocado.
-//   · "Consulta al depósito" (arriba) abre el mensaje libre a depósito.
-// El atrás del PDA cierra la capa de arriba (cantidad / consulta).
+//   · escaneo → va DERECHO a la pantalla de cantidad. Se acepta el lector que
+//     tipea el código + Enter/Tab, el que lo pega entero de golpe y el que lo
+//     tipea rápido SIN sufijo (ráfaga < 60 ms entre caracteres + 150 ms quieto).
+//     Cantidad: un único input con teclado numérico, Enter o "Enviar pedido" y
+//     vuelve al código limpio y enfocado.
+//   · "Consulta al depósito" está ARRIBA de la pantalla de cantidad (no en la
+//     de escaneo): la consulta sale con el código escaneado adelante.
+// El atrás del PDA cierra la capa de arriba (consulta → cantidad → código).
 //
 // Datos: POST /api/picking/eventos (pedido) y POST /api/chat (consulta).
 // ──────────────────────────────────────────────────────────────────────────────
@@ -82,6 +85,11 @@ export default function PickerPage() {
   const avisoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abiertoEn = useRef(0);
   const previoRef = useRef(""); // valor del input en el evento anterior (para detectar pegado)
+  // Lector que tipea sin Enter: hora del último carácter, si todo vino en ráfaga
+  // y el timer que abre la cantidad cuando el input queda quieto.
+  const ultimoCharEn = useRef(0);
+  const rafagaRef = useRef(false);
+  const rafagaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Espejos para los listeners (se montan una vez y leen el valor actual).
   const selRef = useRef<string | null>(null);
@@ -131,8 +139,8 @@ export default function PickerPage() {
   // ── Atrás del PDA: cierra la capa de arriba ────────────────────────────────
   useEffect(() => {
     const onPop = () => {
-      if (selRef.current) setSel(null);
-      else if (chatRef.current) setChatAbierto(false);
+      if (chatRef.current) setChatAbierto(false);
+      else if (selRef.current) setSel(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -176,6 +184,8 @@ export default function PickerPage() {
   // ── Abrir / cerrar la carga de cantidad ────────────────────────────────────
   const abrir = useCallback((valor: string) => {
     const cod = valor.trim().toUpperCase();
+    if (rafagaTimer.current) clearTimeout(rafagaTimer.current);
+    rafagaTimer.current = null;
     if (!cod || selRef.current) return; // el Enter que sigue a un pegado no reabre
     selRef.current = cod;
     abiertoEn.current = Date.now();
@@ -204,9 +214,12 @@ export default function PickerPage() {
   }, [sel]);
 
   const onCodigoKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
+    // Enter (algunos lectores lo mandan con key "Unidentified" y keyCode 13) o
+    // Tab como sufijo del lector: los dos abren la cantidad.
+    const valor = e.currentTarget.value;
+    if (e.key === "Enter" || e.keyCode === 13 || (e.key === "Tab" && valor.trim())) {
       e.preventDefault();
-      abrir(codigo);
+      abrir(valor);
     } else if (e.key === "Escape") {
       setCodigo("");
       previoRef.current = "";
@@ -218,12 +231,37 @@ export default function PickerPage() {
     // Contra el valor del evento anterior (no el estado): un lector que tipea
     // rápido puede disparar varios eventos antes de re-renderizar.
     const salto = nuevo.length - previoRef.current.length;
+    const ahora = Date.now();
+    // Ráfaga: arrancó desde vacío y cada carácter llegó a < 60 ms del anterior
+    // (velocidad de lector; una persona tipeando nunca llega).
+    rafagaRef.current = previoRef.current === "" ? true : rafagaRef.current && ahora - ultimoCharEn.current < 60;
+    ultimoCharEn.current = ahora;
     previoRef.current = nuevo;
     setCodigo(nuevo);
+    if (rafagaTimer.current) clearTimeout(rafagaTimer.current);
+    rafagaTimer.current = null;
+    if (teclado) return;
     // Lectores que "pegan" el código entero sin Enter: con el teclado oculto
     // sólo puede venir del lector, así que se abre igual.
-    if (!teclado && salto >= 4) abrir(nuevo);
+    if (salto >= 4) {
+      abrir(nuevo);
+      return;
+    }
+    // Lectores que tipean sin sufijo: cuando la ráfaga se corta 150 ms, se abre.
+    if (rafagaRef.current && nuevo.trim().length >= 3) {
+      rafagaTimer.current = setTimeout(() => {
+        rafagaTimer.current = null;
+        if (rafagaRef.current && codigoRef.current?.value === nuevo) abrir(nuevo);
+      }, 150);
+    }
   };
+
+  useEffect(
+    () => () => {
+      if (rafagaTimer.current) clearTimeout(rafagaTimer.current);
+    },
+    [],
+  );
 
   // ── Enviar pedido ──────────────────────────────────────────────────────────
   const enviar = async () => {
@@ -267,7 +305,7 @@ export default function PickerPage() {
   // ── Consulta al depósito ───────────────────────────────────────────────────
   const abrirChat = () => {
     chatRef.current = true;
-    codigoRef.current?.blur();
+    cantRef.current?.blur();
     setErrorChat(null);
     setChatAbierto(true);
     empujar({ pickerChat: true });
@@ -278,6 +316,11 @@ export default function PickerPage() {
     else setChatAbierto(false);
   }, []);
 
+  // Al cerrar la consulta se vuelve a la cantidad del mismo código, enfocada.
+  useEffect(() => {
+    if (!chatAbierto && selRef.current) requestAnimationFrame(() => cantRef.current?.focus());
+  }, [chatAbierto]);
+
   const enviarChat = async () => {
     if (!mensajeChat.trim() || !pickerNombre || enviandoChat) return;
     setEnviandoChat(true);
@@ -286,7 +329,10 @@ export default function PickerPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ picker_nombre: pickerNombre, mensaje: mensajeChat.trim() }),
+        body: JSON.stringify({
+          picker_nombre: pickerNombre,
+          mensaje: sel ? `[${sel}] ${mensajeChat.trim()}` : mensajeChat.trim(),
+        }),
       });
       if (!res.ok) throw new Error("No se pudo enviar la consulta");
       setMensajeChat("");
@@ -304,6 +350,46 @@ export default function PickerPage() {
   const topic = `everwear-picking-${pickerNombre?.toLowerCase().replace(/\s+/g, "-")}`;
 
   if (!listo) return <div className="min-h-[100dvh] bg-[#111111]" />;
+
+  // Consulta al depósito (pantalla completa, se abre desde la cantidad).
+  const consulta = chatAbierto ? (
+        <div className="fixed inset-0 z-50 bg-[#111111] flex flex-col">
+          <header className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-[#171717]">
+            <MessageSquare className="h-5 w-5 text-emerald-400" />
+            <div className="min-w-0">
+              <h2 className="font-bold text-lg leading-tight">Consulta al depósito</h2>
+              {sel && <p className="text-xs text-zinc-400 font-mono truncate">Código {sel}</p>}
+            </div>
+            <button type="button" onClick={cerrarChat} className="ml-auto p-1.5 text-zinc-400 active:text-yellow-400" title="Cerrar">
+              <X className="h-6 w-6" />
+            </button>
+          </header>
+          <div className="flex-1 flex flex-col gap-3 p-3">
+            <textarea
+              autoFocus
+              value={mensajeChat}
+              onChange={(e) => setMensajeChat(e.target.value)}
+              placeholder="Escribí tu consulta…"
+              className="flex-1 min-h-[8rem] rounded-lg bg-[#1f1f1f] border-2 border-zinc-700 focus:border-yellow-400 outline-none p-3 text-base text-white placeholder:text-zinc-600 resize-none"
+            />
+            {errorChat && (
+              <div className="flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {errorChat}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={enviarChat}
+              disabled={enviandoChat || !mensajeChat.trim()}
+              className="w-full rounded-lg bg-yellow-400 active:bg-yellow-300 disabled:opacity-40 text-black font-bold text-lg py-4 flex items-center justify-center gap-2"
+            >
+              {enviandoChat ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
+              Enviar
+            </button>
+          </div>
+        </div>
+  ) : null;
 
   // ════════════════════════════════════════════════════════════════════════════
   // Ingreso del nombre
@@ -353,7 +439,15 @@ export default function PickerPage() {
             <ArrowLeft className="h-4 w-4" />
             Volver
           </button>
-          <span className="ml-auto text-yellow-400 font-bold text-sm uppercase tracking-wide">Picking</span>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={abrirChat}
+            className="ml-auto shrink-0 flex items-center gap-2 rounded-lg border-2 border-emerald-500/70 bg-emerald-500/10 active:bg-emerald-500/25 text-emerald-300 font-semibold text-sm px-3 py-2"
+          >
+            <MessageSquare className="h-4 w-4" />
+            Consulta al depósito
+          </button>
         </header>
 
         <form
@@ -400,6 +494,8 @@ export default function PickerPage() {
             Enviar pedido
           </button>
         </form>
+
+        {consulta}
       </div>
     );
   }
@@ -415,15 +511,6 @@ export default function PickerPage() {
             <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide leading-tight">Picking</h1>
             <p className="text-xs text-zinc-400 truncate">{pickerNombre}</p>
           </div>
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={abrirChat}
-            className="shrink-0 flex items-center gap-2 rounded-lg border-2 border-emerald-500/70 bg-emerald-500/10 active:bg-emerald-500/25 text-emerald-300 font-semibold text-sm px-3 py-2"
-          >
-            <MessageSquare className="h-4 w-4" />
-            Consulta al depósito
-          </button>
         </header>
 
         <div className="flex items-center gap-2 px-3 pb-2">
@@ -535,42 +622,6 @@ export default function PickerPage() {
         </button>
       </div>
 
-      {/* Consulta al depósito */}
-      {chatAbierto && (
-        <div className="fixed inset-0 z-50 bg-[#111111] flex flex-col">
-          <header className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-[#171717]">
-            <MessageSquare className="h-5 w-5 text-emerald-400" />
-            <h2 className="font-bold text-lg">Consulta al depósito</h2>
-            <button type="button" onClick={cerrarChat} className="ml-auto p-1.5 text-zinc-400 active:text-yellow-400" title="Cerrar">
-              <X className="h-6 w-6" />
-            </button>
-          </header>
-          <div className="flex-1 flex flex-col gap-3 p-3">
-            <textarea
-              autoFocus
-              value={mensajeChat}
-              onChange={(e) => setMensajeChat(e.target.value)}
-              placeholder="Escribí tu consulta…"
-              className="flex-1 min-h-[8rem] rounded-lg bg-[#1f1f1f] border-2 border-zinc-700 focus:border-yellow-400 outline-none p-3 text-base text-white placeholder:text-zinc-600 resize-none"
-            />
-            {errorChat && (
-              <div className="flex items-center gap-2 text-sm text-[#f85149] bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                {errorChat}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={enviarChat}
-              disabled={enviandoChat || !mensajeChat.trim()}
-              className="w-full rounded-lg bg-yellow-400 active:bg-yellow-300 disabled:opacity-40 text-black font-bold text-lg py-4 flex items-center justify-center gap-2"
-            >
-              {enviandoChat ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
-              Enviar
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

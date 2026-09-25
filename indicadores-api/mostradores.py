@@ -41,6 +41,18 @@ SELECT LTRIM(RTRIM(ArticuloPatron)) AS Patron, Nivel1, Nivel2,
 FROM StkFer_ArtParamet
 WHERE Nivel1 > 0
 """
+# Artículos contables por patrón — MISMO universo que el PDA
+# (_SQL_ARTICULOS_PATRONES): activos/suspendidos + dados de baja con stock.
+# Un patrón sin ninguno (todos sus artículos de baja y en 0, ej. 0004 "TABLEROS
+# BAJA": 9 artículos Estado 3, StkReal 0) no tiene nada que contar: no se lista
+# en Administrar ni se puede mandar a control. Al 2026-09-25 son 683 de 1.709
+# patrones con línea. Una pasada agrupada (~24k filas), cacheada con el maestro.
+_SQL_ARTICULOS_POR_PATRON = """
+SELECT LTRIM(RTRIM(ArticuloPatron)), COUNT(*)
+FROM StkFer_Articulos
+WHERE Estado <> 3 OR StkReal <> 0
+GROUP BY ArticuloPatron
+"""
 
 
 def _limpiar_detalle(txt: str | None) -> str:
@@ -74,6 +86,8 @@ def maestro_magnus(forzar: bool = False) -> dict:
         rubros = {int(i): (n or "").strip() for i, n in cur.fetchall()}
         cur.execute(_SQL_PATRONES_MAGNUS)
         filas = cur.fetchall()
+        cur.execute(_SQL_ARTICULOS_POR_PATRON)
+        n_arts = {(c or "").strip(): int(n) for c, n in cur.fetchall()}
     finally:
         conn.close()
 
@@ -88,8 +102,12 @@ def maestro_magnus(forzar: bool = False) -> dict:
             "linea": n1,
             "rubro": rubros.get(int(n2 or 0), ""),
             "detalle": _limpiar_detalle(detalle),
+            "articulos": n_arts.get(codigo, 0),
         }
-        por_linea.setdefault(n1, []).append(codigo)
+        # Sin artículos contables → queda en `patrones` (para resolver el
+        # detalle de controles viejos) pero no se lista en ninguna línea.
+        if patrones[codigo]["articulos"] > 0:
+            por_linea.setdefault(n1, []).append(codigo)
     for lista in por_linea.values():
         lista.sort(key=_clave_codigo)
 
@@ -217,8 +235,14 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
     codigo = (codigo_patron or "").strip()
     if not codigo:
         raise ValueError("Falta el código patrón")
-    if codigo not in maestro_magnus()["patrones"]:
+    info = maestro_magnus()["patrones"].get(codigo)
+    if info is None:
         raise LookupError("Código patrón inexistente")
+    if codigo not in _codigos_validos():
+        raise ValueError(
+            f"El patrón {codigo} no tiene artículos para controlar "
+            "(todos dados de baja y sin stock)"
+        )
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
@@ -261,11 +285,39 @@ GROUP BY k."controlId", k."contadoPor", u.nombre
 """
 
 
+# Pendientes de patrones que NO se consideran (sin artículos contables, o que
+# ya no cuelgan de ninguna línea): se borran solos al listar/tomar, siempre que
+# no tengan nada contado. Así no aparecen en el PDA ni en "En control" y no
+# dejan trabado al usuario que los había tomado (índice único de toma).
+_SQL_PURGAR_SIN_ARTICULOS = """
+DELETE FROM everwear.mostrador_control c
+WHERE c.estado = 'pendiente'
+  AND NOT (c."codigoPatron" = ANY(%s))
+  AND NOT EXISTS (SELECT 1 FROM everwear.mostrador_conteo k WHERE k."controlId" = c.id)
+"""
+
+
+def _codigos_validos() -> set[str]:
+    """Patrones que se consideran: con línea y con ≥1 artículo contable."""
+    return {c for cods in maestro_magnus()["por_linea"].values() for c in cods}
+
+
+def _purgar_sin_articulos(cur) -> None:
+    validos = _codigos_validos()
+    if not validos:  # maestro vacío (falla de lectura): no borrar nada
+        return
+    _asegurar_tabla_conteo(cur)
+    cur.execute(_SQL_PURGAR_SIN_ARTICULOS, (list(validos),))
+    if cur.rowcount:
+        cur.connection.commit()
+
+
 def fetch_pendientes() -> dict:
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         _asegurar_toma(cur)
+        _purgar_sin_articulos(cur)
         cur.execute(_SQL_PENDIENTES)
         filas = cur.fetchall()
         avance: dict[int, list] = {}
@@ -511,6 +563,7 @@ def fetch_conteo(usuario_id: int | None) -> dict:
         cur = conn.cursor()
         _asegurar_tabla_conteo(cur)
         _asegurar_toma(cur)
+        _purgar_sin_articulos(cur)
         cur.execute(_SQL_PENDIENTES_CONTEO)
         pend = [(int(i), c, tp, (nom or "").strip(), ta) for i, c, tp, nom, ta in cur.fetchall()]
         activo = next((p for p in pend if usuario_id is not None and p[2] == usuario_id), None)
@@ -573,6 +626,7 @@ def tomar_control(control_id: int, usuario_id: int | None) -> dict:
     try:
         cur = conn.cursor()
         _asegurar_toma(cur)
+        _purgar_sin_articulos(cur)
         cur.execute(
             """SELECT "codigoPatron" FROM everwear.mostrador_control
                WHERE estado = 'pendiente' AND "tomadoPor" = %s AND id <> %s""",
@@ -772,8 +826,27 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         )
         contados = cur.fetchall()
         if not contados:
-            conn.rollback()
-            raise ValueError("No hay artículos contados en este control")
+            # Patrón sin nada que contar (todos sus artículos de baja y sin
+            # stock; ej. mandado antes de que existiera el filtro, o dados de
+            # baja durante el control): se QUITA de control — se borra el
+            # pendiente, no queda como "controlado". Si tiene artículos, hay
+            # que contar al menos uno.
+            patron_arts = _articulos_de_patrones([patron]).get(patron, [])
+            if patron_arts:
+                conn.rollback()
+                raise ValueError("No hay artículos contados en este control")
+            cur.execute("DELETE FROM everwear.mostrador_control WHERE id = %s", (control_id,))
+            conn.commit()
+            return {
+                "ok": True,
+                "anulado": True,
+                "controlId": control_id,
+                "patron": patron,
+                "contados": 0,
+                "sinContarConStock": 0,
+                "conDiferencia": 0,
+                "cerradoAt": None,
+            }
 
         mconn = get_connection("EVERWEAR")
         try:

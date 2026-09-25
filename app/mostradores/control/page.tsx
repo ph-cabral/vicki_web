@@ -79,6 +79,7 @@ interface Patron {
 
 interface ResultadoFin {
   patron?: string;
+  anulado?: boolean; // patrón sin artículos para contar: se quitó de control
   contados?: number;
   sinContarConStock?: number;
   conDiferencia?: number;
@@ -517,7 +518,13 @@ export default function ControlStockPage() {
       vibrar([40, 60, 40]);
       const partes = [`${json.contados ?? contados} contados`];
       if (json.conDiferencia) partes.push(`${json.conDiferencia} con diferencia`);
-      mostrarAviso("ok", `✓ Patrón ${json.patron ?? activo.codigo} finalizado · ${partes.join(" · ")}`, 6000);
+      mostrarAviso(
+        "ok",
+        json.anulado
+          ? `✓ Patrón ${json.patron ?? activo.codigo} quitado de control · no tenía artículos para contar`
+          : `✓ Patrón ${json.patron ?? activo.codigo} finalizado · ${partes.join(" · ")}`,
+        6000,
+      );
       // Vuelve a la lista de patrones: saca del historial la tarjeta y el conteo.
       const pasos = window.history.state?.mostradorFin ? 2 : window.history.state?.mostradorConteo ? 1 : 0;
       setFin(false);
@@ -789,7 +796,9 @@ export default function ControlStockPage() {
               <div className="mt-3">
                 <BarraAvance valor={activo.contados} total={activo.total} />
                 <div className="mt-1 text-xs tabular-nums text-zinc-400">
-                  {activo.contados} de {activo.total} artículos contados
+                  {activo.total > 0
+                    ? `${activo.contados} de ${activo.total} artículos contados`
+                    : "Sin artículos para contar — entrá para quitarlo de control"}
                 </div>
               </div>
             </button>
@@ -953,6 +962,27 @@ export default function ControlStockPage() {
         <div className="py-12 text-center text-zinc-500">
           <Loader2 className="h-5 w-5 animate-spin inline mr-2" />
           Cargando…
+        </div>
+      )}
+
+      {/* Patrón sin artículos para contar (todos dados de baja y sin stock):
+          no hay nada que escanear ni forma de deslizar a finalizar (pide ≥1
+          contado) → botón para quitarlo de control y liberar al usuario. */}
+      {!cargando && !error && !articulos.length && (
+        <div className="py-10 px-6 text-center">
+          <AlertCircle className="h-8 w-8 text-amber-400 mx-auto mb-3" />
+          <div className="text-zinc-200 font-semibold">Este patrón no tiene artículos para contar</div>
+          <div className="text-sm text-zinc-500 mt-1">Todos sus artículos están dados de baja y sin stock.</div>
+          {errorFin && <div className="text-sm text-red-400 mt-3">{errorFin}</div>}
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={finalizar}
+            disabled={finalizando}
+            className="mt-5 w-full rounded-lg bg-yellow-400 text-black font-bold py-3 disabled:opacity-60"
+          >
+            {finalizando ? "Quitando…" : "Quitar de control"}
+          </button>
         </div>
       )}
 
