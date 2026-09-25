@@ -8,10 +8,12 @@
  * una pantalla) que encadena decenas de sesiones detrás. Encontrar esa cabeza
  * a mano lleva varios minutos con la empresa parada.
  *
- * Acá la cabeza ya está identificada y lo único que queda es decidir: matarla
- * o esperar. Todo lo demás —detección, foto de la cadena, registro— lo hace
- * solo el job de SQL Agent "VICKI - Watchdog bloqueos" (cada minuto) más el SP
- * de detección que dispara esta misma pantalla al refrescar.
+ * Acá la cabeza ya está identificada. Detección, foto de la cadena y registro
+ * los hace solo el job de SQL Agent "VICKI - Watchdog bloqueos" (cada 20 s) más
+ * el SP de detección que dispara esta misma pantalla al refrescar. Si alguna
+ * víctima llega a umbral.auto_kill_seg (2 min) esperando, el SP mata solo a la
+ * cabeza; antes de eso se puede matar a mano o apretar "Dejar" (que frena el
+ * KILL automático para ese episodio).
  *
  * Ver indicadores-api/bloqueos.py y ever/sql/magnus_watchdog_bloqueos.sql.
  */
@@ -72,7 +74,7 @@ type Estado = {
   ahora: string;
   hay_bloqueo: boolean;
   bloqueados_total: number;
-  umbral: { bloqueados: number; espera_seg: number };
+  umbral: { bloqueados: number; espera_seg: number; auto_kill_seg?: number };
   cabezas: Cabeza[];
 };
 
@@ -99,6 +101,7 @@ type Historial = {
   resumen: {
     episodios: number;
     matados: number;
+    automaticos?: number;
     solos: number;
     peor_bloqueados: number;
     peor_espera_seg: number;
@@ -236,6 +239,9 @@ export default function BloqueosPage() {
               Umbral de episodio: {estado?.umbral?.bloqueados ?? 3} sesiones ·{" "}
               {estado?.umbral?.espera_seg ?? 20}s
             </div>
+            <div className="text-red-300/80">
+              KILL automático a los {duracion(estado?.umbral?.auto_kill_seg ?? 120)} de espera
+            </div>
           </div>
           <button
             onClick={() => cargar()}
@@ -313,6 +319,29 @@ export default function BloqueosPage() {
                 <span className="text-zinc-400 text-sm">
                   la peor espera {duracion(c.espera_max_seg)}
                 </span>
+                {(() => {
+                  const auto = estado?.umbral?.auto_kill_seg ?? 120;
+                  if (c.accion === "MATAR")
+                    return (
+                      <span className="text-amber-300 text-xs">
+                        KILL enviado{c.accion_usuario ? ` · ${c.accion_usuario}` : ""}
+                      </span>
+                    );
+                  if (c.accion === "DEJAR")
+                    return (
+                      <span className="text-zinc-500 text-xs">
+                        KILL automático frenado (se eligió esperar)
+                      </span>
+                    );
+                  const falta = auto - (c.espera_max_seg ?? 0);
+                  return (
+                    <span className="text-red-300/80 text-xs">
+                      {falta > 0
+                        ? `se corta solo en ${duracion(falta)}`
+                        : "cortándose solo…"}
+                    </span>
+                  );
+                })()}
               </div>
 
               <div className="flex items-center gap-2">
@@ -480,7 +509,11 @@ export default function BloqueosPage() {
           {historial?.resumen && (
             <span className="text-xs text-zinc-400">
               {historial.resumen.episodios} episodios ·{" "}
-              {historial.resumen.matados} con KILL · {historial.resumen.solos} se
+              {historial.resumen.matados} con KILL
+              {historial.resumen.automaticos
+                ? ` (${historial.resumen.automaticos} automáticos)`
+                : ""}{" "}
+              · {historial.resumen.solos} se
               destrabaron solos · peor: {historial.resumen.peor_bloqueados} sesiones
               frenadas
             </span>

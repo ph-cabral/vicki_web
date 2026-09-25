@@ -9,8 +9,10 @@ una pantalla) y encadena decenas de sesiones detrás. El diagnóstico manual
 que este módulo automatiza.
 
 Quién hace qué:
-  · `vicki.sp_bloqueos_detectar` (job de SQL Agent, cada minuto) detecta y
-    REGISTRA. Nunca mata.
+  · `vicki.sp_bloqueos_detectar` (job de SQL Agent, cada 20 s) detecta y
+    REGISTRA, y si alguna víctima lleva AUTO_KILL_SEG (2 min) esperando mata
+    solo a la cabeza (accion_usuario = 'Watchdog (automático)'). No mata si
+    un ADMIN apretó "Dejar" ni lo que figure en vicki.bloqueo_excepcion.
   · Este módulo lee el estado y, cuando alguien aprieta el botón, llama a
     `vicki.sp_bloqueos_matar` / `vicki.sp_bloqueos_dejar`.
   · El KILL vive en el SP y no acá: así lo único que puede matarse es una
@@ -34,6 +36,8 @@ BASE = "EVERWEAR"
 # Umbrales de lo que se considera "episodio". Mismos defaults que el job.
 MIN_BLOQUEADOS = 3
 MIN_ESPERA_SEG = 20
+# Espera (de la peor víctima) a partir de la cual el SP mata solo a la cabeza.
+AUTO_KILL_SEG = 120
 
 
 def _conn():
@@ -114,6 +118,8 @@ ORDER BY e.id DESC
 _SQL_RESUMEN = """
 SELECT  COUNT(*)                                                   AS episodios,
         SUM(CASE WHEN estado = 'MATADO' THEN 1 ELSE 0 END)         AS matados,
+        SUM(CASE WHEN estado = 'MATADO' AND accion_usuario LIKE 'Watchdog%'
+                 THEN 1 ELSE 0 END)                                AS automaticos,
         SUM(CASE WHEN estado = 'RESUELTO_SOLO' THEN 1 ELSE 0 END)  AS solos,
         ISNULL(MAX(bloqueados_max), 0)                             AS peor_bloqueados,
         ISNULL(MAX(espera_max_seg), 0)                             AS peor_espera_seg
@@ -159,14 +165,16 @@ def fetch_estado(detectar: bool = True) -> dict:
                 "mensaje": FALTA_INSTALAR,
                 "hay_bloqueo": False,
                 "bloqueados_total": 0,
-                "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG},
+                "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG,
+                           "auto_kill_seg": AUTO_KILL_SEG},
                 "cabezas": [],
             }
         if detectar:
             try:
                 cur.execute(
-                    "EXEC vicki.sp_bloqueos_detectar @min_bloqueados = ?, @min_espera_seg = ?",
-                    MIN_BLOQUEADOS, MIN_ESPERA_SEG,
+                    "EXEC vicki.sp_bloqueos_detectar @min_bloqueados = ?, "
+                    "@min_espera_seg = ?, @auto_kill_seg = ?",
+                    MIN_BLOQUEADOS, MIN_ESPERA_SEG, AUTO_KILL_SEG,
                 )
                 while cur.nextset():
                     pass
@@ -199,7 +207,8 @@ def fetch_estado(detectar: bool = True) -> dict:
         "instalado": True,
         "hay_bloqueo": bool(cabezas),
         "bloqueados_total": sum(c["bloqueados"] for c in cabezas),
-        "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG},
+        "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG,
+                   "auto_kill_seg": AUTO_KILL_SEG},
         "cabezas": cabezas,
     }
 
