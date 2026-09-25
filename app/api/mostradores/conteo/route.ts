@@ -10,12 +10,14 @@ export const dynamic = "force-dynamic";
 //             activoId,   // patrón tomado por el usuario de la sesión (o null)
 //             articulos: [{ controlId, patron, cod, detalle, barras, contado, contadoAt }] }  // sólo del activo
 //   POST { controlId, codArticulo, cantidad } -> { ok, controlId, cod, cantidad, contadoAt }
+//   GET ?lista=1 -> sólo patrones + activoId (articulos: []), para el refresco automático de la lista.
 // El usuario sale de la sesión, nunca del body.
-export async function GET() {
+export async function GET(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
+  const lista = req.nextUrl.searchParams.get("lista") === "1" ? "&lista=true" : "";
   try {
-    const res = await fetch(`${API_URL}/mostradores/conteo?usuarioId=${session.uid}`, {
+    const res = await fetch(`${API_URL}/mostradores/conteo?usuarioId=${session.uid}${lista}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(30000),
     });

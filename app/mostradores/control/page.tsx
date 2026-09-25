@@ -102,6 +102,7 @@ interface Arrastre {
 
 const MAX_FILAS = 120;
 const ANIM_MS = 200;
+const REFRESCO_LISTA_MS = 5_000; // refresco automático de la lista de patrones
 
 const norm = (s: string) =>
   s
@@ -179,8 +180,18 @@ export default function ControlStockPage() {
 
   const activo = useMemo(() => patrones.find((p) => p.controlId === activoId) ?? null, [patrones, activoId]);
 
+  // Refs para el refresco automático de la lista (ver más abajo).
+  const activoIdRef = useRef<number | null>(null);
+  activoIdRef.current = activoId;
+  const tomandoRef = useRef<number | null>(null);
+  tomandoRef.current = tomando;
+  const cargandoRef = useRef(true);
+  cargandoRef.current = cargando;
+  const genRef = useRef(0); // sube con cada carga completa / toma: descarta refrescos viejos
+
   // ── Datos ──────────────────────────────────────────────────────────────────
   const cargar = useCallback(async () => {
+    genRef.current += 1;
     setCargando(true);
     setError(null);
     try {
@@ -206,6 +217,42 @@ export default function ControlStockPage() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, [cargar]);
+
+  // Refresco automático de la lista de patrones cada 5 s, SÓLO en la vista
+  // principal y con la pestaña visible (nunca durante el conteo, la carga de
+  // cantidad o la tarjeta de finalizar). Consulta liviana (?lista=1: patrones +
+  // activoId, sin artículos). Si cambió el patrón activo del usuario (se
+  // finalizó en otro lado o lo tomó desde otro PDA con el mismo login) hace la
+  // carga completa para traer los artículos correctos.
+  useEffect(() => {
+    let enVuelo = false;
+    const t = setInterval(async () => {
+      if (enVuelo || document.visibilityState !== "visible") return;
+      if (conteoRef.current || selRef.current || finRef.current) return;
+      if (tomandoRef.current !== null || cargandoRef.current) return;
+      enVuelo = true;
+      const gen = genRef.current;
+      try {
+        const res = await fetch("/api/mostradores/conteo?lista=1", { cache: "no-store" });
+        if (!res.ok) return;
+        const json = (await res.json().catch(() => null)) as
+          | { patrones?: Patron[]; activoId?: number | null }
+          | null;
+        if (!json || gen !== genRef.current || conteoRef.current) return;
+        if ((json.activoId ?? null) !== activoIdRef.current) {
+          cargar();
+          return;
+        }
+        setPatrones(json.patrones ?? []);
+        setError(null);
+      } catch {
+        /* sin red: el próximo intento vuelve a probar */
+      } finally {
+        enVuelo = false;
+      }
+    }, REFRESCO_LISTA_MS);
+    return () => clearInterval(t);
   }, [cargar]);
 
   // Si el patrón activo dejó de estarlo (se finalizó en otro lado), vuelve a la lista.
@@ -301,6 +348,7 @@ export default function ControlStockPage() {
     }
     if (tomarTimer.current) clearTimeout(tomarTimer.current);
     setConfirmarTomar(null);
+    genRef.current += 1;
     setTomando(p.controlId);
     try {
       const res = await fetch("/api/mostradores/tomar", {

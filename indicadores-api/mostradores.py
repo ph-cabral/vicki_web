@@ -551,13 +551,15 @@ def _num(v) -> float | int | None:
     return int(f) if f.is_integer() else f
 
 
-def fetch_conteo(usuario_id: int | None) -> dict:
+def fetch_conteo(usuario_id: int | None, con_articulos: bool = True) -> dict:
     """Todo lo que necesita el PDA en una sola llamada:
       · patrones: TODOS los pendientes (la vista principal), con avance y quién
         lo tomó;
       · activoId: el patrón que tiene tomado este usuario (a lo sumo uno);
       · articulos: SÓLO los del patrón activo, con lo ya contado (los demás no
-        se mandan: hay patrones de miles de artículos)."""
+        se mandan: hay patrones de miles de artículos).
+    con_articulos=False (refresco automático de la lista de patrones en el PDA,
+    cada 5 s): no lee las filas de conteo del activo ni arma sus artículos."""
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
@@ -572,7 +574,7 @@ def fetch_conteo(usuario_id: int | None) -> dict:
         if pend:
             cur.execute(_SQL_CONTADOS_POR_CONTROL, ([p[0] for p in pend],))
             contados_por = {int(cid): int(n) for cid, n in cur.fetchall()}
-        if activo:
+        if activo and con_articulos:
             cur.execute(_SQL_CONTEOS, (activo[0],))
             for cid, cod, cant, at in cur.fetchall():
                 conteos[cod] = (_num(cant), at.isoformat() if at else None)
@@ -600,7 +602,7 @@ def fetch_conteo(usuario_id: int | None) -> dict:
             "tomadoPor": tomado_nom or (f"Usuario #{tomado_por}" if tomado_por is not None else ""),
             "tomadoAt": tomado_at.isoformat() if tomado_at else None,
         })
-        if activo and cid == activo[0]:
+        if con_articulos and activo and cid == activo[0]:
             for a in lista:
                 c = conteos.get(a["cod"])
                 articulos.append({

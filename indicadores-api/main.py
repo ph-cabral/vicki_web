@@ -2149,11 +2149,12 @@ def mostradores_pendientes():
 
 
 @app.get("/mostradores/conteo")
-def mostradores_conteo(usuarioId: int | None = Query(None)):
+def mostradores_conteo(usuarioId: int | None = Query(None), lista: bool = Query(False)):
     """PDA: patrones pendientes (con quién lo tomó), el activo del usuario y
-    los artículos SÓLO del activo con lo ya contado."""
+    los artículos SÓLO del activo con lo ya contado. lista=true: sólo patrones
+    y activoId (refresco automático de la lista, sin artículos)."""
     try:
-        return mostradores.fetch_conteo(usuarioId)
+        return mostradores.fetch_conteo(usuarioId, con_articulos=not lista)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

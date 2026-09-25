@@ -19,7 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 // En las dos, "Mandar a control" deja el patrón pendiente para el PDA.
 // Panel derecho "En control": avance general (patrones controlados / total) y,
 // por cada patrón pendiente, quién lo está contando y el % de avance
-// (artículos contados / artículos del patrón). Se refresca cada 30 s y al
+// (artículos contados / artículos del patrón). Se refresca cada 5 s y al
 // volver a la pestaña; si un patrón se finalizó en el PDA recarga las líneas.
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ const ultimosControles = (cs: Control[]) =>
     .sort((a, b) => (b.fecha ? Date.parse(b.fecha) : 0) - (a.fecha ? Date.parse(a.fecha) : 0) || b.id - a.id)
     .slice(0, MAX_CONTROLES);
 
-const REFRESCO_PANEL_MS = 30_000;
+const REFRESCO_PANEL_MS = 5_000;
 
 async function pedir<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: "no-store", ...init });
@@ -136,21 +136,26 @@ export default function AdministrarPage() {
     await Promise.all([...abiertasAhora].map((id) => cargarPatrones(id)));
   }, [cargarLineas, cargarPatrones]);
 
+  const panelEnVuelo = useRef(false);
   const cargarPanel = useCallback(async () => {
+    if (panelEnVuelo.current) return; // refresco de 5 s: no se apilan pedidos lentos
+    panelEnVuelo.current = true;
     setPanelCargando(true);
     try {
       const j = await pedir<{ pendientes: EnControl[] }>("/api/mostradores/pendientes");
       setEnControl(j.pendientes);
       setPanelError(null);
-      // Si algún patrón salió de control (se finalizó en el PDA) cambian los
-      // controlados: se recargan líneas y patrones abiertos.
+      // Si algún patrón salió de control (se finalizó en el PDA) o entró desde
+      // otra sesión cambian controlados / "En control": se recargan líneas y
+      // patrones abiertos (sólo cuando cambia el conjunto, no en cada refresco).
       const nuevos = new Set(j.pendientes.map((p) => p.id));
       const antes = idsEnControl.current;
       idsEnControl.current = nuevos;
-      if (antes && [...antes].some((id) => !nuevos.has(id))) recargarTodo();
+      if (antes && (antes.size !== nuevos.size || [...antes].some((id) => !nuevos.has(id)))) recargarTodo();
     } catch (e) {
       setPanelError(e instanceof Error ? e.message : "No se pudo cargar");
     } finally {
+      panelEnVuelo.current = false;
       setPanelCargando(false);
     }
   }, [recargarTodo]);
@@ -463,7 +468,7 @@ export default function AdministrarPage() {
                   En control
                   {enControl && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] tabular-nums text-zinc-300">{enControl.length}</span>}
                 </div>
-                {panelCargando && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />}
+                {panelCargando && !enControl && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />}
               </div>
 
               {panelError && (
