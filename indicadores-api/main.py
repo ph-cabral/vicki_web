@@ -2392,6 +2392,24 @@ def sistema_bloqueos_auto_kill(body: BloqueoAutoKillIn):
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
 
+@app.get("/sistema/bloqueos/lentitud")
+def sistema_bloqueos_lentitud(
+    dias: int = Query(default=7, ge=1, le=60),
+    tipo: str | None = Query(default=None),
+    limite: int = Query(default=200, ge=1, le=1000),
+):
+    """Registro de lo que anduvo mal aunque no haya sido una cadena de bloqueo:
+    consultas lentas (>= 5 s), cortadas por timeout/cancelación, errores
+    graves, deadlocks, más los episodios de bloqueo. Incluye la foto de lo que
+    está corriendo ahora hace más de 5 s y el top de consultas más costosas."""
+    try:
+        return bloqueos.fetch_lentitud(dias=dias, tipo=tipo, limite=limite)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
 @app.get("/sistema/clientes/buscar")
 def sistema_clientes_buscar(q: str = Query(...), limit: int = Query(default=50)):
     """Busca por número de cliente, nombre o CUIT y devuelve, por cada match,

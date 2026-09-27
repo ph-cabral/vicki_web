@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
+import Lentitud from "./Lentitud";
 
 const REFRESCO_MS = 10_000;
 
@@ -51,6 +52,8 @@ type Cabeza = {
   spid: number;
   bloqueados: number;
   espera_max_seg: number;
+  /** peor espera contando sólo víctimas de otro equipo (host) — dispara el KILL auto */
+  espera_otros_seg?: number;
   login: string | null;
   host: string | null;
   programa: string | null;
@@ -152,6 +155,7 @@ export default function BloqueosPage() {
   const [ejecutando, setEjecutando] = useState(false);
   const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
   const [abierto, setAbierto] = useState<number | null>(null);
+  const [pestana, setPestana] = useState<"bloqueos" | "lentitud">("bloqueos");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cargar = useCallback(async () => {
@@ -309,6 +313,37 @@ export default function BloqueosPage() {
         </div>
       </div>
 
+      {/* Pestañas */}
+      <div className="flex gap-1 border-b border-zinc-800">
+        {(
+          [
+            ["bloqueos", "Bloqueos"],
+            ["lentitud", "Lentitud y errores"],
+          ] as const
+        ).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setPestana(k)}
+            className={`px-4 py-2 text-sm font-semibold uppercase tracking-wide border-b-2 -mb-px ${
+              pestana === k
+                ? "border-yellow-400 text-yellow-400"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            {label}
+            {k === "bloqueos" && hayBloqueo ? (
+              <span className="ml-2 rounded bg-red-500/20 px-1.5 text-[11px] text-red-300">
+                {estado?.bloqueados_total}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {pestana === "lentitud" ? (
+        <Lentitud />
+      ) : (
+      <>
       {/* Semáforo */}
       <div
         className={`rounded-lg border px-5 py-4 ${
@@ -394,7 +429,14 @@ export default function BloqueosPage() {
                         KILL automático frenado (se eligió esperar)
                       </span>
                     );
-                  const falta = auto - (c.espera_max_seg ?? 0);
+                  const otros = c.espera_otros_seg ?? c.espera_max_seg ?? 0;
+                  if (otros <= 0)
+                    return (
+                      <span className="text-zinc-500 text-xs">
+                        sólo se frena a sí mismo — no se corta solo
+                      </span>
+                    );
+                  const falta = auto - otros;
                   return (
                     <span className="text-red-300/80 text-xs">
                       {falta > 0
@@ -642,6 +684,8 @@ export default function BloqueosPage() {
           </table>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

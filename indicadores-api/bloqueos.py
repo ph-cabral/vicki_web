@@ -73,7 +73,7 @@ def _limpiar(filas: list[dict], json_cols: tuple[str, ...] = ()) -> list[dict]:
 
 
 _SQL_VIVO = """
-SELECT  v.spid, v.bloqueados, v.espera_max_seg, v.login, v.host, v.programa,
+SELECT  v.spid, v.bloqueados, v.espera_max_seg, v.espera_otros_seg, v.login, v.host, v.programa,
         v.estado_sesion, v.transacciones_abiertas, v.aislamiento,
         v.ultimo_pedido_inicio, v.ultimo_pedido_fin,
         e.id AS episodio_id, e.detectado_en, e.tran_desde, e.ultimo_sql,
@@ -336,3 +336,167 @@ def set_auto_kill(activo: bool, usuario: str) -> dict:
         "EXEC vicki.sp_bloqueos_auto_kill @activo = ?, @usuario = ?",
         1 if activo else 0, usuario or "desconocido",
     )
+
+
+# ── Lentitud, timeouts, errores y deadlocks ────────────────────────────────
+# Sesión XE `vicki_lentitud` → vicki.sp_lentitud_ingerir (paso 2 del job del
+# watchdog, cada 20 s) → vicki.lentitud_evento. Los bloqueos salen de
+# vicki.bloqueo_episodio y se suman a la línea de tiempo como tipo BLOQUEO.
+# Ver sql/magnus_watchdog_bloqueos.sql (sección REGISTRO DE LENTITUD).
+
+TIPOS_LENTITUD = ("LENTA", "CANCELADA", "ERROR", "DEADLOCK", "BLOQUEO")
+
+# Una LENTA es "PESADA" (mala consulta: lee mucho o quema CPU) o "ESPERANDO"
+# (tardó por otra cosa: bloqueo, disco, red, el cliente leyendo despacio).
+LECTURAS_PESADA = 500_000   # ~4 GB de páginas leídas
+
+_SQL_LENT_INSTALADO = """
+SELECT CASE WHEN OBJECT_ID('vicki.lentitud_evento') IS NULL THEN 0 ELSE 1 END AS tabla,
+       CASE WHEN EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'vicki_lentitud')
+            THEN 1 ELSE 0 END AS sesion
+"""
+
+_SQL_LENT_LECTOR = "SELECT leido_en FROM vicki.lentitud_lector WHERE id = 1"
+
+_SQL_LENT_RESUMEN = """
+SELECT tipo, COUNT(*) AS n
+FROM   vicki.lentitud_evento
+WHERE  ocurrido_en >= DATEADD(DAY, -?, SYSDATETIME())
+GROUP BY tipo
+UNION ALL
+SELECT 'BLOQUEO', COUNT(*)
+FROM   vicki.bloqueo_episodio
+WHERE  detectado_en >= DATEADD(DAY, -?, SYSDATETIME())
+"""
+
+_SQL_LENT_EVENTOS = """
+SELECT  le.id, le.ocurrido_en AS cuando, le.tipo, le.base, le.host, le.programa,
+        le.duracion_ms, le.cpu_ms, le.lecturas, le.lecturas_fisicas, le.filas,
+        le.objeto, LEFT(le.sql_texto, 1500) AS sql_texto,
+        le.error_numero, le.severidad, le.mensaje,
+        CASE WHEN le.tipo = 'LENTA' THEN
+             CASE WHEN le.lecturas >= {pesada} OR le.cpu_ms * 2 >= le.duracion_ms
+                  THEN 'PESADA' ELSE 'ESPERANDO' END END AS causa
+FROM    vicki.lentitud_evento le
+WHERE   le.ocurrido_en >= DATEADD(DAY, -?, SYSDATETIME()) {filtro}
+"""
+
+_SQL_LENT_EPISODIOS = """
+SELECT  -e.id AS id, e.detectado_en AS cuando, 'BLOQUEO' AS tipo, CAST(NULL AS nvarchar(128)) AS base,
+        e.host_cabeza AS host, e.programa_cabeza AS programa,
+        DATEDIFF(SECOND, e.detectado_en, ISNULL(e.cerrado_en, e.ultima_vista)) * 1000 AS duracion_ms,
+        CAST(NULL AS int) AS cpu_ms, CAST(NULL AS bigint) AS lecturas,
+        CAST(NULL AS bigint) AS lecturas_fisicas, CAST(NULL AS bigint) AS filas,
+        CAST(NULL AS nvarchar(256)) AS objeto, LEFT(e.ultimo_sql, 1500) AS sql_texto,
+        CAST(NULL AS int) AS error_numero, CAST(NULL AS tinyint) AS severidad,
+        CONCAT(N'Frenó a ', e.bloqueados_max, N' sesiones · ', e.estado,
+               CASE WHEN e.accion_usuario IS NOT NULL THEN N' · ' + e.accion_usuario END) AS mensaje,
+        CAST(NULL AS varchar(10)) AS causa
+FROM    vicki.bloqueo_episodio e
+WHERE   e.detectado_en >= DATEADD(DAY, -?, SYSDATETIME())
+"""
+
+# Consultas que más tiempo le costaron a la base: misma consulta (query_hash)
+# con cualquier parámetro. Sin hash (cursores API de Magnus) agrupa por texto.
+_SQL_LENT_TOP = """
+SELECT TOP 20
+       CAST(COALESCE(NULLIF(query_hash, 0), CHECKSUM(LEFT(sql_texto, 400))) AS varchar(30)) AS clave,
+       COUNT(*)                         AS veces,
+       SUM(CAST(duracion_ms AS bigint)) / 1000 AS total_seg,
+       AVG(CAST(duracion_ms AS bigint)) AS prom_ms,
+       MAX(duracion_ms)                 AS max_ms,
+       AVG(lecturas)                    AS lecturas_prom,
+       AVG(CAST(cpu_ms AS bigint))      AS cpu_prom_ms,
+       COUNT(DISTINCT host)             AS equipos,
+       MAX(ocurrido_en)                 AS ultima,
+       MAX(base)                        AS base,
+       MAX(objeto)                      AS objeto,
+       MAX(LEFT(sql_texto, 1500))       AS sql_texto,
+       SUM(CASE WHEN lecturas >= {pesada} OR cpu_ms * 2 >= duracion_ms THEN 1 ELSE 0 END) AS pesadas
+FROM   vicki.lentitud_evento
+WHERE  tipo = 'LENTA' AND ocurrido_en >= DATEADD(DAY, -?, SYSDATETIME())
+GROUP BY COALESCE(NULLIF(query_hash, 0), CHECKSUM(LEFT(sql_texto, 400)))
+ORDER BY SUM(CAST(duracion_ms AS bigint)) DESC
+""".replace("{pesada}", str(LECTURAS_PESADA))
+
+# Lo que está corriendo AHORA hace más de 5 s (no se guarda: es la foto).
+_SQL_LENT_AHORA = """
+SELECT TOP 30
+       r.session_id AS spid, DB_NAME(r.database_id) AS base,
+       s.host_name AS host, s.program_name AS programa,
+       r.status AS estado, r.command AS comando,
+       r.total_elapsed_time / 1000 AS seg, r.cpu_time AS cpu_ms,
+       r.logical_reads AS lecturas, r.wait_type AS espera_tipo,
+       r.blocking_session_id AS bloqueada_por,
+       r.granted_query_memory * 8 AS memoria_kb,
+       LEFT(SUBSTRING(t.text, (r.statement_start_offset / 2) + 1,
+            CASE WHEN r.statement_end_offset = -1 THEN 4000
+                 ELSE (r.statement_end_offset - r.statement_start_offset) / 2 + 1 END), 1500) AS sql_texto
+FROM   sys.dm_exec_requests r
+JOIN   sys.dm_exec_sessions s ON s.session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+WHERE  s.is_user_process = 1
+  AND  r.session_id <> @@SPID
+  AND  r.total_elapsed_time >= 5000
+  AND  r.command NOT IN ('WAITFOR', 'BROKER_RECEIVE_WAITFOR')
+ORDER BY r.total_elapsed_time DESC
+"""
+
+FALTA_LENTITUD = (
+    "Falta re-correr sql/magnus_watchdog_bloqueos.sql (python sql/aplicar_sql.py): "
+    "crea la sesión vicki_lentitud y la tabla vicki.lentitud_evento."
+)
+
+
+def fetch_lentitud(dias: int = 7, tipo: str | None = None, limite: int = 200) -> dict:
+    tipo = (tipo or "").upper() or None
+    if tipo and tipo not in TIPOS_LENTITUD:
+        raise ValueError(f"tipo inválido: {tipo}")
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(_SQL_LENT_AHORA)
+        ahora = _limpiar(_filas(cur))
+
+        cur.execute(_SQL_LENT_INSTALADO)
+        inst = _filas(cur)[0]
+        if not inst["tabla"]:
+            return {"dias": dias, "instalado": False, "mensaje": FALTA_LENTITUD,
+                    "ahora": ahora, "resumen": {}, "eventos": [], "top": []}
+
+        cur.execute(_SQL_LENT_LECTOR)
+        lector = _filas(cur)
+
+        cur.execute(_SQL_LENT_RESUMEN, dias, dias)
+        resumen = {r["tipo"]: r["n"] for r in _filas(cur)}
+
+        partes, params = [], []
+        if tipo != "BLOQUEO":
+            filtro = "AND le.tipo = ?" if tipo else ""
+            partes.append(_SQL_LENT_EVENTOS.format(pesada=LECTURAS_PESADA, filtro=filtro))
+            params += [dias] + ([tipo] if tipo else [])
+        if tipo in (None, "BLOQUEO"):
+            partes.append(_SQL_LENT_EPISODIOS)
+            params.append(dias)
+        sql = ("SELECT TOP (?) * FROM (" + "\nUNION ALL\n".join(partes)
+               + ") u ORDER BY u.cuando DESC")
+        cur.execute(sql, limite, *params)
+        eventos = _limpiar(_filas(cur))
+
+        cur.execute(_SQL_LENT_TOP, dias)
+        top = _limpiar(_filas(cur))
+    finally:
+        conn.close()
+
+    return {
+        "dias": dias,
+        "instalado": True,
+        "sesion_activa": bool(inst["sesion"]),
+        "leido_en": _iso(lector[0]["leido_en"]) if lector else None,
+        "umbral": {"lenta_seg": 5, "cancelada_seg": 2, "lecturas_pesada": LECTURAS_PESADA},
+        "ahora": ahora,
+        "resumen": resumen,
+        "eventos": eventos,
+        "top": top,
+    }
