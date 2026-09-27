@@ -141,6 +141,31 @@ FALTA_INSTALAR = (
 )
 
 
+# Interruptor del KILL automático (vicki.bloqueo_config). Si la tabla todavía
+# no existe (falta re-correr el .sql) se informa como activo: es lo que hace el SP.
+_SQL_CONFIG = """
+IF OBJECT_ID('vicki.bloqueo_config') IS NULL
+    SELECT CAST(1 AS bit) AS auto_kill, CAST(NULL AS nvarchar(120)) AS actualizado_por,
+           CAST(NULL AS datetime2(0)) AS actualizado_en, CAST(0 AS bit) AS configurable
+ELSE
+    SELECT ISNULL(MAX(CAST(auto_kill AS int)), 1) AS auto_kill,
+           MAX(actualizado_por) AS actualizado_por, MAX(actualizado_en) AS actualizado_en,
+           CAST(1 AS bit) AS configurable
+    FROM vicki.bloqueo_config WHERE id = 1
+"""
+
+
+def _config(cur) -> dict:
+    cur.execute(_SQL_CONFIG)
+    r = _limpiar(_filas(cur))[0]
+    return {
+        "activo": bool(r["auto_kill"]),
+        "configurable": bool(r["configurable"]),
+        "actualizado_por": r["actualizado_por"],
+        "actualizado_en": r["actualizado_en"],
+    }
+
+
 def _instalado(cur) -> bool:
     """El schema vicki se crea corriendo el .sql una vez. Chequearlo cuesta una
     lectura de metadata y evita que la vista muera con un 503 ilegible."""
@@ -181,6 +206,13 @@ def fetch_estado(detectar: bool = True) -> dict:
             except Exception as e:  # nunca romper la vista por esto
                 print(f"[bloqueos] sp_bloqueos_detectar: {e}")
 
+        try:
+            auto_kill = _config(cur)
+        except Exception as e:
+            print(f"[bloqueos] config: {e}")
+            auto_kill = {"activo": True, "configurable": False,
+                         "actualizado_por": None, "actualizado_en": None}
+
         cur.execute(_SQL_VIVO)
         cabezas = _limpiar(_filas(cur), json_cols=("objetos",))
 
@@ -208,7 +240,8 @@ def fetch_estado(detectar: bool = True) -> dict:
         "hay_bloqueo": bool(cabezas),
         "bloqueados_total": sum(c["bloqueados"] for c in cabezas),
         "umbral": {"bloqueados": MIN_BLOQUEADOS, "espera_seg": MIN_ESPERA_SEG,
-                   "auto_kill_seg": AUTO_KILL_SEG},
+                   "auto_kill_seg": AUTO_KILL_SEG if auto_kill["activo"] else 0},
+        "auto_kill": auto_kill,
         "cabezas": cabezas,
     }
 
@@ -293,4 +326,13 @@ def dejar(episodio_id: int, usuario: str, motivo: str | None = None) -> dict:
     return _accion(
         "EXEC vicki.sp_bloqueos_dejar @episodio_id = ?, @usuario = ?, @motivo = ?",
         episodio_id, usuario or "desconocido", motivo,
+    )
+
+
+def set_auto_kill(activo: bool, usuario: str) -> dict:
+    """Prende/apaga el KILL automático. Apagado, el watchdog sigue detectando
+    y registrando episodios; el KILL manual sigue disponible."""
+    return _accion(
+        "EXEC vicki.sp_bloqueos_auto_kill @activo = ?, @usuario = ?",
+        1 if activo else 0, usuario or "desconocido",
     )

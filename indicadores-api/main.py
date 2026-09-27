@@ -2377,6 +2377,21 @@ def sistema_bloqueos_dejar(body: BloqueoAccionIn):
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
 
+class BloqueoAutoKillIn(BaseModel):
+    activo: bool
+    usuario: str | None = None
+
+
+@app.post("/sistema/bloqueos/auto-kill")
+def sistema_bloqueos_auto_kill(body: BloqueoAutoKillIn):
+    """Interruptor del KILL automático (vicki.bloqueo_config). Apagado, el
+    watchdog sólo registra."""
+    try:
+        return bloqueos.set_auto_kill(body.activo, body.usuario or "desconocido")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
 @app.get("/sistema/clientes/buscar")
 def sistema_clientes_buscar(q: str = Query(...), limit: int = Query(default=50)):
     """Busca por número de cliente, nombre o CUIT y devuelve, por cada match,

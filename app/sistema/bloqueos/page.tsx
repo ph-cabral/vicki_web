@@ -75,6 +75,12 @@ type Estado = {
   hay_bloqueo: boolean;
   bloqueados_total: number;
   umbral: { bloqueados: number; espera_seg: number; auto_kill_seg?: number };
+  auto_kill?: {
+    activo: boolean;
+    configurable: boolean;
+    actualizado_por: string | null;
+    actualizado_en: string | null;
+  };
   cabezas: Cabeza[];
 };
 
@@ -215,7 +221,29 @@ export default function BloqueosPage() {
     }
   }
 
+  async function cambiarAutoKill(activo: boolean) {
+    setEjecutando(true);
+    setAviso(null);
+    try {
+      const r = await fetch("/api/sistema/bloqueos/accion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accion: "auto_kill", activo }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error ?? "No se pudo cambiar");
+      setAviso({ ok: Boolean(j?.ok), texto: j?.mensaje ?? "Listo" });
+      await cargar();
+    } catch (e) {
+      setAviso({ ok: false, texto: e instanceof Error ? e.message : "No se pudo cambiar" });
+    } finally {
+      setEjecutando(false);
+    }
+  }
+
   const hayBloqueo = Boolean(estado?.hay_bloqueo);
+  const autoKillOn = estado?.auto_kill?.activo ?? true;
+  const autoKillCfg = estado?.auto_kill?.configurable ?? false;
 
   return (
     <div className="dark min-h-screen bg-[#111111] text-white p-4 md:p-6 space-y-5">
@@ -239,10 +267,37 @@ export default function BloqueosPage() {
               Umbral de episodio: {estado?.umbral?.bloqueados ?? 3} sesiones ·{" "}
               {estado?.umbral?.espera_seg ?? 20}s
             </div>
-            <div className="text-red-300/80">
-              KILL automático a los {duracion(estado?.umbral?.auto_kill_seg ?? 120)} de espera
-            </div>
+            {autoKillOn ? (
+              <div className="text-red-300/80">
+                KILL automático a los {duracion(estado?.umbral?.auto_kill_seg || 120)} de espera
+              </div>
+            ) : (
+              <div className="text-amber-300">
+                KILL automático APAGADO
+                {estado?.auto_kill?.actualizado_por
+                  ? ` · ${estado.auto_kill.actualizado_por}`
+                  : ""}
+              </div>
+            )}
           </div>
+          <button
+            onClick={() => cambiarAutoKill(!autoKillOn)}
+            disabled={ejecutando || !autoKillCfg}
+            title={
+              autoKillCfg
+                ? autoKillOn
+                  ? "Apagar: el watchdog sólo registra, no mata sesiones solo"
+                  : "Prender: vuelve a matar sola la cabeza a los 2 min"
+                : "Falta re-correr sql/magnus_watchdog_bloqueos.sql"
+            }
+            className={`rounded-md border px-3 py-2 text-xs font-semibold uppercase tracking-wide disabled:opacity-40 ${
+              autoKillOn
+                ? "border-red-700 text-red-300 hover:bg-red-950"
+                : "border-emerald-700 text-emerald-300 hover:bg-emerald-950"
+            }`}
+          >
+            {autoKillOn ? "Apagar KILL auto" : "Prender KILL auto"}
+          </button>
           <button
             onClick={() => cargar()}
             title="Refrescar ahora"
@@ -321,6 +376,12 @@ export default function BloqueosPage() {
                 </span>
                 {(() => {
                   const auto = estado?.umbral?.auto_kill_seg ?? 120;
+                  if (!autoKillOn && c.accion !== "MATAR")
+                    return (
+                      <span className="text-zinc-500 text-xs">
+                        KILL automático apagado
+                      </span>
+                    );
                   if (c.accion === "MATAR")
                     return (
                       <span className="text-amber-300 text-xs">

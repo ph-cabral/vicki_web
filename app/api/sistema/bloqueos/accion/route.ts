@@ -9,8 +9,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 type Body = {
-  accion?: "matar" | "dejar";
+  accion?: "matar" | "dejar" | "auto_kill";
   episodioId?: number;
+  activo?: boolean;
   motivo?: string | null;
 };
 
@@ -24,6 +25,37 @@ export async function POST(req: NextRequest) {
   if (!g.ok) return NextResponse.json({ error: g.error }, { status: g.status });
 
   const body: Body = await req.json().catch(() => ({}));
+
+  // Interruptor global del KILL automático (vicki.bloqueo_config).
+  if (body.accion === "auto_kill") {
+    if (typeof body.activo !== "boolean") {
+      return NextResponse.json({ error: "activo es obligatorio" }, { status: 400 });
+    }
+    const session = await getSession();
+    try {
+      const res = await fetch(`${API_URL}/sistema/bloqueos/auto-kill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activo: body.activo, usuario: session?.nombre ?? null }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        return NextResponse.json(
+          { error: "No se pudo cambiar el KILL automático", detail: data },
+          { status: res.status },
+        );
+      }
+      return NextResponse.json(data);
+    } catch (error) {
+      console.error("POST /api/sistema/bloqueos/accion auto_kill", error);
+      return NextResponse.json(
+        { error: "No se pudo conectar al servicio de indicadores" },
+        { status: 503 },
+      );
+    }
+  }
+
   if (body.accion !== "matar" && body.accion !== "dejar") {
     return NextResponse.json(
       { error: "accion debe ser 'matar' o 'dejar'" },
