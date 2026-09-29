@@ -159,7 +159,7 @@ export default function AdministrarPage() {
     panelEnVuelo.current = true;
     setPanelCargando(true);
     try {
-      const j = const dep = depRef.current;
+      const dep = depRef.current;
       const j = await pedir<{ pendientes: EnControl[] }>(`/api/mostradores/pendientes?deposito=${dep}`);
       if (dep !== depRef.current) return; // cambió el depósito mientras volaba
       setEnControl(j.pendientes);
