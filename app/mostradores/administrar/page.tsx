@@ -77,6 +77,8 @@ const DEPOSITOS = [
   { id: 2, nombre: "Lilser" },
 ] as const;
 const LS_DEPOSITO = "mostradores.admin.deposito";
+const otroDep = (d: number) => DEPOSITOS.find((x) => x.id !== d)!.id as number;
+const nombreDep = (d: number) => DEPOSITOS.find((x) => x.id === d)?.nombre ?? "";
 
 async function pedir<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: "no-store", ...init });
@@ -92,6 +94,134 @@ function Barra({ valor, clase = "bg-yellow-400" }: { valor: number; clase?: stri
     <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
       <div className={`h-full rounded-full ${clase} transition-[width] duration-500`} style={{ width: `${Math.min(100, Math.max(0, valor))}%` }} />
     </div>
+  );
+}
+
+interface Tot { patrones: number; controlados: number }
+const sumarLineas = (ls: Linea[]): Tot =>
+  ls.reduce((a, l) => ({ patrones: a.patrones + l.patrones, controlados: a.controlados + l.controlados }), { patrones: 0, controlados: 0 });
+
+// Avance general + "En control" de UN depósito. El panel derecho apila el del
+// depósito elegido arriba y el del otro abajo.
+function PanelDeposito({
+  nombre,
+  tot,
+  enControl,
+  error,
+  cargando,
+}: {
+  nombre: string;
+  tot: Tot | null;
+  enControl: EnControl[] | null;
+  error: string | null;
+  cargando: boolean;
+}) {
+  const avanceGeneral = tot ? pct(tot.controlados, tot.patrones) : 0;
+  return (
+    <>
+      <section className="rounded-lg bg-[#171717] border border-zinc-800 p-4">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Avance general · {nombre}</div>
+        <div className="mt-2 flex items-baseline justify-between gap-2">
+          <span className="text-2xl font-bold tabular-nums text-[#3fb950]">{tot ? fmtPct(Math.round(avanceGeneral * 10) / 10) : "—"}</span>
+          <span className="text-xs tabular-nums text-zinc-400">
+            {tot ? `${fmtN(tot.controlados)} de ${fmtN(tot.patrones)} patrones` : "Consultando…"}
+          </span>
+        </div>
+        <div className="mt-2">
+          <Barra valor={avanceGeneral} clase="bg-[#3fb950]" />
+        </div>
+        <div className="mt-2 text-[11px] tabular-nums text-zinc-500">
+          {tot ? `Faltan ${fmtN(tot.patrones - tot.controlados)} patrones por controlar` : "\u00a0"}
+        </div>
+      </section>
+
+      <section className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-800 bg-[#1f1f1f]">
+          <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-yellow-400">
+            <ClipboardList className="h-4 w-4" />
+            En control · {nombre}
+            {enControl && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] tabular-nums text-zinc-300">{enControl.length}</span>}
+          </div>
+          {cargando && !enControl && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />}
+        </div>
+
+        {error && (
+          <div className="m-3 flex items-center gap-2 text-xs text-[#f85149]">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {error}
+          </div>
+        )}
+        {!enControl && !error && (
+          <div className="py-8 text-center text-sm text-zinc-600">
+            <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+            Consultando…
+          </div>
+        )}
+        {enControl && !enControl.length && (
+          <div className="py-8 px-4 text-center text-sm text-zinc-600">No hay patrones en control</div>
+        )}
+        {enControl && enControl.length > 0 && (
+          <ul className="divide-y divide-zinc-800">
+            {enControl.map((c) => {
+              const completo = c.total > 0 && c.contados >= c.total;
+              return (
+                <li key={c.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-zinc-100">
+                        <span className="tabular-nums font-semibold">{c.codigo}</span>
+                        {c.detalle && <span className="text-zinc-300"> · {c.detalle}</span>}
+                      </div>
+                      {c.linea && <div className="text-[11px] text-zinc-500 truncate">{c.linea}</div>}
+                    </div>
+                    <span className={`shrink-0 text-sm font-bold tabular-nums ${completo ? "text-[#3fb950]" : c.contados > 0 ? "text-yellow-400" : "text-zinc-500"}`}>
+                      {fmtPct(c.avance)}
+                    </span>
+                  </div>
+                  <div className="mt-2">
+                    <Barra valor={c.avance} clase={completo ? "bg-[#3fb950]" : "bg-yellow-400"} />
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] tabular-nums text-zinc-500">
+                    <span>
+                      {fmtN(c.contados)} de {fmtN(c.total)} artículos
+                    </span>
+                    {completo && (
+                      <span className="inline-flex items-center gap-1 text-[#3fb950]">
+                        <CheckCircle2 className="h-3 w-3" />
+                        Listo para finalizar
+                      </span>
+                    )}
+                  </div>
+                  {c.tomadoPor && (
+                    <div className="mt-2 inline-flex items-center gap-1 rounded border border-yellow-400/40 bg-yellow-400/10 px-1.5 py-0.5 text-[11px] text-yellow-300">
+                      Tomado por <b className="font-semibold">{c.tomadoPor}</b>
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-col gap-0.5">
+                    {c.usuarios.length === 0 ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-zinc-600">
+                        <User className="h-3 w-3" />
+                        Sin empezar
+                      </span>
+                    ) : (
+                      c.usuarios.map((u) => (
+                        <span key={u.nombre} className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
+                          <User className="h-3 w-3 text-zinc-500" />
+                          <span className="truncate">{u.nombre}</span>
+                          {c.usuarios.length > 1 && <span className="tabular-nums text-zinc-500">· {fmtN(u.contados)}</span>}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                  {c.ultimoConteoAt && (
+                    <div className="mt-1 text-[10px] text-zinc-600">Último conteo {fmtFechaHora(c.ultimoConteoAt)}</div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>    </>
   );
 }
 
@@ -111,6 +241,11 @@ export default function AdministrarPage() {
   const [panelCargando, setPanelCargando] = useState(false);
   const [panelError, setPanelError] = useState<string | null>(null);
   const idsEnControl = useRef<Set<number> | null>(null);
+  // El otro depósito (sólo panel derecho): avance y "En control".
+  const [enControlOtro, setEnControlOtro] = useState<EnControl[] | null>(null);
+  const [panelErrorOtro, setPanelErrorOtro] = useState<string | null>(null);
+  const [totOtro, setTotOtro] = useState<Tot | null>(null);
+  const idsOtro = useRef<Set<number> | null>(null);
   const abiertasRef = useRef(abiertas);
   abiertasRef.current = abiertas;
 
@@ -153,6 +288,17 @@ export default function AdministrarPage() {
     await Promise.all([...abiertasAhora].map((id) => cargarPatrones(id)));
   }, [cargarLineas, cargarPatrones]);
 
+  const cargarTotOtro = useCallback(async () => {
+    const dep = depRef.current;
+    try {
+      const j = await pedir<{ lineas: Linea[] }>(`/api/mostradores/lineas?deposito=${otroDep(dep)}`);
+      if (dep !== depRef.current) return;
+      setTotOtro(sumarLineas(j.lineas));
+    } catch {
+      /* queda sin totales; se reintenta en el próximo cambio */
+    }
+  }, []);
+
   const panelEnVuelo = useRef(false);
   const cargarPanel = useCallback(async () => {
     if (panelEnVuelo.current) return; // refresco de 5 s: no se apilan pedidos lentos
@@ -160,24 +306,36 @@ export default function AdministrarPage() {
     setPanelCargando(true);
     try {
       const dep = depRef.current;
-      const j = await pedir<{ pendientes: EnControl[] }>(`/api/mostradores/pendientes?deposito=${dep}`);
+      const [a, b] = await Promise.allSettled([
+        pedir<{ pendientes: EnControl[] }>(`/api/mostradores/pendientes?deposito=${dep}`),
+        pedir<{ pendientes: EnControl[] }>(`/api/mostradores/pendientes?deposito=${otroDep(dep)}`),
+      ]);
       if (dep !== depRef.current) return; // cambió el depósito mientras volaba
-      setEnControl(j.pendientes);
-      setPanelError(null);
-      // Si algún patrón salió de control (se finalizó en el PDA) o entró desde
-      // otra sesión cambian controlados / "En control": se recargan líneas y
-      // patrones abiertos (sólo cuando cambia el conjunto, no en cada refresco).
-      const nuevos = new Set(j.pendientes.map((p) => p.id));
-      const antes = idsEnControl.current;
-      idsEnControl.current = nuevos;
-      if (antes && (antes.size !== nuevos.size || [...antes].some((id) => !nuevos.has(id)))) recargarTodo();
-    } catch (e) {
-      setPanelError(e instanceof Error ? e.message : "No se pudo cargar");
+      const msg = (r: PromiseRejectedResult) => (r.reason instanceof Error ? r.reason.message : "No se pudo cargar");
+      if (a.status === "fulfilled") {
+        setEnControl(a.value.pendientes);
+        setPanelError(null);
+        // Si algún patrón salió de control (se finalizó en el PDA) o entró desde
+        // otra sesión cambian controlados / "En control": se recargan líneas y
+        // patrones abiertos (sólo cuando cambia el conjunto, no en cada refresco).
+        const nuevos = new Set(a.value.pendientes.map((p) => p.id));
+        const antes = idsEnControl.current;
+        idsEnControl.current = nuevos;
+        if (antes && (antes.size !== nuevos.size || [...antes].some((id) => !nuevos.has(id)))) recargarTodo();
+      } else setPanelError(msg(a));
+      if (b.status === "fulfilled") {
+        setEnControlOtro(b.value.pendientes);
+        setPanelErrorOtro(null);
+        const nuevos = new Set(b.value.pendientes.map((p) => p.id));
+        const antes = idsOtro.current;
+        idsOtro.current = nuevos;
+        if (antes && (antes.size !== nuevos.size || [...antes].some((id) => !nuevos.has(id)))) cargarTotOtro();
+      } else setPanelErrorOtro(msg(b));
     } finally {
       panelEnVuelo.current = false;
       setPanelCargando(false);
     }
-  }, [recargarTodo]);
+  }, [recargarTodo, cargarTotOtro]);
 
   // Depósito recordado en este navegador.
   useEffect(() => {
@@ -200,8 +358,15 @@ export default function AdministrarPage() {
       /* sin storage */
     }
     depRef.current = id;
-    idsEnControl.current = null;
-    setEnControl(null);
+    // Los dos depósitos se intercambian en el panel: lo que se veía abajo sube.
+    const ids = idsEnControl.current;
+    idsEnControl.current = idsOtro.current;
+    idsOtro.current = ids;
+    setEnControl(enControlOtro);
+    setEnControlOtro(enControl);
+    setPanelError(null);
+    setPanelErrorOtro(null);
+    setTotOtro(lineas.length ? sumarLineas(lineas) : null);
     setLineas([]);
     setEstado({});
     setDeposito(id);
@@ -211,8 +376,9 @@ export default function AdministrarPage() {
   useEffect(() => {
     cargarLineas();
     abiertasRef.current.forEach((id) => cargarPatrones(id));
+    cargarTotOtro();
     cargarPanel();
-  }, [deposito, cargarLineas, cargarPatrones, cargarPanel]);
+  }, [deposito, cargarLineas, cargarPatrones, cargarPanel, cargarTotOtro]);
 
   useEffect(() => {
     cargarPanel();
@@ -302,8 +468,6 @@ export default function AdministrarPage() {
     );
   };
 
-  const avanceGeneral = pct(tot.controlados, tot.patrones);
-
   return (
     <div className="dark min-h-screen bg-[#111111] text-white">
       <div className="w-full mx-auto px-4 sm:px-6 py-8">
@@ -333,6 +497,7 @@ export default function AdministrarPage() {
               size="icon"
               onClick={() => {
                 recargarTodo();
+                cargarTotOtro();
                 cargarPanel();
               }}
               disabled={cargando}
@@ -508,110 +673,22 @@ export default function AdministrarPage() {
           </div>
 
           {/* ── Panel derecho: en control ──────────────────────────────────── */}
-          <aside className="order-first lg:order-none lg:sticky lg:top-6 flex flex-col gap-4">
-            <section className="rounded-lg bg-[#171717] border border-zinc-800 p-4">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Avance general</div>
-              <div className="mt-2 flex items-baseline justify-between gap-2">
-                <span className="text-2xl font-bold tabular-nums text-[#3fb950]">{fmtPct(Math.round(avanceGeneral * 10) / 10)}</span>
-                <span className="text-xs tabular-nums text-zinc-400">
-                  {fmtN(tot.controlados)} de {fmtN(tot.patrones)} patrones
-                </span>
-              </div>
-              <div className="mt-2">
-                <Barra valor={avanceGeneral} clase="bg-[#3fb950]" />
-              </div>
-              <div className="mt-2 text-[11px] tabular-nums text-zinc-500">
-                Faltan {fmtN(tot.porControlar)} patrones por controlar
-              </div>
-            </section>
-
-            <section className="rounded-lg bg-[#171717] border border-zinc-800 overflow-hidden">
-              <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-800 bg-[#1f1f1f]">
-                <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-yellow-400">
-                  <ClipboardList className="h-4 w-4" />
-                  En control · {DEPOSITOS.find((d) => d.id === deposito)?.nombre}
-                  {enControl && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] tabular-nums text-zinc-300">{enControl.length}</span>}
-                </div>
-                {panelCargando && !enControl && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />}
-              </div>
-
-              {panelError && (
-                <div className="m-3 flex items-center gap-2 text-xs text-[#f85149]">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  {panelError}
-                </div>
-              )}
-              {!enControl && !panelError && (
-                <div className="py-8 text-center text-sm text-zinc-600">
-                  <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
-                  Consultando…
-                </div>
-              )}
-              {enControl && !enControl.length && (
-                <div className="py-8 px-4 text-center text-sm text-zinc-600">No hay patrones en control</div>
-              )}
-              {enControl && enControl.length > 0 && (
-                <ul className="divide-y divide-zinc-800 max-h-[calc(100vh-18rem)] overflow-y-auto">
-                  {enControl.map((c) => {
-                    const completo = c.total > 0 && c.contados >= c.total;
-                    return (
-                      <li key={c.id} className="px-4 py-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-sm text-zinc-100">
-                              <span className="tabular-nums font-semibold">{c.codigo}</span>
-                              {c.detalle && <span className="text-zinc-300"> · {c.detalle}</span>}
-                            </div>
-                            {c.linea && <div className="text-[11px] text-zinc-500 truncate">{c.linea}</div>}
-                          </div>
-                          <span className={`shrink-0 text-sm font-bold tabular-nums ${completo ? "text-[#3fb950]" : c.contados > 0 ? "text-yellow-400" : "text-zinc-500"}`}>
-                            {fmtPct(c.avance)}
-                          </span>
-                        </div>
-                        <div className="mt-2">
-                          <Barra valor={c.avance} clase={completo ? "bg-[#3fb950]" : "bg-yellow-400"} />
-                        </div>
-                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] tabular-nums text-zinc-500">
-                          <span>
-                            {fmtN(c.contados)} de {fmtN(c.total)} artículos
-                          </span>
-                          {completo && (
-                            <span className="inline-flex items-center gap-1 text-[#3fb950]">
-                              <CheckCircle2 className="h-3 w-3" />
-                              Listo para finalizar
-                            </span>
-                          )}
-                        </div>
-                        {c.tomadoPor && (
-                          <div className="mt-2 inline-flex items-center gap-1 rounded border border-yellow-400/40 bg-yellow-400/10 px-1.5 py-0.5 text-[11px] text-yellow-300">
-                            Tomado por <b className="font-semibold">{c.tomadoPor}</b>
-                          </div>
-                        )}
-                        <div className="mt-2 flex flex-col gap-0.5">
-                          {c.usuarios.length === 0 ? (
-                            <span className="inline-flex items-center gap-1.5 text-xs text-zinc-600">
-                              <User className="h-3 w-3" />
-                              Sin empezar
-                            </span>
-                          ) : (
-                            c.usuarios.map((u) => (
-                              <span key={u.nombre} className="inline-flex items-center gap-1.5 text-xs text-zinc-300">
-                                <User className="h-3 w-3 text-zinc-500" />
-                                <span className="truncate">{u.nombre}</span>
-                                {c.usuarios.length > 1 && <span className="tabular-nums text-zinc-500">· {fmtN(u.contados)}</span>}
-                              </span>
-                            ))
-                          )}
-                        </div>
-                        {c.ultimoConteoAt && (
-                          <div className="mt-1 text-[10px] text-zinc-600">Último conteo {fmtFechaHora(c.ultimoConteoAt)}</div>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
+          <aside className="order-first lg:order-none lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto flex flex-col gap-4">
+            <PanelDeposito
+              nombre={nombreDep(deposito)}
+              tot={lineas.length ? { patrones: tot.patrones, controlados: tot.controlados } : null}
+              enControl={enControl}
+              error={panelError}
+              cargando={panelCargando}
+            />
+            <div className="border-t border-zinc-800" />
+            <PanelDeposito
+              nombre={nombreDep(otroDep(deposito))}
+              tot={totOtro}
+              enControl={enControlOtro}
+              error={panelErrorOtro}
+              cargando={panelCargando}
+            />
           </aside>
         </div>
       </div>
