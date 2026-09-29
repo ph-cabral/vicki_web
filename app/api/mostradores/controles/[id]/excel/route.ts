@@ -32,7 +32,7 @@ export async function GET(
       signal: AbortSignal.timeout(30000),
     });
     const json = (await res.json().catch(() => null)) as
-      | { patron?: string; detallePatron?: string; cerradoAt?: string | null; filas?: FilaDetalle[]; detail?: unknown }
+      | { patron?: string; detallePatron?: string; depositoNombre?: string; cerradoAt?: string | null; filas?: FilaDetalle[]; detail?: unknown }
       | null;
     if (!res.ok || !json) {
       return NextResponse.json(
@@ -61,7 +61,8 @@ export async function GET(
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
 
     const fecha = (json.cerradoAt ?? "").slice(0, 10);
-    const nombre = `control_patron_${json.patron ?? id}_${fecha}.xlsx`.replace(/[^\w.\-]/g, "_");
+    const dep = json.depositoNombre ? `_${json.depositoNombre.toLowerCase()}` : "";
+    const nombre = `control_patron_${json.patron ?? id}${dep}_${fecha}.xlsx`.replace(/[^\w.\-]/g, "_");
     return new NextResponse(new Uint8Array(buf), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

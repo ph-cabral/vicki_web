@@ -45,6 +45,12 @@ import { InicioButton } from "@/components/ui/InicioButton";
 // hacia la DERECHA o el atrás del PDA. El arrastre mueve el DOM directo (sin
 // re-render de la lista) para que vaya fluido en el PDA.
 //
+// Depósito: el control es POR DEPÓSITO de mostrador — Ruta (Magnus depósito 3,
+// "EW RUTA") o Lilser (depósito 2, "CASA LILSER"). Se elige al entrar (queda
+// guardado en el PDA) y se cambia tocando el chip del encabezado. Sólo se
+// listan los patrones mandados a control en ese depósito; el stock de sistema
+// contra el que se compara es el de ese depósito.
+//
 // Datos: GET/POST /api/mostradores/conteo, POST /api/mostradores/tomar,
 // POST /api/mostradores/finalizar.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -67,6 +73,8 @@ interface Articulo {
 
 interface Patron {
   controlId: number;
+  deposito: number | null;
+  depositoNombre: string;
   codigo: string;
   detalle: string;
   linea: string;
@@ -98,6 +106,22 @@ interface Arrastre {
   eje: "h" | "v" | null;
   dx: number;
   modo: "abrir" | "cerrar";
+}
+
+const DEPOSITOS = [
+  { id: 3, nombre: "Ruta" },
+  { id: 2, nombre: "Lilser" },
+] as const;
+const LS_DEPOSITO = "mostradores.deposito";
+const nombreDep = (id: number | null) => DEPOSITOS.find((d) => d.id === id)?.nombre ?? "";
+
+function leerDeposito(): number | null {
+  try {
+    const n = Number(localStorage.getItem(LS_DEPOSITO));
+    return DEPOSITOS.some((d) => d.id === n) ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 const MAX_FILAS = 120;
@@ -136,6 +160,10 @@ function BarraAvance({ valor, total }: { valor: number; total: number }) {
 }
 
 export default function ControlStockPage() {
+  const [deposito, setDeposito] = useState<number | null>(null);
+  const [depListo, setDepListo] = useState(false); // ya se leyó el guardado
+  const depRef = useRef<number | null>(null);
+  depRef.current = deposito;
   const [patrones, setPatrones] = useState<Patron[]>([]);
   const [activoId, setActivoId] = useState<number | null>(null);
   const [articulos, setArticulos] = useState<Articulo[]>([]);
@@ -191,11 +219,13 @@ export default function ControlStockPage() {
 
   // ── Datos ──────────────────────────────────────────────────────────────────
   const cargar = useCallback(async () => {
+    const dep = depRef.current;
+    if (!dep) return;
     genRef.current += 1;
     setCargando(true);
     setError(null);
     try {
-      const res = await fetch("/api/mostradores/conteo", { cache: "no-store" });
+      const res = await fetch(`/api/mostradores/conteo?deposito=${dep}`, { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as
         | { patrones?: Patron[]; activoId?: number | null; articulos?: Articulo[]; error?: string }
         | null;
@@ -210,8 +240,30 @@ export default function ControlStockPage() {
     }
   }, []);
 
+  // Depósito guardado en el PDA (se lee en el cliente: localStorage).
   useEffect(() => {
-    cargar();
+    setDeposito(leerDeposito());
+    setDepListo(true);
+  }, []);
+
+  const elegirDeposito = useCallback((id: number) => {
+    try {
+      localStorage.setItem(LS_DEPOSITO, String(id));
+    } catch {
+      /* sin storage: queda sólo en memoria */
+    }
+    depRef.current = id;
+    setDeposito(id);
+    setPatrones([]);
+    setArticulos([]);
+    setActivoId(null);
+  }, []);
+
+  useEffect(() => {
+    if (deposito) cargar();
+  }, [deposito, cargar]);
+
+  useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible" && !selRef.current && !finRef.current) cargar();
     };
@@ -230,11 +282,11 @@ export default function ControlStockPage() {
     const t = setInterval(async () => {
       if (enVuelo || document.visibilityState !== "visible") return;
       if (conteoRef.current || selRef.current || finRef.current) return;
-      if (tomandoRef.current !== null || cargandoRef.current) return;
+      if (tomandoRef.current !== null || cargandoRef.current || !depRef.current) return;
       enVuelo = true;
       const gen = genRef.current;
       try {
-        const res = await fetch("/api/mostradores/conteo?lista=1", { cache: "no-store" });
+        const res = await fetch(`/api/mostradores/conteo?lista=1&deposito=${depRef.current}`, { cache: "no-store" });
         if (!res.ok) return;
         const json = (await res.json().catch(() => null)) as
           | { patrones?: Patron[]; activoId?: number | null }
@@ -783,6 +835,57 @@ export default function ControlStockPage() {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
+  // Elegir depósito (primera vez en el PDA o al tocar el chip)
+  // ════════════════════════════════════════════════════════════════════════════
+  if (!depListo) return <div className="dark min-h-[100dvh] bg-[#111111]" />;
+  if (!deposito) {
+    return (
+      <div className="dark min-h-[100dvh] bg-[#111111] text-white flex flex-col">
+        <header className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800">
+          <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
+          <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
+        </header>
+        <div className="flex-1 flex flex-col justify-center gap-4 px-5 pb-16">
+          <div className="text-center text-sm text-zinc-400">¿En qué depósito vas a controlar?</div>
+          {DEPOSITOS.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              onClick={() => elegirDeposito(d.id)}
+              className="w-full rounded-xl border-2 border-yellow-400/70 bg-yellow-400/5 active:bg-yellow-400/15 py-6 text-2xl font-bold text-yellow-400 uppercase tracking-wide"
+            >
+              {d.nombre}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const chipDeposito = (
+    <button
+      type="button"
+      onClick={() => {
+        if (activo) {
+          vibrar([80, 60, 80]);
+          mostrarAviso("error", `Finalizá el patrón ${activo.codigo} antes de cambiar de depósito`);
+          return;
+        }
+        try {
+          localStorage.removeItem(LS_DEPOSITO);
+        } catch {
+          /* nada */
+        }
+        setDeposito(null);
+      }}
+      className="rounded-md border border-yellow-400/60 px-2 py-0.5 text-xs font-bold uppercase text-yellow-400 active:bg-yellow-400/15"
+      title="Cambiar depósito"
+    >
+      {nombreDep(deposito)}
+    </button>
+  );
+
+  // ════════════════════════════════════════════════════════════════════════════
   // Vista principal: patrones mandados a control
   // ════════════════════════════════════════════════════════════════════════════
   if (!enConteo || !activo) {
@@ -793,6 +896,7 @@ export default function ControlStockPage() {
           <header className="flex items-center gap-2 px-3 py-2">
             <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
             <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
+            {chipDeposito}
             <span className="ml-auto text-xs text-zinc-500 tabular-nums">
               {patrones.length} {patrones.length === 1 ? "patrón" : "patrones"}
             </span>
@@ -819,7 +923,9 @@ export default function ControlStockPage() {
         )}
 
         {!cargando && !error && !patrones.length && (
-          <div className="py-12 px-6 text-center text-zinc-500">No hay patrones mandados a control.</div>
+          <div className="py-12 px-6 text-center text-zinc-500">
+            No hay patrones mandados a control en {nombreDep(deposito)}.
+          </div>
         )}
 
         {activo && (
@@ -835,6 +941,11 @@ export default function ControlStockPage() {
                   <div className="text-xl font-bold tabular-nums text-zinc-100">Patrón {activo.codigo}</div>
                   <div className="text-sm text-zinc-300 leading-snug line-clamp-2">{activo.detalle || "—"}</div>
                   {activo.linea && <div className="text-xs text-zinc-500 mt-0.5 truncate">{activo.linea}</div>}
+                  {activo.deposito !== deposito && (
+                    <div className="text-xs font-bold text-amber-400 mt-0.5 uppercase">
+                      Depósito {activo.depositoNombre}
+                    </div>
+                  )}
                 </div>
                 <span className="shrink-0 flex items-center gap-1 rounded-md bg-yellow-400 text-black text-sm font-bold px-3 py-2">
                   <Play className="h-4 w-4" />
@@ -943,6 +1054,9 @@ export default function ControlStockPage() {
             <ArrowLeft className="h-5 w-5" />
           </button>
           <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
+          <span className="rounded-md bg-yellow-400/15 px-2 py-0.5 text-xs font-bold uppercase text-yellow-400">
+            {activo.depositoNombre}
+          </span>
           <span className="ml-auto text-sm tabular-nums text-zinc-400">
             <b className={contados === total && total > 0 ? "text-emerald-400" : "text-zinc-100"}>{contados}</b>/{total}
           </span>

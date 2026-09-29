@@ -2099,21 +2099,25 @@ def rrhh_premios(mes: str = Query(..., description="Mes 'YYYY-MM'")):
 
 # ── Mostradores: control de códigos patrón por línea ───────────────────────
 @app.get("/mostradores/lineas")
-def mostradores_lineas():
+def mostradores_lineas(deposito: int = Query(...)):
     """Todas las líneas del catálogo con cuántos patrones tienen y cuántos ya
-    fueron controlados al menos una vez. Ver mostradores.py."""
+    fueron controlados al menos una vez EN ESE DEPÓSITO (3 Ruta / 2 Lilser)."""
     try:
-        return mostradores.fetch_lineas()
+        return mostradores.fetch_lineas(deposito)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
 
 @app.get("/mostradores/patrones")
-def mostradores_patrones(linea: int = Query(..., ge=1)):
+def mostradores_patrones(linea: int = Query(..., ge=1), deposito: int = Query(...)):
     """Códigos patrón de UNA línea con su detalle (Magnus), si está pendiente
-    de control y las fechas de sus controles cerrados."""
+    de control y las fechas de sus controles cerrados, en ese depósito."""
     try:
-        return mostradores.fetch_patrones_linea(linea)
+        return mostradores.fetch_patrones_linea(linea, deposito)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -2122,14 +2126,16 @@ def mostradores_patrones(linea: int = Query(..., ge=1)):
 
 class MostradorMandarIn(BaseModel):
     codigoPatron: str
+    deposito: int
     usuarioId: int | None = None
 
 
 @app.post("/mostradores/mandar")
 def mostradores_mandar(body: MostradorMandarIn):
-    """Deja un código patrón pendiente de control (uno solo por patrón)."""
+    """Deja un código patrón pendiente de control en un depósito (uno solo por
+    patrón y depósito)."""
     try:
-        return mostradores.mandar_a_control(body.codigoPatron, body.usuarioId)
+        return mostradores.mandar_a_control(body.codigoPatron, body.usuarioId, body.deposito)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except LookupError as e:
@@ -2139,22 +2145,26 @@ def mostradores_mandar(body: MostradorMandarIn):
 
 
 @app.get("/mostradores/pendientes")
-def mostradores_pendientes():
-    """Patrones en control (pendientes) con su avance: contados/total y quién
-    los está contando. Panel derecho de Mostradores → Administrar."""
+def mostradores_pendientes(deposito: int = Query(...)):
+    """Patrones en control (pendientes) del depósito con su avance: contados/total
+    y quién los está contando. Panel derecho de Mostradores → Administrar."""
     try:
-        return mostradores.fetch_pendientes()
+        return mostradores.fetch_pendientes(deposito)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
 
 @app.get("/mostradores/conteo")
-def mostradores_conteo(usuarioId: int | None = Query(None), lista: bool = Query(False)):
+def mostradores_conteo(usuarioId: int | None = Query(None), deposito: int = Query(...), lista: bool = Query(False)):
     """PDA: patrones pendientes (con quién lo tomó), el activo del usuario y
     los artículos SÓLO del activo con lo ya contado. lista=true: sólo patrones
     y activoId (refresco automático de la lista, sin artículos)."""
     try:
-        return mostradores.fetch_conteo(usuarioId, con_articulos=not lista)
+        return mostradores.fetch_conteo(usuarioId, deposito, con_articulos=not lista)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

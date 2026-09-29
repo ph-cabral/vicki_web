@@ -11,7 +11,8 @@ Dos fuentes, todas chicas:
     OJO: NO es el catálogo de Postgres (`catalogo.*`, el de /ventas/lineas): acá
     las líneas que se muestran son las de Magnus.
   · Postgres `everwear.mostrador_control` → los controles (ver
-    sql/mostradores_control.sql): uno pendiente por patrón como máximo, y los
+    sql/mostradores_control.sql): uno pendiente por patrón Y DEPÓSITO (Ruta /
+    Lilser, ver DEPOSITOS) como máximo, y los
     cerrados con su Excel (bytea). Se referencia al patrón por CÓDIGO.
 
 Nada de esto toca filas de venta/pedido, así que no hay volumen que cuidar más
@@ -30,6 +31,30 @@ _cache_maestro_ts: float = 0.0
 
 # Máximo de controles cerrados que se muestran por patrón (los más nuevos).
 MAX_CONTROLES_VISIBLES = 3
+
+# Depósitos de mostrador que se controlan por separado (Magnus Stk_Deposito,
+# sucursal 1): 3 = "EW RUTA", 2 = "CASA LILSER". (1 = CENTRAL, 6 = FABRICA,
+# 14 = PRODUCCION; el resto está marcado "NO USAR".) Cada control pertenece a
+# UN depósito (mostrador_control.deposito) y el stock de sistema contra el que
+# se compara sale de Stk_ArticSucursalDeposito.StkReal de ese depósito, no del
+# StkReal global de StkFer_Articulos. Controles viejos sin depósito (NULL) se
+# comparaban contra el global y no se listan en ningún depósito.
+SUCURSAL = 1
+DEPOSITOS: dict[int, str] = {3: "Ruta", 2: "Lilser"}
+
+
+def validar_deposito(dep) -> int:
+    try:
+        d = int(dep)
+    except (TypeError, ValueError):
+        raise ValueError("Depósito inválido")
+    if d not in DEPOSITOS:
+        raise ValueError("Depósito inválido (3 = Ruta, 2 = Lilser)")
+    return d
+
+
+def nombre_deposito(dep) -> str:
+    return DEPOSITOS.get(dep, "") if dep is not None else ""
 
 _SQL_LINEAS_MAGNUS = "SELECT Nivel1, RTRIM(Detalle) FROM Stk_Nivel1"
 _SQL_RUBROS_MAGNUS = "SELECT Nivel2, RTRIM(Detalle) FROM Stk_Nivel2"
@@ -129,16 +154,18 @@ def _nombre_linea(lid: int, nombre: str) -> str:
 _SQL_CODIGOS_CONTROLADOS = """
 SELECT DISTINCT "codigoPatron"
 FROM everwear.mostrador_control
-WHERE estado = 'cerrado'
+WHERE estado = 'cerrado' AND deposito = %s
 """
 
 
-def fetch_lineas() -> dict:
+def fetch_lineas(deposito: int) -> dict:
+    deposito = validar_deposito(deposito)
     m = maestro_magnus()
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        cur.execute(_SQL_CODIGOS_CONTROLADOS)
+        _asegurar_deposito(cur)
+        cur.execute(_SQL_CODIGOS_CONTROLADOS, (deposito,))
         controlados = {c for (c,) in cur.fetchall()}
     finally:
         conn.close()
@@ -169,17 +196,18 @@ FROM (
                ORDER BY "cerradoAt" DESC NULLS LAST, id DESC
            ) AS rn
     FROM everwear.mostrador_control
-    WHERE "codigoPatron" = ANY(%s) AND estado = 'cerrado'
+    WHERE "codigoPatron" = ANY(%s) AND estado = 'cerrado' AND deposito = %s
 ) t
 WHERE rn <= %s
 UNION ALL
 SELECT id, "codigoPatron", estado, NULL, FALSE
 FROM everwear.mostrador_control
-WHERE "codigoPatron" = ANY(%s) AND estado = 'pendiente'
+WHERE "codigoPatron" = ANY(%s) AND estado = 'pendiente' AND deposito = %s
 """
 
 
-def fetch_patrones_linea(linea_id: int) -> dict:
+def fetch_patrones_linea(linea_id: int, deposito: int) -> dict:
+    deposito = validar_deposito(deposito)
     m = maestro_magnus()
     if linea_id not in m["lineas"] or linea_id not in m["por_linea"]:
         raise LookupError("Línea inexistente")
@@ -188,7 +216,8 @@ def fetch_patrones_linea(linea_id: int) -> dict:
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        cur.execute(_SQL_CONTROLES, (codigos, MAX_CONTROLES_VISIBLES, codigos))
+        _asegurar_deposito(cur)
+        cur.execute(_SQL_CONTROLES, (codigos, deposito, MAX_CONTROLES_VISIBLES, codigos, deposito))
         controles = cur.fetchall()
     finally:
         conn.close()
@@ -229,9 +258,10 @@ def fetch_patrones_linea(linea_id: int) -> dict:
 
 
 # ── Mandar a control ──────────────────────────────────────────────────────
-def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
-    """Deja el patrón pendiente de control. Máximo UNO pendiente por patrón
-    (índice único parcial): mandarlo dos veces no duplica."""
+def mandar_a_control(codigo_patron: str, usuario_id: int | None, deposito: int) -> dict:
+    """Deja el patrón pendiente de control en UN depósito. Máximo UNO pendiente
+    por patrón y depósito (índice único parcial): mandarlo dos veces no duplica."""
+    deposito = validar_deposito(deposito)
     codigo = (codigo_patron or "").strip()
     if not codigo:
         raise ValueError("Falta el código patrón")
@@ -246,14 +276,15 @@ def mandar_a_control(codigo_patron: str, usuario_id: int | None) -> dict:
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        _asegurar_deposito(cur)
         cur.execute(
             """
-            INSERT INTO everwear.mostrador_control ("codigoPatron", estado, "mandadoPor")
-            VALUES (%s, 'pendiente', %s)
-            ON CONFLICT ("codigoPatron") WHERE estado = 'pendiente' DO NOTHING
+            INSERT INTO everwear.mostrador_control ("codigoPatron", estado, "mandadoPor", deposito)
+            VALUES (%s, 'pendiente', %s, %s)
+            ON CONFLICT ("codigoPatron", deposito) WHERE estado = 'pendiente' DO NOTHING
             RETURNING id
             """,
-            (codigo, usuario_id),
+            (codigo, usuario_id, deposito),
         )
         creado = cur.fetchone() is not None
         conn.commit()
@@ -273,7 +304,7 @@ SELECT c.id, c."codigoPatron", c."mandadoAt", u.nombre, t.nombre, c."tomadoPor",
 FROM everwear.mostrador_control c
 LEFT JOIN everwear.usuario u ON u.id = c."mandadoPor"
 LEFT JOIN everwear.usuario t ON t.id = c."tomadoPor"
-WHERE c.estado = 'pendiente'
+WHERE c.estado = 'pendiente' AND c.deposito = %s
 ORDER BY c."mandadoAt", c.id
 """
 _SQL_AVANCE_USUARIOS = """
@@ -312,13 +343,15 @@ def _purgar_sin_articulos(cur) -> None:
         cur.connection.commit()
 
 
-def fetch_pendientes() -> dict:
+def fetch_pendientes(deposito: int) -> dict:
+    deposito = validar_deposito(deposito)
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         _asegurar_toma(cur)
+        _asegurar_deposito(cur)
         _purgar_sin_articulos(cur)
-        cur.execute(_SQL_PENDIENTES)
+        cur.execute(_SQL_PENDIENTES, (deposito,))
         filas = cur.fetchall()
         avance: dict[int, list] = {}
         if filas:
@@ -332,7 +365,7 @@ def fetch_pendientes() -> dict:
         return {"pendientes": []}
 
     m = maestro_magnus()
-    arts = _articulos_de_patrones([f[1] for f in filas])
+    arts = _articulos_de_patrones([f[1] for f in filas], deposito)
     salida = []
     for i, codigo, mandado, mandado_por, tomado_nom, tomado_por, tomado_at in filas:
         cid = int(i)
@@ -459,6 +492,53 @@ def _asegurar_toma(cur) -> None:
             _ddl_toma_ok = True
 
 
+# ── Depósito del control ──────────────────────────────────────────────────
+# Columna "deposito" (sql/mostradores_deposito.sql; también se aplica sola): el
+# pendiente único pasa de (codigoPatron) a (codigoPatron, deposito) — se puede
+# tener el mismo patrón en control en Ruta y en Lilser a la vez, cada uno con
+# su conteo, su cierre y su Excel.
+_DDL_DEPOSITO = (
+    'ALTER TABLE everwear.mostrador_control ADD COLUMN IF NOT EXISTS deposito SMALLINT',
+    "DROP INDEX IF EXISTS everwear.mostrador_control_pendiente_uk",
+    """CREATE UNIQUE INDEX IF NOT EXISTS mostrador_control_pend_dep_uk
+         ON everwear.mostrador_control ("codigoPatron", deposito)
+         WHERE estado = 'pendiente'""",
+    """CREATE INDEX IF NOT EXISTS mostrador_control_dep_patron_idx
+         ON everwear.mostrador_control (deposito, "codigoPatron", "cerradoAt" DESC)""",
+)
+_ddl_deposito_ok = False
+
+
+def _asegurar_deposito(cur) -> None:
+    global _ddl_deposito_ok
+    if _ddl_deposito_ok:
+        return
+    with _ddl_lock:
+        if not _ddl_deposito_ok:
+            cur.execute(
+                """SELECT 1 FROM pg_indexes WHERE schemaname = 'everwear'
+                   AND indexname = 'mostrador_control_dep_patron_idx'"""
+            )
+            if not cur.fetchone():
+                for ddl in _DDL_DEPOSITO:
+                    cur.execute(ddl)
+                cur.connection.commit()
+            _ddl_deposito_ok = True
+
+
+# Stock de sistema de UN artículo en el depósito del control (seek por el
+# índice único K_ARSUDE_Cla_ArticuloSucurDepos). Control viejo sin depósito →
+# StkReal global de StkFer_Articulos, como antes.
+_SQL_ART_STOCK_DEP = """
+SELECT RTRIM(s.ArticuloPatron), d.StkReal
+FROM StkFer_Articulos s
+JOIN Stk_ArticSucursalDeposito d
+  ON d.CodArticulo = s.CodArticulo AND d.CodSucursal = ? AND d.Deposito = ?
+WHERE s.CodArticulo = ?
+"""
+_SQL_ART_STOCK_GLOBAL = "SELECT RTRIM(ArticuloPatron), StkReal FROM StkFer_Articulos WHERE CodArticulo = ?"
+
+
 # Artículos de los patrones: entra por el índice KF_ART_Cla_ArticuloPatron y
 # por K_BAR_Cla_ArticuloBarra (CodArticulo, CodBarra). Medido: 3.400 filas
 # (patrones 1678 + 139, los más grandes) en < 1 ms de servidor.
@@ -466,6 +546,8 @@ def _asegurar_toma(cur) -> None:
 # tienen stock (hay que contarlos igual). Estado 1 = 22,5k, 2 = 1,3k, 3 = 17,4k.
 # Un artículo puede tener varios códigos de barra (Stk_ArticBarras), algunos de
 # contenedor ("Caja" x100): todos sirven para escanear.
+# Con depósito: los dados de baja entran sólo si tienen stock EN ESE depósito
+# (Stk_ArticSucursalDeposito, seek por su índice único por artículo).
 _SQL_ARTICULOS_PATRONES = """
 SELECT RTRIM(s.ArticuloPatron), RTRIM(s.CodArticulo), RTRIM(s.DetalleMedida),
        RTRIM(s.CodBarra), RTRIM(b.CodBarra), b.ContenedorCantContenida,
@@ -475,19 +557,31 @@ LEFT JOIN Stk_ArticBarras b ON b.CodArticulo = s.CodArticulo
 WHERE s.ArticuloPatron IN ({marcas})
   AND (s.Estado <> 3 OR s.StkReal <> 0)
 """
+_SQL_ARTICULOS_PATRONES_DEP = """
+SELECT RTRIM(s.ArticuloPatron), RTRIM(s.CodArticulo), RTRIM(s.DetalleMedida),
+       RTRIM(s.CodBarra), RTRIM(b.CodBarra), b.ContenedorCantContenida,
+       RTRIM(b.ContendorNombre)
+FROM StkFer_Articulos s
+JOIN Stk_ArticSucursalDeposito d
+  ON d.CodArticulo = s.CodArticulo AND d.CodSucursal = ? AND d.Deposito = ?
+LEFT JOIN Stk_ArticBarras b ON b.CodArticulo = s.CodArticulo
+WHERE s.ArticuloPatron IN ({marcas})
+  AND (s.Estado <> 3 OR d.StkReal <> 0)
+"""
 
 _ART_TTL_SEG = 10 * 60
-_cache_articulos: dict[str, tuple[float, list[dict]]] = {}
+_cache_articulos: dict[tuple, tuple[float, list[dict]]] = {}
 
 
-def _articulos_de_patrones(codigos: list[str]) -> dict[str, list[dict]]:
+def _articulos_de_patrones(codigos: list[str], deposito: int | None = None) -> dict[str, list[dict]]:
     """{patron: [{cod, medida, barras:[{codigo, cant, envase}]}]} — cache 10 min
-    por patrón (el maestro de artículos casi no cambia durante un conteo)."""
+    por (depósito, patrón) (el maestro de artículos casi no cambia durante un
+    conteo). deposito=None → universo global (controles viejos sin depósito)."""
     ahora = time.monotonic()
     salida: dict[str, list[dict]] = {}
     faltan = []
     for c in codigos:
-        hit = _cache_articulos.get(c)
+        hit = _cache_articulos.get((deposito, c))
         if hit and ahora - hit[0] <= _ART_TTL_SEG:
             salida[c] = hit[1]
         else:
@@ -496,10 +590,16 @@ def _articulos_de_patrones(codigos: list[str]) -> dict[str, list[dict]]:
         conn = get_connection("EVERWEAR")
         try:
             cur = conn.cursor()
-            cur.execute(
-                _SQL_ARTICULOS_PATRONES.format(marcas=",".join("?" * len(faltan))),
-                faltan,
-            )
+            if deposito is None:
+                cur.execute(
+                    _SQL_ARTICULOS_PATRONES.format(marcas=",".join("?" * len(faltan))),
+                    faltan,
+                )
+            else:
+                cur.execute(
+                    _SQL_ARTICULOS_PATRONES_DEP.format(marcas=",".join("?" * len(faltan))),
+                    [SUCURSAL, deposito, *faltan],
+                )
             filas = cur.fetchall()
         finally:
             conn.close()
@@ -520,16 +620,19 @@ def _articulos_de_patrones(codigos: list[str]) -> dict[str, list[dict]]:
                 a["barras"] = list(a["barras"].values())
                 lista.append(a)
             lista.sort(key=lambda a: (a["medida"].lower(), a["cod"]))
-            _cache_articulos[pat] = (ahora, lista)
+            _cache_articulos[(deposito, pat)] = (ahora, lista)
             salida[pat] = lista
     return salida
 
 
+# Pendientes del depósito elegido en el PDA + el activo del usuario aunque sea
+# de otro depósito (para avisarle que lo tiene tomado allá).
 _SQL_PENDIENTES_CONTEO = """
-SELECT c.id, c."codigoPatron", c."tomadoPor", u.nombre, c."tomadoAt"
+SELECT c.id, c."codigoPatron", c."tomadoPor", u.nombre, c."tomadoAt", c.deposito
 FROM everwear.mostrador_control c
 LEFT JOIN everwear.usuario u ON u.id = c."tomadoPor"
 WHERE c.estado = 'pendiente'
+  AND (c.deposito = %s OR (c."tomadoPor" = %s AND c."tomadoPor" IS NOT NULL))
 ORDER BY c."mandadoAt", c.id
 """
 # Contados por control (entra por la PK de mostrador_conteo, que empieza por
@@ -551,7 +654,7 @@ def _num(v) -> float | int | None:
     return int(f) if f.is_integer() else f
 
 
-def fetch_conteo(usuario_id: int | None, con_articulos: bool = True) -> dict:
+def fetch_conteo(usuario_id: int | None, deposito: int, con_articulos: bool = True) -> dict:
     """Todo lo que necesita el PDA en una sola llamada:
       · patrones: TODOS los pendientes (la vista principal), con avance y quién
         lo tomó;
@@ -559,15 +662,19 @@ def fetch_conteo(usuario_id: int | None, con_articulos: bool = True) -> dict:
       · articulos: SÓLO los del patrón activo, con lo ya contado (los demás no
         se mandan: hay patrones de miles de artículos).
     con_articulos=False (refresco automático de la lista de patrones en el PDA,
-    cada 5 s): no lee las filas de conteo del activo ni arma sus artículos."""
+    cada 5 s): no lee las filas de conteo del activo ni arma sus artículos.
+    deposito: el elegido en el PDA (Ruta / Lilser); lista sólo sus pendientes."""
+    deposito = validar_deposito(deposito)
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         _asegurar_tabla_conteo(cur)
         _asegurar_toma(cur)
+        _asegurar_deposito(cur)
         _purgar_sin_articulos(cur)
-        cur.execute(_SQL_PENDIENTES_CONTEO)
-        pend = [(int(i), c, tp, (nom or "").strip(), ta) for i, c, tp, nom, ta in cur.fetchall()]
+        cur.execute(_SQL_PENDIENTES_CONTEO, (deposito, usuario_id))
+        pend = [(int(i), c, tp, (nom or "").strip(), ta, dep)
+                for i, c, tp, nom, ta, dep in cur.fetchall()]
         activo = next((p for p in pend if usuario_id is not None and p[2] == usuario_id), None)
         contados_por: dict[int, int] = {}
         conteos = {}
@@ -584,12 +691,15 @@ def fetch_conteo(usuario_id: int | None, con_articulos: bool = True) -> dict:
         return {"patrones": [], "activoId": None, "articulos": []}
 
     m = maestro_magnus()
-    arts = _articulos_de_patrones([p[1] for p in pend])
+    arts_por_dep: dict = {}
+    for p in pend:
+        arts_por_dep.setdefault(p[5], []).append(p[1])
+    arts = {dep: _articulos_de_patrones(cods, dep) for dep, cods in arts_por_dep.items()}
     patrones, articulos = [], []
-    for cid, codigo, tomado_por, tomado_nom, tomado_at in pend:
+    for cid, codigo, tomado_por, tomado_nom, tomado_at, dep in pend:
         info = m["patrones"].get(codigo, {})
         det_pat = info.get("detalle", "")
-        lista = arts.get(codigo, [])
+        lista = arts.get(dep, {}).get(codigo, [])
         lid = info.get("linea")
         patrones.append({
             "controlId": cid,
@@ -601,6 +711,8 @@ def fetch_conteo(usuario_id: int | None, con_articulos: bool = True) -> dict:
             "tomadoPorId": tomado_por,
             "tomadoPor": tomado_nom or (f"Usuario #{tomado_por}" if tomado_por is not None else ""),
             "tomadoAt": tomado_at.isoformat() if tomado_at else None,
+            "deposito": dep,
+            "depositoNombre": nombre_deposito(dep) or "Sin depósito",
         })
         if con_articulos and activo and cid == activo[0]:
             for a in lista:
@@ -691,8 +803,9 @@ def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int
         cur = conn.cursor()
         _asegurar_tabla_conteo(cur)
         _asegurar_toma(cur)
+        _asegurar_deposito(cur)
         cur.execute(
-            """SELECT "codigoPatron", "tomadoPor" FROM everwear.mostrador_control
+            """SELECT "codigoPatron", "tomadoPor", deposito FROM everwear.mostrador_control
                WHERE id = %s AND estado = 'pendiente'""",
             (control_id,),
         )
@@ -701,15 +814,15 @@ def guardar_conteo(control_id: int, cod_articulo: str, cantidad, usuario_id: int
             raise LookupError("El patrón ya no está en control")
         if fila[1] != usuario_id:
             raise LookupError("El patrón no está tomado por vos")
-        patron = fila[0]
+        patron, dep = fila[0], fila[2]
 
         mconn = get_connection("EVERWEAR")
         try:
             mcur = mconn.cursor()
-            mcur.execute(
-                "SELECT RTRIM(ArticuloPatron), StkReal FROM StkFer_Articulos WHERE CodArticulo = ?",
-                (cod,),
-            )
+            if dep is None:
+                mcur.execute(_SQL_ART_STOCK_GLOBAL, (cod,))
+            else:
+                mcur.execute(_SQL_ART_STOCK_DEP, (SUCURSAL, dep, cod))
             art = mcur.fetchone()
         finally:
             mconn.close()
@@ -788,6 +901,14 @@ SELECT RTRIM(CodArticulo), StkReal
 FROM StkFer_Articulos
 WHERE ArticuloPatron = ? AND StkReal <> 0
 """
+# Ídem en el depósito del control (seek por artículo en el índice único).
+_SQL_STOCK_PATRON_DEP = """
+SELECT RTRIM(s.CodArticulo), d.StkReal
+FROM StkFer_Articulos s
+JOIN Stk_ArticSucursalDeposito d
+  ON d.CodArticulo = s.CodArticulo AND d.CodSucursal = ? AND d.Deposito = ?
+WHERE s.ArticuloPatron = ? AND d.StkReal <> 0
+"""
 
 
 def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: str | None) -> dict:
@@ -802,8 +923,9 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         # FOR UPDATE: dos PDA finalizando a la vez → el segundo espera y ya lo
         # encuentra cerrado (409).
         _asegurar_toma(cur)
+        _asegurar_deposito(cur)
         cur.execute(
-            """SELECT "codigoPatron", "tomadoPor" FROM everwear.mostrador_control
+            """SELECT "codigoPatron", "tomadoPor", deposito FROM everwear.mostrador_control
                WHERE id = %s AND estado = 'pendiente' FOR UPDATE""",
             (control_id,),
         )
@@ -814,7 +936,7 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         if fila[1] is not None and fila[1] != usuario_id:
             conn.rollback()
             raise LookupError("El patrón lo tiene tomado otro usuario")
-        patron = fila[0]
+        patron, dep = fila[0], fila[2]
 
         cur.execute(
             """
@@ -833,7 +955,7 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
             # baja durante el control): se QUITA de control — se borra el
             # pendiente, no queda como "controlado". Si tiene artículos, hay
             # que contar al menos uno.
-            patron_arts = _articulos_de_patrones([patron]).get(patron, [])
+            patron_arts = _articulos_de_patrones([patron], dep).get(patron, [])
             if patron_arts:
                 conn.rollback()
                 raise ValueError("No hay artículos contados en este control")
@@ -853,7 +975,10 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         mconn = get_connection("EVERWEAR")
         try:
             mcur = mconn.cursor()
-            mcur.execute(_SQL_STOCK_PATRON, (patron,))
+            if dep is None:
+                mcur.execute(_SQL_STOCK_PATRON, (patron,))
+            else:
+                mcur.execute(_SQL_STOCK_PATRON_DEP, (SUCURSAL, dep, patron))
             con_stock = mcur.fetchall()
         finally:
             mconn.close()
@@ -885,7 +1010,7 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
              WHERE id = %s
             RETURNING "cerradoAt"
             """,
-            (usuario_id, f"Control patron {patron}.xlsx", control_id),
+            (usuario_id, f"Control patron {patron} {nombre_deposito(dep)}".strip() + ".xlsx", control_id),
         )
         cerrado_at = cur.fetchone()[0]
         cur.execute(
@@ -903,6 +1028,8 @@ def finalizar_control(control_id: int, usuario_id: int | None, usuario_nombre: s
         "ok": True,
         "controlId": control_id,
         "patron": patron,
+        "deposito": dep,
+        "depositoNombre": nombre_deposito(dep),
         "contados": len(contados),
         "sinContarConStock": sin_contar,
         "conDiferencia": con_dif,
@@ -916,8 +1043,9 @@ def fetch_detalle_control(control_id: int) -> dict | None:
     try:
         cur = conn.cursor()
         _asegurar_tabla_detalle(cur)
+        _asegurar_deposito(cur)
         cur.execute(
-            """SELECT "codigoPatron", "cerradoAt" FROM everwear.mostrador_control
+            """SELECT "codigoPatron", "cerradoAt", deposito FROM everwear.mostrador_control
                WHERE id = %s AND estado = 'cerrado'""",
             (control_id,),
         )
@@ -936,14 +1064,16 @@ def fetch_detalle_control(control_id: int) -> dict | None:
         filas = cur.fetchall()
     finally:
         conn.close()
-    patron, cerrado_at = cab
+    patron, cerrado_at, dep = cab
     info = maestro_magnus()["patrones"].get(patron, {})
     det_pat = info.get("detalle", "")
     # Detalle por artículo desde el cache de artículos del patrón (no se guarda).
-    medidas = {a["cod"]: a["medida"] for a in _articulos_de_patrones([patron]).get(patron, [])}
+    medidas = {a["cod"]: a["medida"] for a in _articulos_de_patrones([patron], dep).get(patron, [])}
     return {
         "controlId": control_id,
         "patron": patron,
+        "deposito": dep,
+        "depositoNombre": nombre_deposito(dep),
         "detallePatron": det_pat,
         "cerradoAt": cerrado_at.isoformat() if cerrado_at else None,
         "filas": [

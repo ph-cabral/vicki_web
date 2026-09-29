@@ -21,6 +21,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 // por cada patrón pendiente, quién lo está contando y el % de avance
 // (artículos contados / artículos del patrón). Se refresca cada 5 s y al
 // volver a la pestaña; si un patrón se finalizó en el PDA recarga las líneas.
+// Depósito (selector del encabezado): todo es POR DEPÓSITO de mostrador —
+// Ruta (Magnus depósito 3, "EW RUTA") o Lilser (depósito 2, "CASA LILSER").
+// Controlados, fechas, pendientes y "Mandar a control" son del depósito elegido;
+// el mismo patrón puede estar en control en los dos a la vez.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Linea { id: number; nombre: string; patrones: number; controlados: number }
@@ -68,6 +72,12 @@ const ultimosControles = (cs: Control[]) =>
 
 const REFRESCO_PANEL_MS = 5_000;
 
+const DEPOSITOS = [
+  { id: 3, nombre: "Ruta" },
+  { id: 2, nombre: "Lilser" },
+] as const;
+const LS_DEPOSITO = "mostradores.admin.deposito";
+
 async function pedir<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: "no-store", ...init });
   const json = (await res.json().catch(() => null)) as (T & { error?: string }) | null;
@@ -86,6 +96,9 @@ function Barra({ valor, clase = "bg-yellow-400" }: { valor: number; clase?: stri
 }
 
 export default function AdministrarPage() {
+  const [deposito, setDeposito] = useState<number>(3);
+  const depRef = useRef(deposito);
+  depRef.current = deposito;
   const [lineas, setLineas] = useState<Linea[]>([]);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +118,9 @@ export default function AdministrarPage() {
     setCargando(true);
     setError(null);
     try {
-      const j = await pedir<{ lineas: Linea[] }>("/api/mostradores/lineas");
+      const dep = depRef.current;
+      const j = await pedir<{ lineas: Linea[] }>(`/api/mostradores/lineas?deposito=${dep}`);
+      if (dep !== depRef.current) return;
       setLineas(j.lineas);
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo cargar");
@@ -117,7 +132,9 @@ export default function AdministrarPage() {
   const cargarPatrones = useCallback(async (id: number) => {
     setEstado((s) => ({ ...s, [id]: { cargando: true, error: null, patrones: s[id]?.patrones ?? null } }));
     try {
-      const j = await pedir<{ patrones: Patron[] }>(`/api/mostradores/patrones?linea=${id}`);
+      const dep = depRef.current;
+      const j = await pedir<{ patrones: Patron[] }>(`/api/mostradores/patrones?linea=${id}&deposito=${dep}`);
+      if (dep !== depRef.current) return;
       setEstado((s) => ({ ...s, [id]: { cargando: false, error: null, patrones: j.patrones } }));
     } catch (e) {
       setEstado((s) => ({
@@ -142,7 +159,9 @@ export default function AdministrarPage() {
     panelEnVuelo.current = true;
     setPanelCargando(true);
     try {
-      const j = await pedir<{ pendientes: EnControl[] }>("/api/mostradores/pendientes");
+      const j = const dep = depRef.current;
+      const j = await pedir<{ pendientes: EnControl[] }>(`/api/mostradores/pendientes?deposito=${dep}`);
+      if (dep !== depRef.current) return; // cambió el depósito mientras volaba
       setEnControl(j.pendientes);
       setPanelError(null);
       // Si algún patrón salió de control (se finalizó en el PDA) o entró desde
@@ -160,9 +179,40 @@ export default function AdministrarPage() {
     }
   }, [recargarTodo]);
 
+  // Depósito recordado en este navegador.
+  useEffect(() => {
+    try {
+      const n = Number(localStorage.getItem(LS_DEPOSITO));
+      if (DEPOSITOS.some((d) => d.id === n) && n !== depRef.current) {
+        depRef.current = n;
+        setDeposito(n);
+      }
+    } catch {
+      /* sin storage */
+    }
+  }, []);
+
+  const cambiarDeposito = (id: number) => {
+    if (id === depRef.current) return;
+    try {
+      localStorage.setItem(LS_DEPOSITO, String(id));
+    } catch {
+      /* sin storage */
+    }
+    depRef.current = id;
+    idsEnControl.current = null;
+    setEnControl(null);
+    setLineas([]);
+    setEstado({});
+    setDeposito(id);
+  };
+
+  // Al cambiar de depósito: líneas, patrones de las abiertas y panel.
   useEffect(() => {
     cargarLineas();
-  }, [cargarLineas]);
+    abiertasRef.current.forEach((id) => cargarPatrones(id));
+    cargarPanel();
+  }, [deposito, cargarLineas, cargarPatrones, cargarPanel]);
 
   useEffect(() => {
     cargarPanel();
@@ -196,7 +246,7 @@ export default function AdministrarPage() {
       await pedir("/api/mostradores/mandar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codigoPatron: codigo }),
+        body: JSON.stringify({ codigoPatron: codigo, deposito: depRef.current }),
       });
       setEstado((s) => {
         const e = s[lineaId];
@@ -264,6 +314,20 @@ export default function AdministrarPage() {
             <p className="text-sm text-zinc-500 mt-1">Líneas y códigos patrón con el estado de su control.</p>
           </div>
           <div className="flex items-center gap-2">
+            <div className="inline-flex gap-1 rounded-lg bg-[#171717] border border-zinc-800 p-1" title="Depósito">
+              {DEPOSITOS.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => cambiarDeposito(d.id)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                    deposito === d.id ? "bg-yellow-400 text-black" : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  {d.nombre}
+                </button>
+              ))}
+            </div>
             <Button
               variant="outline"
               size="icon"
@@ -465,7 +529,7 @@ export default function AdministrarPage() {
               <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-zinc-800 bg-[#1f1f1f]">
                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-yellow-400">
                   <ClipboardList className="h-4 w-4" />
-                  En control
+                  En control · {DEPOSITOS.find((d) => d.id === deposito)?.nombre}
                   {enControl && <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] tabular-nums text-zinc-300">{enControl.length}</span>}
                 </div>
                 {panelCargando && !enControl && <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />}

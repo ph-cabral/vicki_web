@@ -4,17 +4,25 @@ const API_URL = process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001"
 
 export const dynamic = "force-dynamic";
 
+// Depósito de mostrador: 3 = Ruta, 2 = Lilser (ver indicadores-api/mostradores.py).
+const depositoValido = (v: unknown) => {
+  const n = Number(v);
+  return n === 2 || n === 3 ? n : null;
+};
+
 // Códigos patrón de UNA línea con detalle, estado y fechas de controles
 // (Mostradores → Administrar, al desplegar una línea).
-//   GET ?linea=<id> -> { linea, patrones: [{ codigo, detalle, subLinea, pendiente,
+//   GET ?linea=<id>&deposito=3|2 -> { linea, patrones: [{ codigo, detalle, subLinea, pendiente,
 //                        controlado, controles: [{ id, fecha, tieneArchivo }] }] }
 export async function GET(req: NextRequest) {
   const linea = Number(req.nextUrl.searchParams.get("linea"));
   if (!Number.isInteger(linea) || linea < 1) {
     return NextResponse.json({ error: "Parámetro 'linea' inválido" }, { status: 400 });
   }
+  const deposito = depositoValido(req.nextUrl.searchParams.get("deposito"));
+  if (!deposito) return NextResponse.json({ error: "Depósito inválido" }, { status: 400 });
   try {
-    const res = await fetch(`${API_URL}/mostradores/patrones?linea=${linea}`, {
+    const res = await fetch(`${API_URL}/mostradores/patrones?linea=${linea}&deposito=${deposito}`, {
       cache: "no-store",
       signal: AbortSignal.timeout(30000),
     });
