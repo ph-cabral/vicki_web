@@ -26,9 +26,15 @@ import {
 //     tipea el código + Enter/Tab, el que lo pega entero de golpe y el que lo
 //     tipea rápido SIN sufijo (ráfaga < 60 ms entre caracteres + 150 ms quieto).
 //     La detección del escaneo sigue activa aunque el teclado esté visible.
-//     Cantidad: un único input enfocado con el teclado numérico ABIERTO
-//     (VirtualKeyboard API, virtualkeyboardpolicy="manual"); Enter o
-//     "Enviar pedido" y vuelve al código limpio y enfocado.
+//     Si el campo tenía restos (un escaneo cortado, algo tocado), el escaneo
+//     nuevo se toma desde donde arrancó la ráfaga y los restos se descartan.
+//     El input está dentro de un <form>: el Enter que llega con el IME
+//     componiendo (keyCode 229) igual lo dispara el submit implícito.
+//     Si el foco se perdió, un keydown en cualquier lado lo devuelve al código.
+//     Cantidad: teclado numérico PROPIO en pantalla (no depende del teclado
+//     del sistema, que sin toque del usuario Android no siempre abre); el
+//     input sigue aceptando teclas físicas. Enter o "Enviar pedido" y vuelve
+//     al código limpio y enfocado.
 //   · "Consulta al depósito" está ARRIBA de la pantalla de cantidad (no en la
 //     de escaneo): la consulta sale con el código escaneado adelante.
 // El atrás del PDA cierra la capa de arriba (consulta → cantidad → código).
@@ -52,16 +58,13 @@ function vibrar(ms: number | number[]) {
   }
 }
 
-// Teclado en pantalla por API (Chrome Android): el input de cantidad lleva
-// virtualkeyboardpolicy="manual" y se le pide el teclado al enfocarlo, porque un
-// focus() disparado por el escaneo (no por un toque) no lo abre solo.
-const mostrarTecladoVirtual = () => {
-  try {
-    (navigator as Navigator & { virtualKeyboard?: { show: () => void } }).virtualKeyboard?.show();
-  } catch {
-    /* sin API: queda el comportamiento normal del navegador */
-  }
-};
+// Umbrales del lector: entre caracteres de una ráfaga, pausa que corta la
+// ráfaga y pausa que marca el arranque de un escaneo nuevo sobre restos.
+const RAFAGA_MS = 80;
+const QUIETO_MS = 150;
+const ARRANQUE_MS = 300;
+
+const TECLAS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ",", "0", "⌫"];
 
 const empujar = (estado: Record<string, boolean>) => {
   try {
@@ -103,6 +106,7 @@ export default function PickerPage() {
   const ultimoCharEn = useRef(0);
   const rafagaRef = useRef(false);
   const rafagaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inicioRafaga = useRef(0); // posición del input donde arrancó la ráfaga
 
   // Espejos para los listeners (se montan una vez y leen el valor actual).
   const selRef = useRef<string | null>(null);
@@ -174,7 +178,21 @@ export default function PickerPage() {
     window.addEventListener("touchend", t, { passive: true });
     window.addEventListener("click", t);
     window.addEventListener("focus", t);
+    window.addEventListener("pageshow", t);
+    const onVis = () => {
+      if (document.visibilityState === "visible") t();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    // Lector tipeando con el foco perdido: se enfoca el código en el keydown
+    // (fase captura) y el carácter cae en el input.
+    const onKey = () => {
+      if (document.activeElement !== codigoRef.current) enfocar();
+    };
+    document.addEventListener("keydown", onKey, true);
     return () => {
+      window.removeEventListener("pageshow", t);
+      document.removeEventListener("visibilitychange", onVis);
+      document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", t);
       window.removeEventListener("touchend", t);
       window.removeEventListener("click", t);
@@ -217,17 +235,25 @@ export default function PickerPage() {
   // Al volver al código: input limpio, teclado oculto, foco listo para escanear.
   useEffect(() => {
     if (sel) {
-      requestAnimationFrame(() => {
-        cantRef.current?.focus();
-        mostrarTecladoVirtual();
-      });
+      requestAnimationFrame(() => cantRef.current?.focus({ preventScroll: true }));
       return;
     }
     setCodigo("");
     previoRef.current = "";
+    inicioRafaga.current = 0;
+    rafagaRef.current = false;
     setTeclado(false);
     if (!chatRef.current) requestAnimationFrame(() => codigoRef.current?.focus({ preventScroll: true }));
   }, [sel]);
+
+  // Lo que se abre con Enter/submit: si recién terminó una ráfaga de lector, sólo
+  // lo que tipeó el lector (sin restos previos); si no, el campo entero.
+  const abrirActual = () => {
+    const valor = codigoRef.current?.value ?? "";
+    const reciente = rafagaRef.current && Date.now() - ultimoCharEn.current < 500;
+    const parte = reciente ? valor.slice(inicioRafaga.current) : "";
+    abrir(parte.trim().length >= 3 ? parte : valor);
+  };
 
   const onCodigoKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // Enter (algunos lectores lo mandan con key "Unidentified" y keyCode 13) o
@@ -235,7 +261,7 @@ export default function PickerPage() {
     const valor = e.currentTarget.value;
     if (e.key === "Enter" || e.keyCode === 13 || (e.key === "Tab" && valor.trim())) {
       e.preventDefault();
-      abrir(valor);
+      abrirActual();
     } else if (e.key === "Escape") {
       setCodigo("");
       previoRef.current = "";
@@ -249,9 +275,17 @@ export default function PickerPage() {
     const previo = previoRef.current;
     const salto = nuevo.length - previo.length;
     const ahora = Date.now();
-    // Ráfaga: arrancó desde vacío y cada carácter llegó a < 60 ms del anterior
-    // (velocidad de lector; una persona tipeando nunca llega).
-    rafagaRef.current = previoRef.current === "" ? true : rafagaRef.current && ahora - ultimoCharEn.current < 60;
+    const pausa = ahora - ultimoCharEn.current;
+    const agrega = nuevo.startsWith(previo); // se sumó al final (lector / tipeo)
+    // Arranque de ráfaga: campo vacío, o pausa larga con restos en el campo
+    // (escaneo nuevo sobre lo que quedó). Sigue siendo ráfaga mientras cada
+    // carácter llegue a < RAFAGA_MS del anterior (una persona no llega).
+    if (previo === "" || (pausa > ARRANQUE_MS && agrega)) {
+      rafagaRef.current = true;
+      inicioRafaga.current = agrega ? previo.length : 0;
+    } else {
+      rafagaRef.current = rafagaRef.current && agrega && pausa < RAFAGA_MS;
+    }
     ultimoCharEn.current = ahora;
     previoRef.current = nuevo;
     const desdeVacio = previo === "";
@@ -261,19 +295,20 @@ export default function PickerPage() {
     // Lectores que "pegan" el código entero sin Enter. Con el teclado oculto
     // sólo puede venir del lector; con el teclado visible se exige además que
     // el campo estuviera vacío (una sugerencia del teclado reemplaza lo ya
-    // tipeado, nunca llega a un campo vacío). Así escanear abre la cantidad
-    // aunque el picker haya tocado el campo antes.
+    // tipeado, nunca llega a un campo vacío). Con restos en el campo se abre
+    // sólo lo pegado.
     if (salto >= 4 && (!teclado || desdeVacio)) {
-      abrir(nuevo);
+      abrir(agrega && !desdeVacio ? nuevo.slice(previo.length) : nuevo);
       return;
     }
-    // Lectores que tipean sin sufijo: cuando la ráfaga se corta 150 ms, se abre
-    // (también con el teclado visible: tocando la pantalla nadie baja de 60 ms).
-    if (rafagaRef.current && nuevo.trim().length >= 3) {
+    // Lectores que tipean sin sufijo: cuando la ráfaga se corta QUIETO_MS, se
+    // abre lo que tipeó el lector (también con el teclado visible).
+    const parte = nuevo.slice(inicioRafaga.current);
+    if (rafagaRef.current && parte.trim().length >= 3) {
       rafagaTimer.current = setTimeout(() => {
         rafagaTimer.current = null;
-        if (rafagaRef.current && codigoRef.current?.value === nuevo) abrir(nuevo);
-      }, 150);
+        if (rafagaRef.current && codigoRef.current?.value === nuevo) abrir(parte);
+      }, QUIETO_MS);
     }
   };
 
@@ -283,6 +318,18 @@ export default function PickerPage() {
     },
     [],
   );
+
+  // Teclado numérico propio de la pantalla de cantidad.
+  const tecla = (k: string) => {
+    vibrar(12);
+    setErrorCant(null);
+    setCantidad((c) => {
+      if (k === "⌫") return c.slice(0, -1);
+      if (k === ",") return /[.,]/.test(c) ? c : (c || "0") + ",";
+      if (c.length >= 9) return c;
+      return c === "0" ? k : c + k;
+    });
+  };
 
   // ── Enviar pedido ──────────────────────────────────────────────────────────
   const enviar = async () => {
@@ -340,10 +387,7 @@ export default function PickerPage() {
   // Al cerrar la consulta se vuelve a la cantidad del mismo código, enfocada.
   useEffect(() => {
     if (!chatAbierto && selRef.current)
-      requestAnimationFrame(() => {
-        cantRef.current?.focus();
-        mostrarTecladoVirtual();
-      });
+      requestAnimationFrame(() => cantRef.current?.focus({ preventScroll: true }));
   }, [chatAbierto]);
 
   const enviarChat = async () => {
@@ -476,7 +520,7 @@ export default function PickerPage() {
         </header>
 
         <form
-          className="flex-1 flex flex-col gap-4 px-4 pt-4"
+          className="flex-1 flex flex-col gap-3 px-4 pt-3 pb-4"
           onSubmit={(e) => {
             e.preventDefault();
             enviar();
@@ -491,12 +535,9 @@ export default function PickerPage() {
             ref={cantRef}
             autoFocus
             type="text"
-            inputMode="numeric"
+            inputMode="none"
             enterKeyHint="send"
             autoComplete="off"
-            {...({ virtualkeyboardpolicy: "manual" } as Record<string, string>)}
-            onFocus={mostrarTecladoVirtual}
-            onClick={mostrarTecladoVirtual}
             placeholder="Cantidad"
             value={cantidad}
             onChange={(e) => setCantidad(e.target.value.replace(/[^\d.,]/g, ""))}
@@ -512,6 +553,24 @@ export default function PickerPage() {
               {errorCant}
             </div>
           )}
+
+          <div className="grid grid-cols-3 gap-2">
+            {TECLAS.map((k) => (
+              <button
+                key={k}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => tecla(k)}
+                className={`rounded-lg border-2 py-3 text-3xl font-bold tabular-nums select-none ${
+                  k === "⌫"
+                    ? "border-zinc-700 bg-[#1f1f1f] text-zinc-300 active:bg-zinc-700"
+                    : "border-zinc-700 bg-[#1f1f1f] text-white active:bg-yellow-400 active:text-black"
+                }`}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
 
           <button
             type="submit"
@@ -541,7 +600,13 @@ export default function PickerPage() {
           </div>
         </header>
 
-        <div className="flex items-center gap-2 px-3 pb-2">
+        <form
+          className="flex items-center gap-2 px-3 pb-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            abrirActual();
+          }}
+        >
           <div className="relative flex-1">
             <ScanLine className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-zinc-500 pointer-events-none" />
             <input
@@ -584,7 +649,7 @@ export default function PickerPage() {
               <Keyboard className="h-5 w-5" />
             </button>
           )}
-        </div>
+        </form>
 
         {aviso && (
           <div
