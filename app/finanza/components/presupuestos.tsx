@@ -992,6 +992,8 @@ type OcDetalleFila = {
   comprador: string | null;
   observacion: string | null;
   pedidoProveedor: string | null;
+  /** Detalle Complementario de los renglones (Com_DetalleComplement). */
+  detalle: string | null;
   moneda: number;
   cotizacion: number;
   items: number;
@@ -1245,9 +1247,15 @@ function ModalDetalleOC({
                               </td>
                               <td
                                 className="px-3 py-1.5 text-zinc-400 max-w-[320px] truncate"
-                                title={o.observacion ?? ""}
+                                title={
+                                  [o.detalle, o.observacion]
+                                    .filter(Boolean)
+                                    .join(" · ")
+                                }
                               >
-                                {o.observacion ??
+                                {[o.detalle, o.observacion]
+                                  .filter(Boolean)
+                                  .join(" · ") ||
                                   (o.pedidoProveedor
                                     ? `Pedido prov. ${o.pedidoProveedor}`
                                     : "—")}

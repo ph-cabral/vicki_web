@@ -431,6 +431,19 @@ FROM EVERWEAR.dbo.Com_OrdCompCabecera WITH (NOLOCK)
 WHERE NroOrdCompra IN ({ids})
 """
 
+# "Detalle Complementario" de cada renglón de la OC (el texto libre que se
+# carga en Magnus con el botón del renglón). Vive en Com_DetalleComplement,
+# Clase 20 = OC (21/22 son otros movimientos de compras), NroMovCompra =
+# NroOrdCompra. El clustered es (Clase, NroMovCompra, NroRenglon): con Clase
+# fija + IN de OC es un seek puro, sólo para las OC que quedaron en el modal.
+SQL_DETALLE_COMPL = """
+SELECT NroMovCompra, NroRenglon, RTRIM(DetalleComplem)
+FROM EVERWEAR.dbo.Com_DetalleComplement WITH (NOLOCK)
+WHERE Clase = 20
+  AND NroMovCompra IN ({ids})
+ORDER BY NroMovCompra, NroRenglon
+"""
+
 SQL_PROVEEDORES = """
 SELECT CodProveed, RazonSocial, NombreComercial
 FROM EVERWEAR.dbo.Com_Proveedores WITH (NOLOCK)
@@ -515,6 +528,7 @@ def fetch_oc_detalle_area(codigo: int,
             filas = filas[:MAX_OC_DETALLE]
 
         obs: dict[int, tuple[str | None, str | None]] = {}
+        det: dict[int, list[str]] = {}
         provs: dict[int, str | None] = {}
         compradores: dict[int, str | None] = {}
         if filas:
@@ -522,6 +536,11 @@ def fetch_oc_detalle_area(codigo: int,
                 cur.execute(SQL_OBS.format(ids=",".join(str(i) for i in lote)))
                 for nro, o, ped in cur.fetchall():
                     obs[int(nro or 0)] = (_txt(o), _txt(ped))
+                cur.execute(SQL_DETALLE_COMPL.format(ids=",".join(str(i) for i in lote)))
+                for nro, _reng, txt in cur.fetchall():
+                    t = " ".join((_txt(txt) or "").split())
+                    if t:
+                        det.setdefault(int(nro or 0), []).append(t)
             codigos_prov = {f["codProveedor"] for f in filas if f["codProveedor"]}
             for lote in _lotes(codigos_prov):
                 cur.execute(SQL_PROVEEDORES.format(ids=",".join(str(i) for i in lote)))
@@ -543,6 +562,8 @@ def fetch_oc_detalle_area(codigo: int,
         o, ped = obs.get(f["oc"], (None, None))
         f["observacion"] = o
         f["pedidoProveedor"] = ped
+        # Detalle complementario de los renglones, en orden, sin repetidos.
+        f["detalle"] = " · ".join(dict.fromkeys(det.get(f["oc"], []))) or None
         f["proveedor"] = provs.get(f["codProveedor"]) or (
             f"PROVEEDOR {f['codProveedor']}" if f["codProveedor"] else None
         )
