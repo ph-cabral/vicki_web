@@ -70,6 +70,12 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // Estado del picking para el widget de escritorio (autoelevador):
   // sólo lectura del conteo de pendientes, GET exacto, sin datos sensibles.
   if (method === "GET" && pathname === "/api/picking/estado") return true;
+  // App Android del picker: stream SSE de sus notificaciones (sin sesión, igual
+  // que la página del picker) y descarga del APK. Ver lib/picking/notificaciones.ts.
+  if (method === "GET" && pathname === "/api/picking/notificaciones") return true;
+  // Estado (pedido / s/e) de los "Enviados recién" del picker, por id.
+  if (method === "GET" && pathname === "/api/picking/eventos/estados") return true;
+  if (method === "GET" && pathname === "/apk/everwear-picker.apk") return true;
   // APIs que el picker necesita, sólo en POST.
   if (
     method === "POST" &&

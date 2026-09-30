@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publicarAlPicker } from "@/lib/picking/notificaciones";
 
 export async function PATCH(
   req: Request,
@@ -17,25 +18,17 @@ export async function PATCH(
       data: { respuesta, respondido: true },
     });
 
-    const topic = `everwear-picking-${actualizado.picker_nombre
-      .toLowerCase()
-      .replace(/\s+/g, "-")}`;
-
+    // Notificación a la app Android del picker (canal SSE propio, ver
+    // lib/picking/notificaciones.ts — reemplazó a ntfy.sh).
     try {
-      await fetch(`https://ntfy.sh/${topic}`, {
-        method: "POST",
-        headers: {
-          Title: "Nuevo mensaje",
-          Priority: "default",
-          Tags: "speech_balloon",
-          "Content-Type": "text/plain",
-        },
-        // body: respuesta,
-        // body: `${actualizado.picker_nombre}: ${actualizado.mensaje}\n\nGerencia: ${respuesta}`,
-        body: `YO: ${actualizado.mensaje}\nGerencia: ${respuesta}`,
+      publicarAlPicker(actualizado.picker_nombre, {
+        tipo: "chat",
+        titulo: "Nuevo mensaje",
+        cuerpo: `YO: ${actualizado.mensaje}\nGerencia: ${respuesta}`,
+        prioridad: "default",
       });
-    } catch (ntfyError) {
-      console.warn("ntfy error (no crítico):", ntfyError);
+    } catch (e) {
+      console.warn("notificación picker (no crítico):", e);
     }
 
     return NextResponse.json(actualizado);

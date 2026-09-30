@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Download,
   Keyboard,
   Loader2,
   MessageSquare,
@@ -43,10 +44,25 @@ import {
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Reciente {
+  id?: number; // picking_eventos.id (para seguir su estado)
   codigo: string;
   cantidad: number;
   hora: string;
+  estado?: string; // "pendiente" | "pedido" | "s/e"
+  nota?: string | null;
 }
+
+// "Enviados recién" sobrevive a recargas/reaperturas en el día (por picker).
+const RECIENTES_KEY = "picker_recientes";
+const hoy = () => new Date().toLocaleDateString("sv-SE");
+const leerRecientes = (picker: string): Reciente[] => {
+  try {
+    const g = JSON.parse(localStorage.getItem(RECIENTES_KEY) ?? "null");
+    return g && g.dia === hoy() && g.picker === picker && Array.isArray(g.items) ? g.items : [];
+  } catch {
+    return [];
+  }
+};
 
 const fmtCant = (n: number) => n.toLocaleString("es-AR", { maximumFractionDigits: 3 });
 
@@ -74,6 +90,13 @@ const empujar = (estado: Record<string, boolean>) => {
   }
 };
 
+// Puente JS que expone la app Android "EverWear Picker" (WebView).
+type PuenteApp = { setPicker: (nombre: string) => void };
+const puenteApp = (): PuenteApp | undefined =>
+  typeof window === "undefined"
+    ? undefined
+    : (window as unknown as { EverWearApp?: PuenteApp }).EverWearApp;
+
 export default function PickerPage() {
   const [listo, setListo] = useState(false); // ya se leyó localStorage
   const [pickerNombre, setPickerNombre] = useState<string | null>(null);
@@ -92,6 +115,7 @@ export default function PickerPage() {
 
   // Consulta al depósito
   const [chatAbierto, setChatAbierto] = useState(false);
+  const [enApp, setEnApp] = useState(false);
   const [mensajeChat, setMensajeChat] = useState("");
   const [enviandoChat, setEnviandoChat] = useState(false);
   const [errorChat, setErrorChat] = useState<string | null>(null);
@@ -119,12 +143,75 @@ export default function PickerPage() {
   useEffect(() => {
     try {
       const n = localStorage.getItem("picker_nombre");
-      if (n) setPickerNombre(n);
+      if (n) {
+        setPickerNombre(n);
+        setRecientes(leerRecientes(n));
+      }
     } catch {
       /* sin storage */
     }
+    setEnApp(!!puenteApp());
     setListo(true);
   }, []);
+
+  // Dentro de la app Android (android/picker) le paso el nombre para que su
+  // servicio escuche /api/picking/notificaciones de ese picker ("" = apagar).
+  useEffect(() => {
+    if (!listo) return;
+    try {
+      puenteApp()?.setPicker(pickerNombre ?? "");
+    } catch {
+      /* puente no disponible */
+    }
+  }, [listo, pickerNombre]);
+
+  useEffect(() => {
+    if (!listo || !pickerNombre) return;
+    try {
+      localStorage.setItem(RECIENTES_KEY, JSON.stringify({ dia: hoy(), picker: pickerNombre, items: recientes }));
+    } catch {
+      /* sin storage */
+    }
+  }, [listo, pickerNombre, recientes]);
+
+  // Mientras haya enviados sin responder, consulto su estado cada 5 s (por PK, máx. 8 ids).
+  const idsPendientes = recientes
+    .filter((r) => r.id && (!r.estado || r.estado === "pendiente"))
+    .map((r) => r.id)
+    .join(",");
+  useEffect(() => {
+    if (!idsPendientes) return;
+    let vivo = true;
+    const consultar = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch(`/api/picking/eventos/estados?ids=${idsPendientes}`, { cache: "no-store" });
+        if (!res.ok || !vivo) return;
+        const filas = (await res.json()) as { id: number; estado: string; respuesta_nota: string | null }[];
+        const porId = new Map(filas.map((f) => [f.id, f]));
+        setRecientes((prev) => {
+          let cambio = false;
+          const next = prev.map((r) => {
+            const f = r.id ? porId.get(r.id) : undefined;
+            if (!f || (f.estado === r.estado && f.respuesta_nota === (r.nota ?? null))) return r;
+            cambio = true;
+            return { ...r, estado: f.estado, nota: f.respuesta_nota };
+          });
+          return cambio ? next : prev;
+        });
+      } catch {
+        /* sin red: reintenta en el próximo tick */
+      }
+    };
+    consultar();
+    const t = setInterval(consultar, 5000);
+    document.addEventListener("visibilitychange", consultar);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", consultar);
+    };
+  }, [idsPendientes]);
 
   const guardarNombre = () => {
     const n = nombreInput.trim();
@@ -134,6 +221,7 @@ export default function PickerPage() {
     } catch {
       /* sin storage */
     }
+    setRecientes(leerRecientes(n));
     setPickerNombre(n);
   };
 
@@ -145,6 +233,7 @@ export default function PickerPage() {
     }
     setNombreInput("");
     setPickerNombre(null);
+    setRecientes([]);
   };
 
   const mostrarAviso = useCallback((tipo: "ok" | "error", texto: string, ms?: number) => {
@@ -356,9 +445,10 @@ export default function PickerPage() {
         const json = (await res.json().catch(() => null)) as { error?: string } | null;
         throw new Error(json?.error ?? "Error al enviar");
       }
+      const creado = (await res.json().catch(() => null)) as { id?: number } | null;
       vibrar(40);
       const hora = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
-      setRecientes((prev) => [{ codigo: sel, cantidad: n, hora }, ...prev].slice(0, 8));
+      setRecientes((prev) => [{ id: creado?.id, codigo: sel, cantidad: n, hora, estado: "pendiente" }, ...prev].slice(0, 8));
       mostrarAviso("ok", `✓ Pedido enviado ${sel} · ${fmtCant(n)}`);
       cerrar();
     } catch (e) {
@@ -416,7 +506,6 @@ export default function PickerPage() {
     }
   };
 
-  const topic = `everwear-picking-${pickerNombre?.toLowerCase().replace(/\s+/g, "-")}`;
 
   if (!listo) return <div className="min-h-[100dvh] bg-[#111111]" />;
 
@@ -488,6 +577,7 @@ export default function PickerPage() {
           >
             Entrar
           </button>
+          {!enApp && <BotonDescargarApp />}
         </div>
       </div>
     );
@@ -674,14 +764,49 @@ export default function PickerPage() {
           <>
             <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Enviados recién</div>
             <ul className="divide-y divide-zinc-800/70">
-              {recientes.map((r, i) => (
-                <li key={`${r.codigo}-${r.hora}-${i}`} className="py-2 flex items-center gap-3">
-                  <Check className="h-4 w-4 text-emerald-400 shrink-0" />
-                  <span className="font-mono font-semibold text-zinc-100 break-all flex-1">{r.codigo}</span>
-                  <span className="tabular-nums font-bold text-emerald-300">{fmtCant(r.cantidad)}</span>
-                  <span className="text-xs text-zinc-500 tabular-nums">{r.hora}</span>
-                </li>
-              ))}
+              {recientes.map((r, i) => {
+                // verde = con existencia (pedido), rojo = sin existencia, gris = esperando respuesta
+                const ok = r.estado === "pedido";
+                const sinEx = r.estado === "s/e";
+                return (
+                  <li
+                    key={`${r.id ?? r.codigo}-${r.hora}-${i}`}
+                    className={`py-2 px-2 -mx-2 rounded ${
+                      ok ? "bg-emerald-950/60" : sinEx ? "bg-red-950/60" : ""
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      {ok ? (
+                        <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+                      ) : sinEx ? (
+                        <X className="h-4 w-4 text-red-400 shrink-0" />
+                      ) : (
+                        <Loader2 className="h-4 w-4 text-zinc-500 shrink-0 animate-spin" />
+                      )}
+                      <span
+                        className={`font-mono font-semibold break-all flex-1 ${
+                          ok ? "text-emerald-200" : sinEx ? "text-red-200" : "text-zinc-100"
+                        }`}
+                      >
+                        {r.codigo}
+                      </span>
+                      <span
+                        className={`tabular-nums font-bold ${
+                          ok ? "text-emerald-300" : sinEx ? "text-red-300" : "text-zinc-300"
+                        }`}
+                      >
+                        {fmtCant(r.cantidad)}
+                      </span>
+                      <span className="text-xs text-zinc-500 tabular-nums">{r.hora}</span>
+                    </div>
+                    {r.nota && (
+                      <div className={`text-xs mt-0.5 pl-7 ${sinEx ? "text-red-300/80" : "text-emerald-300/80"}`}>
+                        {r.nota}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
@@ -690,20 +815,14 @@ export default function PickerPage() {
       <div className="px-3 pb-4 space-y-3">
         <div className="rounded-lg bg-[#171717] border border-zinc-800 p-3 space-y-1.5">
           <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Notificaciones</p>
-          <p className="text-sm text-zinc-400">
-            Instalá{" "}
-            <a
-              href="https://ntfy.sh"
-              target="_blank"
-              rel="noopener noreferrer"
-              onMouseDown={(e) => e.preventDefault()}
-              className="text-yellow-400 underline"
-            >
-              ntfy
-            </a>{" "}
-            y suscribite a:
-          </p>
-          <div className="rounded bg-[#1f1f1f] px-3 py-1.5 font-mono text-sm text-emerald-400 break-all">{topic}</div>
+          {enApp ? (
+            <p className="text-sm text-emerald-400">Activas en esta app (con sonido aunque esté cerrada).</p>
+          ) : (
+            <>
+              <p className="text-sm text-zinc-400">Instalá la app EverWear Picker para recibir las respuestas.</p>
+              <BotonDescargarApp />
+            </>
+          )}
         </div>
         <button
           type="button"
@@ -716,5 +835,21 @@ export default function PickerPage() {
       </div>
 
     </div>
+  );
+}
+
+// Descarga del APK (sólo se muestra fuera de la app: el WebView no maneja descargas).
+function BotonDescargarApp() {
+  return (
+    <a
+      href="/apk/everwear-picker.apk"
+      download="everwear-picker.apk"
+      type="application/vnd.android.package-archive"
+      onMouseDown={(e) => e.preventDefault()}
+      className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-yellow-400 text-yellow-400 active:bg-yellow-400/10 font-bold py-3"
+    >
+      <Download className="h-5 w-5" />
+      Descargar app
+    </a>
   );
 }

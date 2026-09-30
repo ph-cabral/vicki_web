@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { publicarAlPicker } from "@/lib/picking/notificaciones";
 
 export async function PATCH(
   req: NextRequest,
@@ -31,32 +32,22 @@ export async function PATCH(
       },
     });
 
-    // Notificación ntfy al picker
-    const topic = `everwear-picking-${evento.picker_nombre
-      .toLowerCase()
-      .replace(/\s+/g, "-")}`;
-    
-    console.log(topic)
+    // Notificación a la app Android del picker (canal SSE propio, ver
+    // lib/picking/notificaciones.ts — reemplazó a ntfy.sh).
     const esOk = estado === "pedido";
-    const titulo = esOk ? "Pedido confirmado" : "Sin existencia";
     const cuerpo = respuesta_nota
       ? `${evento.codigo} x${evento.cantidad} — ${respuesta_nota}`
       : `${evento.codigo} x${evento.cantidad}`;
-
     try {
-      await fetch(`https://ntfy.sh/${topic}`, {
-        method: "POST",
-        headers: {
-          Title: titulo,
-          Priority: esOk ? "default" : "high",
-          Tags: esOk ? "white_check_mark" : "x",
-          "Content-Type": "text/plain",
-        },
-        body: cuerpo,
+      publicarAlPicker(evento.picker_nombre, {
+        tipo: esOk ? "pedido" : "sin_existencia",
+        titulo: esOk ? "Pedido confirmado" : "Sin existencia",
+        cuerpo,
+        prioridad: esOk ? "default" : "high",
       });
-    } catch (ntfyError) {
-      // No rompe el flujo si ntfy falla
-      console.warn("ntfy error (no crítico):", ntfyError);
+    } catch (e) {
+      // No rompe el flujo si falla la notificación
+      console.warn("notificación picker (no crítico):", e);
     }
 
     return NextResponse.json(evento);
