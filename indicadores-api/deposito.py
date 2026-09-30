@@ -341,9 +341,14 @@ WHERE TRY_CAST(LEFT(CodComprobante, CHARINDEX(' ', CodComprobante + ' ') - 1) AS
 """
 
 
-def _pedido_ts(fecha_dias, hora_hhmm):
-    """FechaXXX (días desde 1800-12-28) + HoraXXX (HHMM) -> datetime, o None si
-    la etapa todavía no ocurrió (fecha <= 0) — mismo criterio que utils.py."""
+def _pedido_ts(fecha_dias, hora_cs):
+    """FechaXXX (días desde 1800-12-28) + HoraXXX -> datetime, o None si la
+    etapa todavía no ocurrió (fecha <= 0).
+    HoraXXX de VenFer_PedidoCabecera = CENTÉSIMAS DE SEGUNDO desde medianoche
+    (3727100 = 10:21:11), NO HHMM: verificado contra OTFechaHoraRegist del WMS
+    (HoraCierre 3790664 = 10:31:46 = alta de la OT) y en toda la tabla desde
+    2025 (máx ~8.600.000 = 23:53). Con HHMM caían a años de distancia y las
+    barras de Ingresados/Cerrados de /deposito quedaban vacías."""
     try:
         f = int(fecha_dias) if fecha_dias is not None else 0
     except (TypeError, ValueError):
@@ -351,13 +356,14 @@ def _pedido_ts(fecha_dias, hora_hhmm):
     if f <= 0:
         return None
     try:
-        h = int(hora_hhmm) if hora_hhmm not in (None, "") else 0
+        cs = int(hora_cs) if hora_cs not in (None, "") else 0
     except (TypeError, ValueError):
-        h = 0
-    horas, minutos = divmod(h, 100)
+        cs = 0
+    if cs < 0 or cs >= 8_640_000:  # fuera de un día → hora desconocida
+        cs = 0
     try:
         base = _BASE_PEDIDO + timedelta(days=f)
-        return datetime(base.year, base.month, base.day) + timedelta(hours=horas, minutes=minutos)
+        return datetime(base.year, base.month, base.day) + timedelta(seconds=cs // 100)
     except (ValueError, OverflowError):
         return None
 
@@ -611,6 +617,144 @@ def _wms_transiciones_del_dia(dia: date) -> dict:
         conn.close()
 
 
+# Gráfico 1 ("Estados del WMS por hora"): cuántas OT HAY en cada estado al
+# cierre de cada bloque de 15 min (foto reconstruida, no flujo), desde las
+# marcas de la propia OT: Regist / PickIni / Ejecucion. En el WMS las marcas
+# vacías vienen como 1753-01-01 (no NULL) → se tratan como "no ocurrió".
+#   · Sin asignar = OT registrada y no terminada al corte, cuyo operario es
+#     nadie ("— Sin asignar") o Carossio Jose, Y cuyo pedido está Abierto en
+#     Magnus a esa hora (no cancelado/sin confirmar, sin cierre o cierre
+#     posterior al corte). El filtro Magnus saca las OT fantasma sin operario:
+#     el WMS genera una OT sin operario en el mismo segundo en que el pedido se
+#     cierra en Magnus (HoraCierre == OTFechaHoraRegist) y quedan vivas para
+#     siempre en estado 1 aunque el pedido ya esté facturado.
+#   · En proceso  = OT con picking arrancado (PickIni <= corte) y no terminada,
+#     de cualquier operario MENOS: sin operario, Carossio Jose, Personal 290
+#     ("Prioridad 1") y Mercaderia X Llegar (buzones, no gente pickeando).
+#   · Cumplido sigue siendo FLUJO (terminadas en el bloque) — ver trans.
+# El operario es el ACTUAL de la OT (el WMS no guarda historial de reasignación).
+# Universo: OT de Picking vivas (0/1/5, cualquier fecha) + las que terminaron
+# (2/3/4) desde el inicio del día consultado — cualquier OT viva en algún corte
+# del día está en uno de los dos grupos.
+WMS_ESTADOS_OT_TERMINADOS = (2, 3, 4)
+OPERARIOS_SIN_ASIGNAR_CORTE = frozenset(_clave_operario(n) for n in ("Carossio Jose",))
+PERSONAL_IDS_FUERA_PROCESO = frozenset({"290"})  # Prioridad 1
+
+SQL_WMS_ESTADO_CORTE = """
+SELECT
+    OT.OTFechaHoraRegist,
+    OT.OTFechaHoraPickIni,
+    OT.OTFechaHoraEjecucion,
+    OT.{col_pedido}           AS NroMovVenta,
+    LTRIM(RTRIM(P.PersonalId)) AS PersonalId,
+    P.PersonalNombre
+FROM OT
+INNER JOIN Codot ON OT.CodotCodigo = Codot.CodotCodigo
+LEFT JOIN Personal P ON OT.OTUsuarioGUID_Repositor = P.PersonalId
+WHERE Codot.CodotProcesoNegocio = 4
+  AND OT.OTFechaHoraRegist < ?
+  AND ( OT.OTEstado IN ({vivos})
+        OR (OT.OTEstado IN ({terminados}) AND OT.OTFechaHoraEjecucion >= ?) )
+"""
+
+SQL_MAGNUS_PEDIDO_ABIERTO = """
+SELECT NroMovVenta, EstadoPedido, FechaCierre, HoraCierre
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera
+WHERE NroMovVenta IN ({ph})
+"""
+
+# Estados Magnus en que el pedido todavía NO está / ya no puede estar abierto.
+MAGNUS_ESTADOS_NO_ABIERTO = (0, 1, 7)  # Sin confirmar, Confirmado, Cancelados
+
+
+def _wms_ts(v):
+    """Marca de hora del WMS o None si viene vacía (1753-01-01 / NULL)."""
+    if v is None or getattr(v, "year", 1900) < 1900:
+        return None
+    return v
+
+
+def _wms_estado_corte_del_dia(dia: date) -> tuple[list, list]:
+    """(sin_asignar, en_proceso) para contar por corte:
+      sin_asignar = [(reg, fin_ts)] con fin_ts = min(ejecución WMS, cierre
+                    Magnus) o None si sigue abierta; ya filtrado por Magnus.
+      en_proceso  = [(pick_ini, ejec)].
+    Una consulta al WMS + una a Magnus sólo con los pedidos candidatos a sin
+    asignar (decenas). Vacío si alguna base no contesta."""
+    ini = datetime(dia.year, dia.month, dia.day)
+    fin = ini + timedelta(days=1)
+    try:
+        conn = get_connection("WMS")
+    except Exception as e:  # noqa: BLE001
+        print(f"[estado-corte] WMS no disponible: {e}")
+        return [], []
+    try:
+        cur = conn.cursor()
+        cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(
+            SQL_WMS_ESTADO_CORTE.format(
+                col_pedido=OT_COL_PEDIDO,
+                vivos=",".join(str(e) for e in WMS_ESTADOS_VIVOS),
+                terminados=",".join(str(e) for e in WMS_ESTADOS_OT_TERMINADOS),
+            ),
+            (fin, ini),
+        )
+        filas = cur.fetchall()
+    finally:
+        conn.close()
+
+    candidatos_sin: list[tuple[datetime, datetime | None, int | None]] = []
+    en_proceso: list[tuple[datetime, datetime | None]] = []
+    for reg, pini, ejec, nro, pid, nombre in filas:
+        reg, pini, ejec = _wms_ts(reg), _wms_ts(pini), _wms_ts(ejec)
+        if reg is None:
+            continue
+        clave = _clave_operario(nombre)
+        if not clave or clave in OPERARIOS_SIN_ASIGNAR_CORTE:
+            candidatos_sin.append((reg, ejec, int(nro) if nro is not None else None))
+            continue
+        if (str(pid or "").strip() in PERSONAL_IDS_FUERA_PROCESO
+                or clave == _clave_operario(OPERARIO_ESPERA_MERCA)):
+            continue
+        if pini is not None:
+            en_proceso.append((pini, ejec))
+
+    # Estado del pedido en Magnus para los candidatos a "sin asignar".
+    pedidos = sorted({n for _, _, n in candidatos_sin if n is not None})
+    magnus: dict[int, datetime | None] = {}  # nro -> ts cierre (None = sigue abierto)
+    if pedidos:
+        try:
+            conn = get_connection("EVERWEAR")
+        except Exception as e:  # noqa: BLE001
+            print(f"[estado-corte] Magnus no disponible: {e}")
+            conn = None
+        if conn is not None:
+            try:
+                cur = conn.cursor()
+                CH = 1000
+                for i in range(0, len(pedidos), CH):
+                    chunk = pedidos[i:i + CH]
+                    cur.execute(
+                        SQL_MAGNUS_PEDIDO_ABIERTO.format(ph=",".join("?" for _ in chunk)),
+                        chunk,
+                    )
+                    for nro, estado, f_cie, h_cie in cur.fetchall():
+                        if nro is None or int(estado or 0) in MAGNUS_ESTADOS_NO_ABIERTO:
+                            continue
+                        magnus[int(nro)] = _pedido_ts(f_cie, h_cie)
+            finally:
+                conn.close()
+
+    sin_asignar: list[tuple[datetime, datetime | None]] = []
+    for reg, ejec, nro in candidatos_sin:
+        if nro is None or nro not in magnus:
+            continue  # sin pedido Magnus, cancelado o nunca abierto
+        cierre = magnus[nro]
+        fin_ts = min((t for t in (ejec, cierre) if t is not None), default=None)
+        sin_asignar.append((reg, fin_ts))
+    return sin_asignar, en_proceso
+
+
 # Reconstrucción del SNAPSHOT de estados (gráfico "OT en cada estado por hora")
 # para rellenar los buckets del día que todavía no tienen foto real. Usa el MISMO
 # universo que fetch_wms_estados (fuente de las tarjetas KPI): OT de Picking
@@ -664,7 +808,9 @@ def _wms_estados_recon_del_dia(dia: date) -> list[tuple]:
             SQL_WMS_ESTADOS_RECON.format(vivos=",".join(str(e) for e in WMS_ESTADOS_VIVOS)),
             (d, h),
         )
-        return [(reg, pini, ejec, int(estado or 0), int(recol or 0))
+        # Marcas vacías del WMS = 1753-01-01 → None (si no, toda OT viva
+        # contaba como cumplida en _snap_recon).
+        return [(_wms_ts(reg), _wms_ts(pini), _wms_ts(ejec), int(estado or 0), int(recol or 0))
                 for reg, pini, ejec, estado, recol in cur.fetchall()]
     finally:
         conn.close()
@@ -800,12 +946,11 @@ def fetch_pedidos_hora(fecha: date | None = None):
                      bucket (carry-forward); si todavía no hay foto se rellena
                      con el backlog reconstruido (registrados − cerrados a esa
                      hora), así la curva se ve completa desde las 8h.
-      · est_espera / est_proceso / est_cumplido / est_sin_asignar = FLUJO de OT
-                     de Picking que PASAN a cada etapa en el bucket (cuántas cada
-                     15 min, no acumulado), reconstruido desde las marcas de hora
-                     de la OT (Regist / PickIni / Ejecucion; espera vs sin-asignar
-                     según tenga operario). Historia completa del día. Es el
-                     gráfico 1.
+      · est_sin_asignar / est_proceso = cuántas OT HAY en ese estado al corte
+                     del bucket (foto reconstruida, ver _wms_estado_corte_del_dia).
+      · est_cumplido = FLUJO: OT terminadas (OTEstado=2) en el bucket.
+      · est_espera   = FLUJO: registradas con operario en el bucket (no se grafica).
+                     Es el gráfico 1.
 
     El eje 8-18h se devuelve SIEMPRE completo. Para el día de hoy los buckets que
     todavía no empezaron vienen en None (las líneas se van trazando hacia
@@ -840,6 +985,9 @@ def fetch_pedidos_hora(fecha: date | None = None):
 
     fotos = _fotos_abiertos_del_dia(dia)
     trans = _wms_transiciones_del_dia(dia)  # flujos por etapa (listas de timestamps)
+    # Gráfico 1: foto por corte de Sin asignar / En proceso (ver
+    # _wms_estado_corte_del_dia); Cumplido sigue saliendo del flujo `trans`.
+    corte_sin, corte_proc = _wms_estado_corte_del_dia(dia)
 
     paso = PEDIDOS_HORA_PASO_MIN
     minuto_desde = PEDIDOS_HORA_DESDE * 60
@@ -899,9 +1047,12 @@ def fetch_pedidos_hora(fecha: date | None = None):
         # Flujo por etapa del WMS en el bucket (gráfico 1), reconstruido desde las
         # marcas de hora de cada OT — cuántas PASAN a cada etapa en estos 15 min.
         est_espera = _en(trans["en_espera"], inicio, corte)
-        est_proceso = _en(trans["en_proceso"], inicio, corte)
         est_cumplido = _en(trans["cumplido"], inicio, corte)
-        est_sin = _en(trans["sin_asignar"], inicio, corte)
+        # Foto al corte: cuántas HAY (no cuántas entraron en el bloque).
+        est_proceso = sum(1 for pi, ej in corte_proc
+                          if pi < corte and (ej is None or ej >= corte))
+        est_sin = sum(1 for rg, fn in corte_sin
+                      if rg < corte and (fn is None or fn >= corte))
         cumplidos = est_cumplido  # gráfico 2 usa el mismo flujo de cumplidos
         # Snapshot (gráfico nuevo): foto real de los KPI ≤ corte si existe; si no,
         # reconstrucción desde las marcas de la OT (relleno). La foto real manda.

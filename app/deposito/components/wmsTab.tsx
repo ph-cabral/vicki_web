@@ -409,11 +409,11 @@ export function WmsTab() {
             )}
           </div>
           <p className="text-[11px] text-zinc-600 mt-2 leading-relaxed">
-            Barras = pedidos ingresados (registrados) en ese bloque de 15 min. Líneas = cuántas OT
-            de picking PASAN a cada etapa en ese bloque de 15 min (no acumulado),
-            según la hora de la propia OT:
-            Sin asignar = registrada sin operario; En proceso = arrancó el picking;
-            Cumplido = terminada.{" "}
+            Barras = pedidos ingresados (registrados) en ese bloque de 15 min. Sin asignar y En
+            proceso = cuántas OT de picking HAY en ese estado al cierre del bloque:
+            Sin asignar = sin operario o Carossio Jose, con el pedido abierto en Magnus;
+            En proceso = picking arrancado y sin terminar (sin contar Carossio, sin operario,
+            Prioridad 1 ni Mercadería X Llegar). Cumplido = OT terminadas en ese bloque.{" "}
             {horaEsHoy
               ? "Eje 8-18h completo, historia del día desde las 8h; se actualiza cada 60s."
               : "Día completo (ya cerrado)."}
