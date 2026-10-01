@@ -562,3 +562,50 @@ def ajuste_cliente_por_mes(cod_cliente: int, anio_desde: int,
         cur.close()
         conn.close()
     return _guardar(key, out)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ajuste POR MES (2026-10-01) — para el gráfico "Venta por mes" del dashboard
+# /ventas (ventas.fetch_serie_mensual). Mismo `_WHERE_AJUSTE` (13 comprobantes
+# de la lista blanca → los 5 por concepto) y mismo recorte por vendedor del
+# COMPROBANTE que `ajuste_ventanas`, así el neto de cada mes cierra con el de
+# /ventas/vendedor. GROUP BY por el entero `FecMovim` (columna simple, pocas
+# filas: una por día con ND/NC) y el mes se arma en Python — nunca contra una
+# fecha calculada.
+_SQL_AJUSTE_DIA_TODOS = f"""
+SELECT cab.FecMovim AS Dia, SUM({_AJUSTE_ROW}) AS Importe
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE + "GROUP BY cab.FecMovim\n"
+
+_SQL_AJUSTE_DIA_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_DIA_TODOS)
+
+
+def ajuste_por_mes(dia_desde: int, dia_hasta: int,
+                   vendedor: int | None = None,
+                   forzar: bool = False) -> dict[tuple[int, int], float]:
+    """{(año, mes): ajuste} entre dos enteros Magnus, ya con signo (negativo =
+    bonificación). Las dos sub-empresas sumadas. Cache 15 min."""
+    key = ("aj-mes", int(dia_desde), int(dia_hasta), clave_vendedor(vendedor))
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    sql = recortar_vendedor(_SQL_AJUSTE_DIA_TODOS, vendedor, "cab")
+    sql_p = recortar_vendedor(_SQL_AJUSTE_DIA_TODOS_PRUEBA, vendedor, "cab")
+
+    conn, cur = _conn()
+    try:
+        out: dict[tuple[int, int], float] = {}
+        for dia, importe in filas_dos(cur, sql, sql_p, (int(dia_desde), int(dia_hasta))):
+            if dia is None:
+                continue
+            f = BASE_DATE + timedelta(days=int(dia))
+            k = (f.year, f.month)
+            out[k] = out.get(k, 0.0) + float(_safe(importe) or 0)
+    finally:
+        cur.close()
+        conn.close()
+    return _guardar(key, out)

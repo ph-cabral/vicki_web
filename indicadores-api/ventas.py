@@ -1141,9 +1141,10 @@ def _case_anio_mes(anios: tuple[int, ...], columna: str = "vc.FecMovim") -> str:
 # fetch_top_lineas. Mismo recorte por vendedor (eje comprobante), mismas dos
 # sub-empresas, mismo criterio de venta que los rankings.
 #
-# Son filas de artículo: la bonificación/ajuste por concepto no tiene línea y
-# NO entra (la serie es venta BRUTA por línea, como las filas de los rankings;
-# el neto sólo vive en el total del pie).
+# Las filas por LÍNEA son venta BRUTA (la bonificación/ajuste por concepto no
+# tiene artículo → no tiene línea, igual que en los rankings). El ajuste del
+# mes viaja aparte en `ajusteMonto` y `totalMontoNeto` = bruto + ajuste, el
+# mismo neto que /ventas/vendedor (2026-10-01, bonificaciones.ajuste_por_mes).
 _SERIE_MESES = 12
 _SERIE_MENSUAL_CACHE: dict[tuple, tuple[float, dict]] = {}
 _SERIE_MENSUAL_TTL_SEG = 15 * 60  # 15 minutos
@@ -1173,7 +1174,8 @@ def fetch_serie_mensual(vendedor: int | None = None, forzar: bool = False) -> di
 
     {"meses": ["YYYY-MM", ...12], "mesActual": "YYYY-MM",
      "lineas": [{"linea", "unidades": [12], "monto": [12]}, ...],  # por $ desc
-     "totalUnidades": [12], "totalMonto": [12]}
+     "totalUnidades": [12], "totalMonto": [12],          # bruto
+     "ajusteMonto": [12], "totalMontoNeto": [12]}        # $ neto = bruto + ajuste
 
     Cada arreglo está alineado con `meses`. Devuelve TODAS las líneas con
     movimiento; agrupar las chicas en "Otras" es decisión del front."""
@@ -1241,6 +1243,14 @@ def fetch_serie_mensual(vendedor: int | None = None, forzar: bool = False) -> di
         ]
         lineas.sort(key=lambda l: sum(l["monto"]), reverse=True)
 
+        from bonificaciones import ajuste_por_mes  # import diferido: circular
+
+        aj_mes = ajuste_por_mes(dia_desde, dia_hasta, vendedor, forzar)
+        ajuste = [round(aj_mes.get(ym, 0.0), 2) for ym in meses]
+        total_monto = [
+            round(sum(l["monto"][i] for l in lineas), 2) for i in range(_SERIE_MESES)
+        ]
+
         resultado = {
             "meses": [f"{a:04d}-{m:02d}" for a, m in meses],
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
@@ -1249,9 +1259,10 @@ def fetch_serie_mensual(vendedor: int | None = None, forzar: bool = False) -> di
                 round(sum(l["unidades"][i] for l in lineas), 2)
                 for i in range(_SERIE_MESES)
             ],
-            "totalMonto": [
-                round(sum(l["monto"][i] for l in lineas), 2)
-                for i in range(_SERIE_MESES)
+            "totalMonto": total_monto,  # bruto (suma de las líneas)
+            "ajusteMonto": ajuste,      # ND/NC por concepto, con signo
+            "totalMontoNeto": [
+                round(total_monto[i] + ajuste[i], 2) for i in range(_SERIE_MESES)
             ],
         }
         _SERIE_MENSUAL_CACHE[cache_key] = (ahora, resultado)

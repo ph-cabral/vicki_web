@@ -37,16 +37,24 @@ interface RespSerie {
   mesActual: string;
   lineas: LineaSerie[]; // ya ordenadas por $ desc
   totalUnidades: number[];
-  totalMonto: number[];
+  totalMonto: number[]; // bruto = suma de las líneas
+  // ND/NC por concepto (23/24/25/60/62) del mes, con signo. SOLO ADMIN: el
+  // route se lo borra al no-admin (desglose = info de dirección).
+  ajusteMonto?: number[];
+  // $ neto del mes = bruto + ajuste — mismo neto que /ventas/vendedor. Lo
+  // reciben todos.
+  totalMontoNeto?: number[];
 }
 type Metrica = "pesos" | "unidades";
 type Vista = "lineas" | "total";
 
 // Cuántas líneas se dibujan por separado; el resto se junta en "Otras".
 const TOP_LINEAS = 6;
-const COLORES = ["#facc15", "#3fb950", "#58a6ff", "#f0883e", "#bc8cff", "#f85149"];
+const COLORES = ["#facc15", "#3fb950", "#58a6ff", "#f0883e", "#bc8cff", "#2dd4bf"];
 const COLOR_OTRAS = "#6b7280";
 const COLOR_TOTAL = "#facc15";
+const COLOR_AJUSTE = "#f85149";
+const SERIE_AJUSTE = "Bonif. y ajustes";
 const GRID = "#27272a";
 const MUTED = "#8b949e";
 const MESES_ABR = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -119,8 +127,9 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
 
   // Series a dibujar: top-N líneas por la métrica elegida + "Otras". El orden
   // del back es por $, así que se reordena acá cuando la métrica es unidades.
-  const { datos, series } = useMemo(() => {
-    if (!resp || !resp.meses.length) return { datos: [], series: [] as string[] };
+  const { datos, series, conAjuste } = useMemo(() => {
+    if (!resp || !resp.meses.length)
+      return { datos: [], series: [] as string[], conAjuste: false };
     const ordenadas = [...resp.lineas].sort(
       (a, b) => b[campo].reduce((s, x) => s + x, 0) - a[campo].reduce((s, x) => s + x, 0),
     );
@@ -128,18 +137,28 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
     const resto = ordenadas.slice(TOP_LINEAS);
     const nombres = top.map((l) => l.linea);
     if (resto.length) nombres.push("Otras");
-    const total = metrica === "pesos" ? resp.totalMonto : resp.totalUnidades;
+    // En $ el total es NETO (bruto + bonificaciones/ajustes por concepto),
+    // como en /ventas/vendedor. Fallback por si el back todavía no lo manda.
+    const pesos = metrica === "pesos";
+    const ajuste = pesos ? resp.ajusteMonto : undefined;
+    const neto = (i: number) =>
+      resp.totalMontoNeto?.[i] ?? (resp.totalMonto[i] ?? 0) + (resp.ajusteMonto?.[i] ?? 0);
     const filas = resp.meses.map((ym, i) => {
+      const bruto = pesos ? resp.totalMonto[i] ?? 0 : resp.totalUnidades[i] ?? 0;
       const fila: Record<string, number | string> = {
         ym,
         lbl: labelMes(ym) + (ym === resp.mesActual ? "*" : ""),
-        Total: total[i] ?? 0,
+        Bruto: bruto,
+        Total: pesos ? neto(i) : bruto,
       };
       for (const l of top) fila[l.linea] = l[campo][i] ?? 0;
       if (resto.length) fila["Otras"] = resto.reduce((s, l) => s + (l[campo][i] ?? 0), 0);
+      // Admin: el ajuste se apila como segmento NEGATIVO (bajo cero, ver
+      // stackOffset="sign"). Al no-admin no le llega el desglose.
+      if (ajuste) fila[SERIE_AJUSTE] = ajuste[i] ?? 0;
       return fila;
     });
-    return { datos: filas, series: nombres };
+    return { datos: filas, series: nombres, conAjuste: !!ajuste };
   }, [resp, campo, metrica]);
 
   const vacio = !loading && !error && (!resp || !resp.lineas.length);
@@ -189,7 +208,11 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={340}>
-            <ComposedChart data={datos} margin={{ top: 22, right: 8, left: 0, bottom: 4 }}>
+            <ComposedChart
+              data={datos}
+              stackOffset="sign"
+              margin={{ top: 22, right: 8, left: 0, bottom: 4 }}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
               <XAxis dataKey="lbl" stroke={GRID} tick={{ fontSize: 11, fill: MUTED }} interval={0} />
               <YAxis
@@ -199,17 +222,22 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
                 tickFormatter={(v) => fmtCompacto(Number(v))}
               />
               <Tooltip
-                contentStyle={tooltipStyle}
                 cursor={{ fill: "rgba(255,255,255,0.04)" }}
-                formatter={(value: number | string, name: string) => [fmt(Number(value)), name]}
-                labelFormatter={(lbl: string) =>
-                  lbl.endsWith("*") ? `${lbl.slice(0, -1)} (mes en curso, parcial)` : lbl
-                }
-                itemSorter={(item) => -Math.abs(Number(item.value) || 0)}
+                content={(p) => (
+                  <TooltipMes
+                    {...(p as unknown as TooltipMesProps)}
+                    fmt={fmt}
+                    pesos={metrica === "pesos"}
+                    vista={vista}
+                  />
+                )}
               />
               {vista === "lineas" ? (
                 <>
                   <Legend wrapperStyle={{ fontSize: 11, color: MUTED, paddingTop: 6 }} />
+                  {conAjuste && (
+                    <Bar dataKey={SERIE_AJUSTE} stackId="venta" fill={COLOR_AJUSTE} maxBarSize={48} />
+                  )}
                   {series.map((nombre, i) => (
                     <Bar
                       key={nombre}
@@ -217,7 +245,19 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
                       stackId="venta"
                       fill={nombre === "Otras" ? COLOR_OTRAS : COLORES[i % COLORES.length]}
                       maxBarSize={48}
-                    />
+                    >
+                      {/* Etiqueta arriba de la pila = TOTAL del mes (en $,
+                          neto de bonificaciones), en la última serie. */}
+                      {i === series.length - 1 && (
+                        <LabelList
+                          dataKey="Total"
+                          position="top"
+                          fontSize={10}
+                          fill={MUTED}
+                          formatter={(v: number) => fmtCompacto(v)}
+                        />
+                      )}
+                    </Bar>
                   ))}
                 </>
               ) : (
@@ -236,11 +276,79 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
         )}
         {hayParcial && !error && !vacio && (
           <p className="px-2 pb-1 text-[11px] text-zinc-500">
-            * Mes en curso, parcial. Venta neta de notas de crédito con artículo; las bonificaciones por
-            concepto no se asignan a una línea y no están en el gráfico.
+            * Mes en curso, parcial.{" "}
+            {metrica === "pesos" ? (
+              <>
+                El total del mes es NETO: descuenta bonificaciones y ajustes (ND/NC por concepto), igual
+                que /ventas/vendedor. Las líneas van en bruto porque la bonificación no tiene artículo
+                {conAjuste ? "; el tramo rojo bajo cero es ese descuento." : "."}
+              </>
+            ) : (
+              <>Las bonificaciones no tienen cantidad: en unidades no cambian nada.</>
+            )}
           </p>
         )}
       </div>
     </section>
+  );
+}
+
+// Tooltip propio: las líneas del mes + (en $) Bruto / Bonif. y ajustes /
+// Total neto. El no-admin no recibe el ajuste: ve líneas y "Total neto".
+interface TooltipMesProps {
+  active?: boolean;
+  label?: string;
+  payload?: { name?: string; value?: number | string; color?: string; payload?: Record<string, number | string> }[];
+}
+function TooltipMes({
+  active,
+  label,
+  payload,
+  fmt,
+  pesos,
+  vista,
+}: TooltipMesProps & { fmt: (n: number) => string; pesos: boolean; vista: Vista }) {
+  if (!active || !payload?.length) return null;
+  const fila = payload[0]?.payload ?? {};
+  const lbl = String(label ?? "");
+  const items = payload
+    .filter((it) => it.name !== "Total" && it.name !== SERIE_AJUSTE)
+    .sort((a, b) => Math.abs(Number(b.value) || 0) - Math.abs(Number(a.value) || 0));
+  const bruto = Number(fila.Bruto) || 0;
+  const total = Number(fila.Total) || 0;
+  const ajuste = fila[SERIE_AJUSTE];
+  return (
+    <div style={tooltipStyle} className="px-3 py-2 space-y-0.5">
+      <div className="font-semibold text-zinc-100 mb-1">
+        {lbl.endsWith("*") ? `${lbl.slice(0, -1)} (mes en curso, parcial)` : lbl}
+      </div>
+      {vista === "lineas" &&
+        items.map((it) => (
+          <div key={it.name} className="flex justify-between gap-6">
+            <span style={{ color: it.color }}>{it.name}</span>
+            <span className="tabular-nums">{fmt(Number(it.value) || 0)}</span>
+          </div>
+        ))}
+      {pesos && ajuste !== undefined && (
+        <>
+          <div className="flex justify-between gap-6 border-t border-zinc-800 pt-1 mt-1 text-zinc-400">
+            <span>Bruto</span>
+            <span className="tabular-nums">{fmt(bruto)}</span>
+          </div>
+          <div className="flex justify-between gap-6" style={{ color: COLOR_AJUSTE }}>
+            <span>{SERIE_AJUSTE}</span>
+            <span className="tabular-nums">{fmt(Number(ajuste) || 0)}</span>
+          </div>
+        </>
+      )}
+      <div
+        className={`flex justify-between gap-6 font-semibold text-yellow-400 ${
+          pesos && ajuste !== undefined ? "" : "border-t border-zinc-800 pt-1 mt-1"
+        }`}
+      >
+        <span>{pesos ? "Total neto" : "Total"}</span>
+        <span className="tabular-nums">{fmt(total)}</span>
+      </div>
+    </div>
   );
 }

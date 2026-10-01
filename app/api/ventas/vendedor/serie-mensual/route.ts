@@ -28,6 +28,7 @@ export async function GET(req: NextRequest) {
       lineas: [],
       totalUnidades: [],
       totalMonto: [],
+      totalMontoNeto: [],
     });
   }
 
@@ -46,7 +47,13 @@ export async function GET(req: NextRequest) {
         { status: res.status },
       );
     }
-    return NextResponse.json(await res.json());
+    const data = (await res.json()) as Record<string, unknown>;
+    // Bonificaciones y ajustes: el DESGLOSE es solo admin (mismo criterio que
+    // top-lineas / top-clientes, 2026-09-07). Al no-admin se le borra
+    // `ajusteMonto` pero NO `totalMontoNeto`: el total de cada mes en $ lo ve
+    // neto, igual que el total de /ventas/vendedor.
+    if (!acceso.isAdmin) delete data.ajusteMonto;
+    return NextResponse.json(data);
   } catch (error) {
     console.error("GET /api/ventas/vendedor/serie-mensual", error);
     return NextResponse.json(
