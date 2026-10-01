@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, Download, Plus, Pencil, X, Trash2, Search,
-  CalendarRange, ArrowUpDown, ClipboardList,
+  CalendarRange, ArrowUpDown, ClipboardList, GripVertical, RotateCcw,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { InicioButton } from "@/components/ui/InicioButton";
@@ -22,6 +22,8 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //   criterio que /compras/consumo).
 //   Cantidad = input por fila, arranca en el recomendado; lo editado se guarda
 //   en localStorage por reporte + rango y va al Excel.
+//   Columnas reordenables arrastrando el encabezado; el orden se guarda en
+//   localStorage (planificacion:cols) y el Excel sale en ese mismo orden.
 //   Fuentes: /api/compras/planificacion/{reportes,niveles,datos}.
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -91,6 +93,17 @@ const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "oc", label: "OC pendiente", num: true, title: "saldo sin recibir de OC sin cerrar" },
   { k: "faltante", label: "Faltante", num: true, title: "faltante vivo en pedidos (mismo cálculo que /compras/faltantes)" },
 ];
+const COL_BY = Object.fromEntries(COLS.map((c) => [c.k, c])) as Record<SortKey, (typeof COLS)[number]>;
+const ORDEN_DEFAULT: SortKey[] = COLS.map((c) => c.k);
+const LS_COLS = "planificacion:cols";
+
+/** Orden guardado → válido: descarta claves que ya no existen y agrega al
+ *  final las columnas nuevas que no estaban cuando se guardó. */
+function sanearOrden(v: unknown): SortKey[] {
+  const ok = Array.isArray(v) ? (v.filter((k) => k in COL_BY) as SortKey[]) : [];
+  const uniq = [...new Set(ok)];
+  return [...uniq, ...ORDEN_DEFAULT.filter((k) => !uniq.includes(k))];
+}
 
 export default function PlanificacionPage() {
   const [reportes, setReportes] = useState<Reporte[]>([]);
@@ -104,6 +117,31 @@ export default function PlanificacionPage() {
   const [buscar, setBuscar] = useState("");
   const [soloRec, setSoloRec] = useState(false);
   const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "recomendado", dir: -1 });
+  // Orden de columnas (drag & drop sobre el encabezado).
+  const [orden, setOrden] = useState<SortKey[]>(ORDEN_DEFAULT);
+  const [dragK, setDragK] = useState<SortKey | null>(null);
+  const [overK, setOverK] = useState<SortKey | null>(null);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_COLS);
+      if (raw) setOrden(sanearOrden(JSON.parse(raw)));
+    } catch {}
+  }, []);
+  const guardarOrden = (o: SortKey[]) => {
+    setOrden(o);
+    try {
+      if (o.join() === ORDEN_DEFAULT.join()) localStorage.removeItem(LS_COLS);
+      else localStorage.setItem(LS_COLS, JSON.stringify(o));
+    } catch {}
+  };
+  const moverCol = (from: SortKey, to: SortKey) => {
+    if (from === to) return;
+    const o = orden.filter((k) => k !== from);
+    o.splice(o.indexOf(to) + (orden.indexOf(from) < orden.indexOf(to) ? 1 : 0), 0, from);
+    guardarOrden(o);
+  };
+  const ordenAlterado = orden.join() !== ORDEN_DEFAULT.join();
+
   // Cantidades editadas a mano (codigo → valor). Lo no editado = recomendado.
   const [cantEdit, setCantEdit] = useState<Record<string, number>>({});
   const cantKey = datos ? lsCantKey(datos.reporte.id, datos.hasta) : null;
@@ -224,25 +262,20 @@ export default function PlanificacionPage() {
 
   const exportar = useCallback(() => {
     if (!datos || !visibles.length) return;
-    const filas = visibles.map((r) => ({
-      Código: r.codigo,
-      Detalle: r.detalle || "",
-      Cantidad: cantidadDe(r),
-      Recomendado: r.recomendado,
-      "Prom. vendido": r.promedio,
-      Máximo: r.maximo,
-      Mínimo: r.minimo ?? "",
-      Stock: r.stock,
-      "OC pendiente": r.oc,
-      Faltante: r.faltante,
-      [`Vendido ${datos.desde} a ${datos.hasta}`]: r.vendido,
-    }));
+    const valorXls = (r: Row, k: SortKey): string | number =>
+      k === "cantidad" ? cantidadDe(r) : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : r[k];
+    const filas = visibles.map((r) => {
+      const o: Record<string, string | number> = {};
+      for (const k of orden) o[COL_BY[k].label] = valorXls(r, k);
+      o[`Vendido ${datos.desde} a ${datos.hasta}`] = r.vendido;
+      return o;
+    });
     const ws = XLSX.utils.json_to_sheet(filas);
     ws["!cols"] = Object.keys(filas[0]).map((c) => ({ wch: c === "Detalle" ? 45 : Math.max(12, c.length + 2) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
     XLSX.writeFile(wb, `planificacion_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
-  }, [datos, visibles, cantidadDe]);
+  }, [datos, visibles, cantidadDe, orden]);
 
   const tot = useMemo(
     () => ({
@@ -252,6 +285,59 @@ export default function PlanificacionPage() {
     }),
     [visibles, cantidadDe],
   );
+
+  const celda = (r: Row, k: SortKey) => {
+    switch (k) {
+      case "codigo":
+        return <td key={k} className="px-2 py-1.5 font-mono text-yellow-400 whitespace-nowrap">{r.codigo}</td>;
+      case "detalle":
+        return <td key={k} className="px-2 py-1.5">{r.detalle || "—"}</td>;
+      case "cantidad":
+        return (
+          <td key={k} className="px-2 py-1 text-right">
+            <input
+              type="number"
+              min={0}
+              step={1}
+              inputMode="numeric"
+              value={cantidadDe(r)}
+              onChange={(e) => setCantidad(r, e.target.value)}
+              onFocus={(e) => e.target.select()}
+              className={`w-20 bg-zinc-900 border rounded px-1.5 py-0.5 text-right tabular-nums outline-none focus:border-yellow-400 ${
+                r.codigo in cantEdit ? "border-yellow-400/60 text-yellow-300" : "border-zinc-700 text-zinc-100"
+              }`}
+            />
+          </td>
+        );
+      case "recomendado":
+        return (
+          <td
+            key={k}
+            className={`px-2 py-1.5 text-right tabular-nums font-semibold ${r.recomendado > 0 ? "text-green-400" : "text-zinc-600"}`}
+          >
+            {fmtNum(r.recomendado)}
+          </td>
+        );
+      case "promedio":
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums">{fmtNum(r.promedio)}</td>;
+      case "maximo":
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums text-orange-400">{r.maximo ? fmtNum(r.maximo) : "—"}</td>;
+      case "minimo":
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums text-sky-400">{r.minimo != null ? fmtNum(r.minimo) : "—"}</td>;
+      case "stock":
+        return (
+          <td key={k} className={`px-2 py-1.5 text-right tabular-nums ${r.stock < 0 ? "text-red-400" : "text-zinc-300"}`}>
+            {fmtNum(r.stock)}
+          </td>
+        );
+      case "oc":
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums text-sky-300">{r.oc ? fmtNum(r.oc) : "—"}</td>;
+      case "faltante":
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums text-red-400">{r.faltante ? fmtNum(r.faltante) : "—"}</td>;
+      default:
+        return <td key={k} className="px-2 py-1.5 text-right tabular-nums">{fmtNum(Number(r[k as keyof Row]) || 0)}</td>;
+    }
+  };
 
   const onGuardado = async (id: number | null) => {
     setModal(null);
@@ -370,6 +456,15 @@ export default function PlanificacionPage() {
               >
                 Solo a reponer
               </button>
+              {ordenAlterado && (
+                <button
+                  onClick={() => guardarOrden(ORDEN_DEFAULT)}
+                  title="Volver al orden original de columnas"
+                  className="btn-anim flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-yellow-400 hover:text-yellow-400 text-xs"
+                >
+                  <RotateCcw size={13} /> Columnas
+                </button>
+              )}
               <button
                 onClick={exportar}
                 disabled={!visibles.length}
@@ -397,59 +492,58 @@ export default function PlanificacionPage() {
             <table className="w-full text-xs">
               <thead className="bg-zinc-900 text-zinc-400 sticky top-0">
                 <tr>
-                  {COLS.map((c) => (
-                    <th
-                      key={c.k}
-                      title={c.title}
-                      onClick={() =>
-                        setSort((s) => ({ k: c.k, dir: s.k === c.k ? (s.dir === 1 ? -1 : 1) : c.num ? -1 : 1 }))
-                      }
-                      className={`px-2 py-2 cursor-pointer select-none whitespace-nowrap ${c.num ? "text-right" : "text-left"} ${
-                        sort.k === c.k ? "text-yellow-400" : ""
-                      }`}
-                    >
-                      {c.label}
-                      <ArrowUpDown size={11} className="inline ml-1 opacity-50" />
-                    </th>
-                  ))}
+                  {orden.map((k) => {
+                    const c = COL_BY[k];
+                    return (
+                      <th
+                        key={k}
+                        title={`${c.title ? c.title + " · " : ""}arrastrá para mover la columna`}
+                        draggable
+                        onDragStart={(e) => {
+                          setDragK(k);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", k);
+                        }}
+                        onDragOver={(e) => {
+                          if (!dragK) return;
+                          e.preventDefault();
+                          if (overK !== k) setOverK(k);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (dragK) moverCol(dragK, k);
+                          setDragK(null);
+                          setOverK(null);
+                        }}
+                        onDragEnd={() => {
+                          setDragK(null);
+                          setOverK(null);
+                        }}
+                        onClick={() =>
+                          setSort((s) => ({ k, dir: s.k === k ? (s.dir === 1 ? -1 : 1) : c.num ? -1 : 1 }))
+                        }
+                        className={`group px-2 py-2 cursor-pointer select-none whitespace-nowrap ${c.num ? "text-right" : "text-left"} ${
+                          sort.k === k ? "text-yellow-400" : ""
+                        } ${dragK === k ? "opacity-40" : ""} ${
+                          overK === k && dragK && dragK !== k
+                            ? orden.indexOf(dragK) < orden.indexOf(k)
+                              ? "shadow-[inset_-2px_0_0_0_#facc15]"
+                              : "shadow-[inset_2px_0_0_0_#facc15]"
+                            : ""
+                        }`}
+                      >
+                        <GripVertical size={11} className="inline mr-0.5 opacity-0 group-hover:opacity-50 cursor-grab" />
+                        {c.label}
+                        <ArrowUpDown size={11} className="inline ml-1 opacity-50" />
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody className={loading ? "opacity-50" : ""}>
                 {visibles.map((r) => (
                   <tr key={r.codigo} className="border-t border-zinc-800 hover:bg-zinc-900/60">
-                    <td className="px-2 py-1.5 font-mono text-yellow-400 whitespace-nowrap">{r.codigo}</td>
-                    <td className="px-2 py-1.5">{r.detalle || "—"}</td>
-                    <td className="px-2 py-1 text-right">
-                      <input
-                        type="number"
-                        min={0}
-                        step={1}
-                        inputMode="numeric"
-                        value={cantidadDe(r)}
-                        onChange={(e) => setCantidad(r, e.target.value)}
-                        onFocus={(e) => e.target.select()}
-                        className={`w-20 bg-zinc-900 border rounded px-1.5 py-0.5 text-right tabular-nums outline-none focus:border-yellow-400 ${
-                          r.codigo in cantEdit ? "border-yellow-400/60 text-yellow-300" : "border-zinc-700 text-zinc-100"
-                        }`}
-                      />
-                    </td>
-                    <td
-                      className={`px-2 py-1.5 text-right tabular-nums font-semibold ${
-                        r.recomendado > 0 ? "text-green-400" : "text-zinc-600"
-                      }`}
-                    >
-                      {fmtNum(r.recomendado)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(r.promedio)}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-orange-400">{r.maximo ? fmtNum(r.maximo) : "—"}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-sky-400">{r.minimo != null ? fmtNum(r.minimo) : "—"}</td>
-                    <td className={`px-2 py-1.5 text-right tabular-nums ${r.stock < 0 ? "text-red-400" : "text-zinc-300"}`}>
-                      {fmtNum(r.stock)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-sky-300">{r.oc ? fmtNum(r.oc) : "—"}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-red-400">
-                      {r.faltante ? fmtNum(r.faltante) : "—"}
-                    </td>
+                    {orden.map((k) => celda(r, k))}
                   </tr>
                 ))}
                 {!loading && datos && visibles.length === 0 && (
