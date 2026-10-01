@@ -8,7 +8,7 @@ from utils import construir_timestamps, calcular_tiempos, COLUMNAS_TIEMPO
 from deposito import (
     fetch_wms, fetch_tiempo, fetch_ingresados, fetch_pedidos_hora, fetch_faltantes,
     fetch_faltantes_fechas, fetch_vivo, fetch_faltantes_ot, fetch_faltantes_ot_diag,
-    fetch_ot_diferencias, fetch_pedidos_cumplido_real,
+    fetch_ot_diferencias, fetch_pedidos_cumplido_real, _info_pedidos,
     fetch_faltante_pedidos, fetch_faltante_mes,
     fetch_wms_estados, fetch_wms_estados_diag,
     fetch_articulo_ubicaciones, fetch_articulos_multi_ubicacion,
@@ -399,6 +399,20 @@ def deposito_pedidos_cumplido_real(pedidos: str = Query(..., description="NroMov
             for (nro, cod), (pedida, cumplida) in mapa.items()
         ]
         return {"rows": rows}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/pedidos-info")
+def deposito_pedidos_info(pedidos: str = Query(..., description="NroMovVenta separados por coma")):
+    """Cliente (codigo + razon social) y vendedor (nombre) de la cabecera de
+    cada pedido, en un solo round-trip (IN batch). Usado por
+    /api/ventas/faltantes para completar las filas de preparado.faltante_wms
+    persistidas sin clienteNombre/vendedor. Devuelve
+    {"rows": {"<NroMovVenta>": {"Cliente", "ClienteNombre", "Vendedor"}}}."""
+    try:
+        ids = [int(p) for p in pedidos.split(",") if p.strip().isdigit()]
+        info = _info_pedidos(ids)
+        return {"rows": {str(k): {"Cliente": v.get("Cliente"), "ClienteNombre": v.get("ClienteNombre"), "Vendedor": v.get("Vendedor") or None} for k, v in info.items()}}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
@@ -1116,19 +1130,6 @@ def finanza_pedidos_sin_facturar(fecha: str = Query(...)):
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
 # ── Clientes: lookup por número desde Magnus (para /manguera/corte) ───────────
-@app.get("/clientes/{numero}")
-def clientes_get(numero: int):
-    """Cliente por número desde Magnus (CodCliente, Cliente_Nombre).
-    Solo lectura. 404 si no existe."""
-    try:
-        cli = fetch_cliente(numero)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
-    if not cli:
-        raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    return cli
-
-
 @app.get("/clientes/nombres")
 def clientes_nombres(
     codigos: str = Query(..., min_length=1, description="Códigos de cliente separados por coma"),
@@ -1145,6 +1146,19 @@ def clientes_nombres(
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
     return {"nombres": {str(k): v for k, v in nombres.items()}}
+
+
+@app.get("/clientes/{numero}")
+def clientes_get(numero: int):
+    """Cliente por número desde Magnus (CodCliente, Cliente_Nombre).
+    Solo lectura. 404 si no existe."""
+    try:
+        cli = fetch_cliente(numero)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+    if not cli:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return cli
 
 
 @app.get("/clientes")

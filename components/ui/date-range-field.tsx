@@ -11,6 +11,7 @@
 // <DateField> (con tipeo manual) donde antes había 2 controles separados.
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { CalendarIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -149,6 +150,80 @@ const STYLES: Record<
   },
 };
 
+/* ---------------- popup flotante (portal) ---------------- */
+
+// El desplegable se renderiza en document.body con position:fixed, anclado al
+// trigger. Antes era `absolute` dentro del wrapper y lo recortaba cualquier
+// ancestro con overflow-hidden/auto (ej. la tabla de /rrhh/asistencia). Lleva su
+// propia clase `dark` porque, fuera del árbol de la página, ya no hereda el
+// tema (los tokens de la variante "light" resuelven contra .dark). Si no entra
+// debajo del trigger, se abre hacia arriba. Se reposiciona con scroll/resize.
+function FloatingPopup({
+  anchorRef,
+  popupRef,
+  align,
+  width,
+  className,
+  onMouseLeave,
+  children,
+}: {
+  anchorRef: React.RefObject<HTMLElement | null>;
+  popupRef: React.RefObject<HTMLDivElement | null>;
+  align: "start" | "end";
+  width: number;
+  className?: string;
+  onMouseLeave?: () => void;
+  children: React.ReactNode;
+}) {
+  const [pos, setPos] = React.useState<{ top: number; left: number } | null>(null);
+
+  const update = React.useCallback(() => {
+    const a = anchorRef.current;
+    if (!a) return;
+    const r = a.getBoundingClientRect();
+    const h = popupRef.current?.offsetHeight ?? 0;
+    let top = r.bottom + 6;
+    if (h && top + h > window.innerHeight - 8 && r.top - 6 - h >= 8) {
+      top = r.top - 6 - h;
+    }
+    let left = align === "end" ? r.right - width : r.left;
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    setPos((p) => (p && p.top === top && p.left === left ? p : { top, left }));
+  }, [anchorRef, popupRef, align, width]);
+
+  // Sin deps: re-mide en cada render (el alto cambia entre meses de 5 y 6 filas).
+  React.useLayoutEffect(() => {
+    update();
+  });
+
+  React.useEffect(() => {
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [update]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={popupRef}
+      className={cn("dark fixed z-[300] select-none", className)}
+      style={{
+        top: pos?.top ?? 0,
+        left: pos?.left ?? 0,
+        width,
+        visibility: pos ? "visible" : "hidden",
+      }}
+      onMouseLeave={onMouseLeave}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 export interface DateRangeFieldProps {
   /** Fecha desde, ISO yyyy-mm-dd. */
   desde: string;
@@ -185,6 +260,7 @@ export function DateRangeField({
   const [pendingStart, setPendingStart] = React.useState<Date | null>(null);
   const [hoverDay, setHoverDay] = React.useState<Date | null>(null);
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const popupRef = React.useRef<HTMLDivElement>(null);
 
   const desdeDate = isoToDate(desde);
   const hastaDate = isoToDate(hasta);
@@ -210,9 +286,9 @@ export function DateRangeField({
   React.useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        closePicker();
-      }
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || popupRef.current?.contains(t)) return;
+      closePicker();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closePicker();
@@ -294,12 +370,12 @@ export function DateRangeField({
       </button>
 
       {open && (
-        <div
-          className={cn(
-            "absolute top-full mt-1.5 p-3 w-[260px] select-none z-50",
-            align === "end" ? "right-0" : "left-0",
-            s.popup,
-          )}
+        <FloatingPopup
+          anchorRef={wrapRef}
+          popupRef={popupRef}
+          align={align}
+          width={260}
+          className={cn("p-3", s.popup)}
           onMouseLeave={() => setHoverDay(null)}
         >
           <div className="flex items-center justify-between mb-2">
@@ -363,7 +439,7 @@ export function DateRangeField({
               );
             })}
           </div>
-        </div>
+        </FloatingPopup>
       )}
     </div>
   );
@@ -500,6 +576,7 @@ export function MonthRangePickerField({
   const [pendingStart, setPendingStart] = React.useState<string | null>(null);
   const [hoverYm, setHoverYm] = React.useState<string | null>(null);
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const popupRef = React.useRef<HTMLDivElement>(null);
 
   const desdeYm = desde ? monthKeyOf(desde) : "";
   const hastaYm = hasta ? monthKeyOf(hasta) : "";
@@ -526,7 +603,9 @@ export function MonthRangePickerField({
   React.useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) closePicker();
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || popupRef.current?.contains(t)) return;
+      closePicker();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closePicker();
@@ -602,12 +681,12 @@ export function MonthRangePickerField({
       </button>
 
       {open && (
-        <div
-          className={cn(
-            "absolute top-full mt-1.5 p-3 w-[220px] select-none z-50",
-            align === "end" ? "right-0" : "left-0",
-            s.popup,
-          )}
+        <FloatingPopup
+          anchorRef={wrapRef}
+          popupRef={popupRef}
+          align={align}
+          width={220}
+          className={cn("p-3", s.popup)}
           onMouseLeave={() => setHoverYm(null)}
         >
           <div className="flex items-center justify-between mb-2">
@@ -659,7 +738,7 @@ export function MonthRangePickerField({
               );
             })}
           </div>
-        </div>
+        </FloatingPopup>
       )}
     </div>
   );

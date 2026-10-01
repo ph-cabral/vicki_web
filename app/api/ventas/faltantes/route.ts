@@ -768,6 +768,39 @@ export async function GET(req: Request) {
       }
     }
 
+    // Filas viejas de faltante_wms sin vendedor (y/o sin nombre): se completan
+    // desde la cabecera del pedido en UN solo batch (IN) a indicadores-api.
+    // Best-effort: si falla, queda como antes.
+    const pedidosIncompletos = [
+      ...new Set(
+        enStockDeWms
+          .filter((r) => !r.Vendedor || r.ClienteNombre === r.Cliente)
+          .map((r) => r.NroPedOrigen),
+      ),
+    ];
+    if (pedidosIncompletos.length > 0) {
+      try {
+        const r = await fetch(
+          `${API_URL}/deposito/pedidos-info?pedidos=${pedidosIncompletos.join(",")}`,
+          { cache: "no-store", signal: AbortSignal.timeout(10000) },
+        );
+        if (r.ok) {
+          const { rows: info } = (await r.json()) as {
+            rows: Record<string, { ClienteNombre: string | null; Vendedor: string | null }>;
+          };
+          for (const row of enStockDeWms) {
+            const i = info[String(row.NroPedOrigen)];
+            if (!i) continue;
+            if (!row.Vendedor && i.Vendedor) row.Vendedor = i.Vendedor;
+            if (row.ClienteNombre === row.Cliente && i.ClienteNombre)
+              row.ClienteNombre = i.ClienteNombre;
+          }
+        }
+      } catch {
+        // best-effort
+      }
+    }
+
     const enStock = [...enStockDeRows, ...enStockDeWms];
 
     // Stock del depósito central (1) por artículo — columna "Stock" de la

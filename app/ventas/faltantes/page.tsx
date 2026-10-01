@@ -83,9 +83,16 @@ const grupoKeyOf = (it: { Cliente: number | string | null; NroPedOrigen: number 
   `${it.Cliente}__${it.NroPedOrigen}`;
 const fmtNum = (n: number) =>
   new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(n || 0);
-// Stock central: null/undefined = no se pudo leer → "—"; <= 0 en rojo.
-const fmtStock = (n: number | null | undefined) =>
-  n == null ? "—" : <span className={n <= 0 ? "text-red-400" : "text-zinc-200"}>{fmtNum(n)}</span>;
+// Stock central: null/undefined = no se pudo leer → "—". Rojo si no cubre el
+// faltante registrado (stock < CantPend); sin stock (<= 0) se muestra "-".
+// Verde si cubre el faltante (stock >= CantPend).
+const fmtStock = (n: number | null | undefined, faltante: number) => {
+  if (n == null) return "—";
+  const rojo = n < (faltante || 0) || n <= 0;
+  return (
+    <span className={rojo ? "text-red-400" : "text-green-400"}>{n <= 0 ? "-" : fmtNum(n)}</span>
+  );
+};
 const fmtAr = (s: string | null) => {
   if (s === "EN_STOCK") return "En stock";
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(s || "");
@@ -968,7 +975,7 @@ function GrupoCard({
                 <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
                 <td className={`px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums${vendidoMode ? " text-right" : ""}`}>
                   {/* Vista "Ingresados" (vendidoMode): stock del depósito central (1). */}
-                  {vendidoMode ? fmtStock(it.stockCentral) : fmtAr(it.fechaArribo)}
+                  {vendidoMode ? fmtStock(it.stockCentral, it.CantPend) : fmtAr(it.fechaArribo)}
                   {!vendidoMode && it.arriboOC && it.fechaArribo && (
                     <span
                       className="ml-1.5 text-[10px] text-sky-400/80 align-middle"
@@ -1087,7 +1094,7 @@ function GrupoCardListo({
                   <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
                   <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums text-right">
-                    {fmtStock(it.stockCentral)}
+                    {fmtStock(it.stockCentral, it.CantPend)}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
                   <td className="px-3 py-2">
