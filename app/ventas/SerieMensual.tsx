@@ -48,9 +48,11 @@ interface RespSerie {
 type Metrica = "pesos" | "unidades";
 type Vista = "lineas" | "total";
 
-// Cuántas líneas se dibujan por separado; el resto se junta en "Otras".
-const TOP_LINEAS = 6;
-const COLORES = ["#facc15", "#3fb950", "#58a6ff", "#f0883e", "#bc8cff", "#2dd4bf"];
+// Cuántas líneas se dibujan por separado (las 5 más vendidas en la métrica
+// elegida); el resto se junta en "Otros".
+const TOP_LINEAS = 5;
+const SERIE_OTROS = "Otros";
+const COLORES = ["#facc15", "#3fb950", "#58a6ff", "#f0883e", "#bc8cff"];
 const COLOR_OTRAS = "#6b7280";
 const COLOR_TOTAL = "#facc15";
 const COLOR_AJUSTE = "#f85149";
@@ -125,7 +127,7 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
   const campo = metrica === "pesos" ? "monto" : "unidades";
   const fmt = metrica === "pesos" ? fmtMoney : fmtNum;
 
-  // Series a dibujar: top-N líneas por la métrica elegida + "Otras". El orden
+  // Series a dibujar: top-N líneas por la métrica elegida + "Otros". El orden
   // del back es por $, así que se reordena acá cuando la métrica es unidades.
   const { datos, series, conAjuste } = useMemo(() => {
     if (!resp || !resp.meses.length)
@@ -136,7 +138,7 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
     const top = ordenadas.slice(0, TOP_LINEAS);
     const resto = ordenadas.slice(TOP_LINEAS);
     const nombres = top.map((l) => l.linea);
-    if (resto.length) nombres.push("Otras");
+    if (resto.length) nombres.push(SERIE_OTROS);
     // En $ el total es NETO (bruto + bonificaciones/ajustes por concepto),
     // como en /ventas/vendedor. Fallback por si el back todavía no lo manda.
     const pesos = metrica === "pesos";
@@ -152,7 +154,7 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
         Total: pesos ? neto(i) : bruto,
       };
       for (const l of top) fila[l.linea] = l[campo][i] ?? 0;
-      if (resto.length) fila["Otras"] = resto.reduce((s, l) => s + (l[campo][i] ?? 0), 0);
+      if (resto.length) fila[SERIE_OTROS] = resto.reduce((s, l) => s + (l[campo][i] ?? 0), 0);
       // Admin: el ajuste se apila como segmento NEGATIVO (bajo cero, ver
       // stackOffset="sign"). Al no-admin no le llega el desglose.
       if (ajuste) fila[SERIE_AJUSTE] = ajuste[i] ?? 0;
@@ -232,35 +234,39 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
                   />
                 )}
               />
-              {vista === "lineas" ? (
-                <>
-                  <Legend wrapperStyle={{ fontSize: 11, color: MUTED, paddingTop: 6 }} />
-                  {conAjuste && (
-                    <Bar dataKey={SERIE_AJUSTE} stackId="venta" fill={COLOR_AJUSTE} maxBarSize={48} />
-                  )}
-                  {series.map((nombre, i) => (
-                    <Bar
-                      key={nombre}
-                      dataKey={nombre}
-                      stackId="venta"
-                      fill={nombre === "Otras" ? COLOR_OTRAS : COLORES[i % COLORES.length]}
-                      maxBarSize={48}
-                    >
-                      {/* Etiqueta arriba de la pila = TOTAL del mes (en $,
-                          neto de bonificaciones), en la última serie. */}
-                      {i === series.length - 1 && (
-                        <LabelList
-                          dataKey="Total"
-                          position="top"
-                          fontSize={10}
-                          fill={MUTED}
-                          formatter={(v: number) => fmtCompacto(v)}
-                        />
-                      )}
-                    </Bar>
-                  ))}
-                </>
-              ) : (
+              {/* SIN Fragment: recharts 2 busca <Bar>/<Legend> con react-is,
+                  que en el lock está en 16.x y con React 19 no reconoce el
+                  Fragment → la vista "Por línea" quedaba vacía. Arrays y
+                  condicionales sí se aplanan con React.Children. */}
+              {vista === "lineas" && (
+                <Legend wrapperStyle={{ fontSize: 11, color: MUTED, paddingTop: 6 }} />
+              )}
+              {vista === "lineas" && conAjuste && (
+                <Bar dataKey={SERIE_AJUSTE} stackId="venta" fill={COLOR_AJUSTE} maxBarSize={48} />
+              )}
+              {vista === "lineas" &&
+                series.map((nombre, i) => (
+                  <Bar
+                    key={nombre}
+                    dataKey={nombre}
+                    stackId="venta"
+                    fill={nombre === SERIE_OTROS ? COLOR_OTRAS : COLORES[i % COLORES.length]}
+                    maxBarSize={48}
+                  >
+                    {/* Etiqueta arriba de la pila = TOTAL del mes (en $,
+                        neto de bonificaciones), en la última serie. */}
+                    {i === series.length - 1 && (
+                      <LabelList
+                        dataKey="Total"
+                        position="top"
+                        fontSize={10}
+                        fill={MUTED}
+                        formatter={(v: number) => fmtCompacto(v)}
+                      />
+                    )}
+                  </Bar>
+                ))}
+              {vista === "total" && (
                 <Bar dataKey="Total" name="Total" fill={COLOR_TOTAL} radius={[3, 3, 0, 0]} maxBarSize={48}>
                   <LabelList
                     dataKey="Total"
