@@ -18,6 +18,10 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //   meses queda fija).
 //   Al tocar un botón: por artículo, recomendado =
 //     promedio vendido + faltante vivo − stock dep. 1 − OC pendiente (≥ 0).
+//   Máximo / mínimo = mes más alto / mes más bajo con venta del rango (mismo
+//   criterio que /compras/consumo).
+//   Cantidad = input por fila, arranca en el recomendado; lo editado se guarda
+//   en localStorage por reporte + rango y va al Excel.
 //   Fuentes: /api/compras/planificacion/{reportes,niveles,datos}.
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -37,6 +41,8 @@ interface Row {
   recomendado: number;
   promedio: number;
   vendido: number;
+  maximo: number;
+  minimo: number | null;
   stock: number;
   oc: number;
   faltante: number;
@@ -70,13 +76,17 @@ const fmtAr = (s: string | null) => {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : s || "—";
 };
 const LS_KEY = "planificacion:sel";
+const lsCantKey = (id: number, hasta: string) => `planificacion:cant:${id}:${hasta}`;
 
-type SortKey = keyof Row;
+type SortKey = keyof Row | "cantidad";
 const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "codigo", label: "Código", num: false },
   { k: "detalle", label: "Detalle", num: false },
+  { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en el recomendado, editable" },
   { k: "recomendado", label: "Recomendado", num: true, title: "promedio + faltante − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
   { k: "promedio", label: "Prom. vendido", num: true, title: "unidades vendidas en el rango / meses" },
+  { k: "maximo", label: "Máximo", num: true, title: "mes con más unidades vendidas del rango" },
+  { k: "minimo", label: "Mínimo", num: true, title: "mes con menos unidades vendidas del rango (sin contar meses sin venta)" },
   { k: "stock", label: "Stock", num: true, title: "depósito 1 (central)" },
   { k: "oc", label: "OC pendiente", num: true, title: "saldo sin recibir de OC sin cerrar" },
   { k: "faltante", label: "Faltante", num: true, title: "faltante vivo en pedidos (mismo cálculo que /compras/faltantes)" },
@@ -94,6 +104,39 @@ export default function PlanificacionPage() {
   const [buscar, setBuscar] = useState("");
   const [soloRec, setSoloRec] = useState(false);
   const [sort, setSort] = useState<{ k: SortKey; dir: 1 | -1 }>({ k: "recomendado", dir: -1 });
+  // Cantidades editadas a mano (codigo → valor). Lo no editado = recomendado.
+  const [cantEdit, setCantEdit] = useState<Record<string, number>>({});
+  const cantKey = datos ? lsCantKey(datos.reporte.id, datos.hasta) : null;
+
+  useEffect(() => {
+    if (!cantKey) {
+      setCantEdit({});
+      return;
+    }
+    try {
+      setCantEdit(JSON.parse(localStorage.getItem(cantKey) || "{}") || {});
+    } catch {
+      setCantEdit({});
+    }
+  }, [cantKey]);
+
+  const cantidadDe = useCallback(
+    (r: Row) => (r.codigo in cantEdit ? cantEdit[r.codigo] : r.recomendado),
+    [cantEdit],
+  );
+
+  const setCantidad = (r: Row, v: string) => {
+    setCantEdit((prev) => {
+      const n = Math.max(0, Math.round(Number(v) || 0));
+      const next = { ...prev };
+      if (n === r.recomendado) delete next[r.codigo];
+      else next[r.codigo] = n;
+      try {
+        if (cantKey) localStorage.setItem(cantKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
 
   const cargarReportes = useCallback(async () => {
     try {
@@ -157,16 +200,17 @@ export default function PlanificacionPage() {
     if (!datos) return [];
     const q = buscar.trim().toLowerCase();
     let rs = datos.rows;
-    if (soloRec) rs = rs.filter((r) => r.recomendado > 0);
+    if (soloRec) rs = rs.filter((r) => r.recomendado > 0 || cantidadDe(r) > 0);
     if (q) rs = rs.filter((r) => r.codigo.toLowerCase().includes(q) || (r.detalle || "").toLowerCase().includes(q));
     const { k, dir } = sort;
+    const val = (r: Row) => (k === "cantidad" ? cantidadDe(r) : k === "minimo" ? r.minimo ?? 0 : r[k] ?? "");
     return [...rs].sort((a, b) => {
-      const va = a[k] ?? "";
-      const vb = b[k] ?? "";
+      const va = val(a);
+      const vb = val(b);
       if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
       return String(va).localeCompare(String(vb), "es") * dir;
     });
-  }, [datos, buscar, soloRec, sort]);
+  }, [datos, buscar, soloRec, sort, cantidadDe]);
 
   const nombreNivel = useCallback(
     (n: 1 | 2 | 3 | 4, id: number) => niveles?.nombres[String(n) as "1"]?.[String(id)] ?? `#${id}`,
@@ -183,8 +227,11 @@ export default function PlanificacionPage() {
     const filas = visibles.map((r) => ({
       Código: r.codigo,
       Detalle: r.detalle || "",
+      Cantidad: cantidadDe(r),
       Recomendado: r.recomendado,
       "Prom. vendido": r.promedio,
+      Máximo: r.maximo,
+      Mínimo: r.minimo ?? "",
       Stock: r.stock,
       "OC pendiente": r.oc,
       Faltante: r.faltante,
@@ -195,14 +242,15 @@ export default function PlanificacionPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
     XLSX.writeFile(wb, `planificacion_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
-  }, [datos, visibles]);
+  }, [datos, visibles, cantidadDe]);
 
   const tot = useMemo(
     () => ({
       conRec: visibles.filter((r) => r.recomendado > 0).length,
       rec: visibles.reduce((s, r) => s + r.recomendado, 0),
+      cant: visibles.reduce((s, r) => s + cantidadDe(r), 0),
     }),
-    [visibles],
+    [visibles, cantidadDe],
   );
 
   const onGuardado = async (id: number | null) => {
@@ -299,7 +347,8 @@ export default function PlanificacionPage() {
                 </span>
                 <span>
                   <b className="text-yellow-400">{tot.conRec}</b> art. a reponer ·{" "}
-                  <b className="text-zinc-200">{fmtNum(tot.rec)}</b> u. · {visibles.length}/{datos.total} art.
+                  <b className="text-zinc-200">{fmtNum(tot.rec)}</b> u. rec. ·{" "}
+                  <b className="text-zinc-200">{fmtNum(tot.cant)}</b> u. a pedir · {visibles.length}/{datos.total} art.
                 </span>
               </>
             )}
@@ -370,6 +419,20 @@ export default function PlanificacionPage() {
                   <tr key={r.codigo} className="border-t border-zinc-800 hover:bg-zinc-900/60">
                     <td className="px-2 py-1.5 font-mono text-yellow-400 whitespace-nowrap">{r.codigo}</td>
                     <td className="px-2 py-1.5">{r.detalle || "—"}</td>
+                    <td className="px-2 py-1 text-right">
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        inputMode="numeric"
+                        value={cantidadDe(r)}
+                        onChange={(e) => setCantidad(r, e.target.value)}
+                        onFocus={(e) => e.target.select()}
+                        className={`w-20 bg-zinc-900 border rounded px-1.5 py-0.5 text-right tabular-nums outline-none focus:border-yellow-400 ${
+                          r.codigo in cantEdit ? "border-yellow-400/60 text-yellow-300" : "border-zinc-700 text-zinc-100"
+                        }`}
+                      />
+                    </td>
                     <td
                       className={`px-2 py-1.5 text-right tabular-nums font-semibold ${
                         r.recomendado > 0 ? "text-green-400" : "text-zinc-600"
@@ -378,6 +441,8 @@ export default function PlanificacionPage() {
                       {fmtNum(r.recomendado)}
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(r.promedio)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-orange-400">{r.maximo ? fmtNum(r.maximo) : "—"}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-sky-400">{r.minimo != null ? fmtNum(r.minimo) : "—"}</td>
                     <td className={`px-2 py-1.5 text-right tabular-nums ${r.stock < 0 ? "text-red-400" : "text-zinc-300"}`}>
                       {fmtNum(r.stock)}
                     </td>

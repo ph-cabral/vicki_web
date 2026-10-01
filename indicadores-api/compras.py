@@ -1723,14 +1723,25 @@ WITH art AS (
     INNER JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
     WHERE 1 = 1 {niveles}
 ),
-ven AS (
-    SELECT r.CodArticu AS Cod, SUM(r.CantidadPedida) AS Vendido
+ven_m AS (
+    -- Vendido por artículo y MES (para máximo/mínimo mensual, mismo criterio
+    -- que /compras/consumo: máx. = mes más alto, mín. = mes más bajo CON venta).
+    SELECT r.CodArticu AS Cod,
+           DATEDIFF(month, '1800-12-28', DATEADD(day, cab.FechaPedido, '1800-12-28')) AS Mes,
+           SUM(r.CantidadPedida) AS Cant
     FROM EVERWEAR.dbo.VenFer_PedidoReng r
     INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
     INNER JOIN art ON art.CodArticulo = r.CodArticu
     WHERE cab.FechaPedido BETWEEN {d1} AND {d2}
       {valido}
-    GROUP BY r.CodArticu
+    GROUP BY r.CodArticu,
+             DATEDIFF(month, '1800-12-28', DATEADD(day, cab.FechaPedido, '1800-12-28'))
+),
+ven AS (
+    SELECT Cod, SUM(Cant) AS Vendido, MAX(Cant) AS Maximo,
+           MIN(CASE WHEN Cant > 0 THEN Cant END) AS Minimo
+    FROM ven_m
+    GROUP BY Cod
 ),
 stk AS (
     SELECT a.CodArticulo AS Cod, SUM(a.StkReal) AS Stock
@@ -1754,6 +1765,7 @@ oc AS (
 SELECT LTRIM(RTRIM(art.CodArticulo)) AS Cod,
        art.Detalle, art.DetalleMedida,
        ISNULL(ven.Vendido, 0) AS Vendido,
+       ven.Maximo, ven.Minimo,
        ISNULL(stk.Stock, 0)   AS Stock,
        ISNULL(oc.Pend, 0)     AS OC
 FROM art
@@ -1814,7 +1826,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
         else:
             cur.execute(sql)
         rows = []
-        for cod, det, med, vend, stk, oc in cur.fetchall():
+        for cod, det, med, vend, vmax, vmin, stk, oc in cur.fetchall():
             cod = (str(cod or "")).strip()
             if not cod:
                 continue
@@ -1825,6 +1837,9 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
                 "codigo": cod,
                 "detalle": nombre,
                 "vendido": round(float(_safe(vend) or 0), 2),
+                # Máx. con piso 0 (meses sin venta cuentan como 0, igual que consumo).
+                "maximo": max(round(float(_safe(vmax) or 0), 2), 0.0),
+                "minimo": round(float(_safe(vmin)), 2) if _safe(vmin) is not None else None,
                 "stock": round(float(_safe(stk) or 0), 2),
                 "oc": round(float(_safe(oc) or 0), 2),
             })

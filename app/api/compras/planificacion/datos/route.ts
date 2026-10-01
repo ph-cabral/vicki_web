@@ -21,6 +21,7 @@ export const maxDuration = 120;
 // /compras/planificacion — GET ?id=<reporte>[&fresh=1]
 //   Por artículo del filtro guardado (niveles Magnus, N meses cerrados):
 //     · vendido / promedio  — pedidos válidos en el rango (indicadores-api)
+//     · máximo / mínimo     — mes más alto / mes más bajo CON venta (= /compras/consumo)
 //     · stock               — depósito 1 (central)
 //     · oc                  — saldo pendiente de OC sin cerrar
 //     · faltante            — faltante VIVO de /compras/faltantes: `faltan` del
@@ -94,7 +95,18 @@ export async function GET(req: NextRequest) {
     console.error("GET /api/compras/planificacion/datos — faltantes", e);
   }
 
-  let api: { rows: { codigo: string; detalle: string | null; vendido: number; stock: number; oc: number }[]; ocDesde?: string };
+  let api: {
+    rows: {
+      codigo: string;
+      detalle: string | null;
+      vendido: number;
+      maximo: number;
+      minimo: number | null;
+      stock: number;
+      oc: number;
+    }[];
+    ocDesde?: string;
+  };
   try {
     const res = await fetch(`${API_URL}/compras/planificacion`, {
       method: "POST",
@@ -132,6 +144,8 @@ export async function GET(req: NextRequest) {
         recomendado: neto > 0 ? Math.ceil(neto - 1e-9) : 0,
         promedio: r2(promedio),
         vendido: r2(r.vendido),
+        maximo: r2(r.maximo ?? 0),
+        minimo: r.minimo == null ? null : r2(r.minimo),
         stock: r2(r.stock),
         oc: r2(r.oc),
         faltante: r2(faltante),
