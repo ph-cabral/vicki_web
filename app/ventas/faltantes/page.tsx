@@ -55,6 +55,7 @@ interface Item {
   arriboPactada?: boolean; // true = entrega pactada del renglón; false = fecha de la OC (sin pactada)
   extraordinario: boolean; // leído de preparado.faltante_extraordinario (compras)
   extraordinarioFecha: string | null; // clave (fecha, CodArticulo) para decidir comprar
+  stockCentral?: number | null; // stock depósito 1 (solo filas de "Ingresados"; null = no se pudo leer)
 }
 
 // Forma propia (no extiende Item): "listos" no trae extraordinario/extraordinarioFecha.
@@ -73,6 +74,7 @@ interface ItemListo {
   clienteQuiere: boolean | null;
   vendido: boolean | null;
   yaIngreso: boolean; // CodArticulo con remito de ingreso x OC ya concretado
+  stockCentral?: number | null; // stock depósito 1 (null = no se pudo leer)
 }
 
 const keyOf = (it: { NroPedOrigen: number; NroRengOrigen: number }) =>
@@ -81,6 +83,9 @@ const grupoKeyOf = (it: { Cliente: number | string | null; NroPedOrigen: number 
   `${it.Cliente}__${it.NroPedOrigen}`;
 const fmtNum = (n: number) =>
   new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(n || 0);
+// Stock central: null/undefined = no se pudo leer → "—"; <= 0 en rojo.
+const fmtStock = (n: number | null | undefined) =>
+  n == null ? "—" : <span className={n <= 0 ? "text-red-400" : "text-zinc-200"}>{fmtNum(n)}</span>;
 const fmtAr = (s: string | null) => {
   if (s === "EN_STOCK") return "En stock";
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(s || "");
@@ -941,7 +946,9 @@ function GrupoCard({
               <th className="px-3 py-2 font-medium">Cód.</th>
               <th className="px-3 py-2 font-medium">Artículo</th>
               <th className="px-3 py-2 font-medium text-right">Cant. faltante</th>
-              <th className="px-3 py-2 font-medium">Fecha arribo</th>
+              <th className={`px-3 py-2 font-medium${vendidoMode ? " text-right" : ""}`}>
+                {vendidoMode ? "Stock central" : "Fecha arribo"}
+              </th>
               <th className="px-3 py-2 font-medium text-right">Importe</th>
               <th className="px-3 py-2 font-medium text-center">{vendidoMode ? "Vendido" : "Acción"}</th>
             </tr>
@@ -959,9 +966,9 @@ function GrupoCard({
                 <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
                 <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">
-                  {/* Vista "Ingresados" (vendidoMode): la mercadería ya llegó → siempre "En stock". */}
-                  {vendidoMode ? "En stock" : fmtAr(it.fechaArribo)}
+                <td className={`px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums${vendidoMode ? " text-right" : ""}`}>
+                  {/* Vista "Ingresados" (vendidoMode): stock del depósito central (1). */}
+                  {vendidoMode ? fmtStock(it.stockCentral) : fmtAr(it.fechaArribo)}
                   {!vendidoMode && it.arriboOC && it.fechaArribo && (
                     <span
                       className="ml-1.5 text-[10px] text-sky-400/80 align-middle"
@@ -1061,7 +1068,7 @@ function GrupoCardListo({
               <th className="px-3 py-2 font-medium">Cód.</th>
               <th className="px-3 py-2 font-medium">Artículo</th>
               <th className="px-3 py-2 font-medium text-right">Cant. faltante</th>
-              <th className="px-3 py-2 font-medium">Fecha arribo</th>
+              <th className="px-3 py-2 font-medium text-right">Stock central</th>
               <th className="px-3 py-2 font-medium text-right">Importe</th>
               <th className="px-3 py-2 font-medium text-center">Vendido</th>
             </tr>
@@ -1079,7 +1086,9 @@ function GrupoCardListo({
                   <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
                   <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">En stock</td>
+                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums text-right">
+                    {fmtStock(it.stockCentral)}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-center gap-1.5">

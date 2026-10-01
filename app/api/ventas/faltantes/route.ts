@@ -770,10 +770,48 @@ export async function GET(req: Request) {
 
     const enStock = [...enStockDeRows, ...enStockDeWms];
 
+    // Stock del depósito central (1) por artículo — columna "Stock" de la
+    // cara "Ingresados" (filas con fechaArribo + listos). Una sola consulta
+    // batch (IN) solo por los códigos únicos de esa cara, no de todo `rows`.
+    // Best-effort: si falla, stockCentral queda null y el front muestra "—".
+    const codsIngresados = [
+      ...new Set(
+        [
+          ...out.filter((r) => r.fechaArribo !== null).map((r) => r.CodArticulo),
+          ...enStock.map((r) => r.CodArticulo),
+          ...listos.map((r) => r.CodArticulo),
+        ]
+          .map((c) => String(c ?? "").trim())
+          .filter(Boolean),
+      ),
+    ];
+    const stockMap = new Map<string, number>();
+    if (codsIngresados.length) {
+      try {
+        const rs = await fetch(
+          `${API_URL}/deposito/stock-por-articulos?codigos=${encodeURIComponent(codsIngresados.join(","))}`,
+          { cache: "no-store", signal: AbortSignal.timeout(15000) },
+        );
+        if (rs.ok) {
+          const j = await rs.json();
+          for (const r of (j?.rows ?? []) as { CodArticulo: string; Stock: number }[]) {
+            const cod = String(r.CodArticulo ?? "").trim();
+            if (cod) stockMap.set(cod, Number(r.Stock) || 0);
+          }
+        }
+      } catch (e) {
+        console.error("GET /api/ventas/faltantes — stock central", e);
+      }
+    }
+    const conStock = <T extends { CodArticulo: string }>(r: T) => ({
+      ...r,
+      stockCentral: stockMap.get(r.CodArticulo.trim()) ?? null,
+    });
+
     return NextResponse.json({
       fecha,
-      rows: [...out, ...enStock],
-      listos,
+      rows: [...out, ...enStock].map(conStock),
+      listos: listos.map(conStock),
       isAdmin: !soloVendedor,
     });
   } catch (error) {
