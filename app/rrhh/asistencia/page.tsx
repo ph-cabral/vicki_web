@@ -746,8 +746,8 @@ const AsistenciaRow = memo(function AsistenciaRow({
       >
         {fmtHHMM(netMin)}
       </TableCell>
-      <TableCell title={`Neto ${fmtHHMM(netMin)} · tope ${fmtHHMM(tope)}`}>
-        {fmtHorasRRHH(rrhhMin)}
+      <TableCell title={`Neto ${fmtHHMM(netMin)} · tope ${fmtHHMM(tope)}${tope === 0 ? " · día sin tope: se muestra como hora extra" : ""}`}>
+        {fmtHorasRRHH(tope === 0 ? netMin : rrhhMin)}
       </TableCell>
       <TableCell>
         <RegistroButton

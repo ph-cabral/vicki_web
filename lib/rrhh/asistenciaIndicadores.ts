@@ -143,13 +143,20 @@ export const netMin = (r: ResumenRow): number =>
 export const rrhhMin = (r: ResumenRow, tope?: number): number =>
   Math.min(netMin(r), tope ?? topeMin(r.fecha));
 
+// Redondeo RRHH a hora entera: sólo sube a la siguiente hora cuando el resto
+// llega a 45 min (9:30 -> 9 hs, 8:45 -> 9 hs). Devuelve minutos.
+export const redondeoHoraMin = (min: number): number => {
+  const h = Math.floor(min / 60);
+  return (min % 60 >= 45 ? h + 1 : h) * 60;
+};
+
 // Minutos extra = lo trabajado por encima del tope del día. En un día sin
 // tope asignado (sábado sin horario asignado, o feriado — ver
 // buildTopeResolver) el tope es 0, así que todo lo trabajado ese día cae acá
 // entero. Mismo criterio que `ex` en computeIndicadores, expuesto para poder
 // mostrarlo por fila (ej. columna "Extra" en /rrhh/asistencia).
 export const extraMin = (r: ResumenRow, tope?: number): number =>
-  Math.max(0, netMin(r) - (tope ?? topeMin(r.fecha)));
+  redondeoHoraMin(Math.max(0, netMin(r) - (tope ?? topeMin(r.fecha))));
 
 // Estados que NO cuentan como ausencia (ajustá esta lista si querés incluir
 // "Ausente" como injustificada en el % de ausentismo).
@@ -208,7 +215,8 @@ export function computeIndicadores(
     if (tope > 0) jornadas++;
 
     // Horas extra: trabajado por encima del tope diario.
-    const ex = Math.max(0, net - tope);
+    // Redondeado a hora entera (≥45 min sube a la hora siguiente).
+    const ex = redondeoHoraMin(Math.max(0, net - tope));
     if (ex > 0) extrasArea.set(dep(r), (extrasArea.get(dep(r)) ?? 0) + ex);
     extrasMin += ex;
 
