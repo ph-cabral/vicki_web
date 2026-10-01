@@ -1639,3 +1639,196 @@ def fetch_lineas_por_articulos(codigos: list[str]):
         return {"total": len(out), "lineas": out}
     finally:
         conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /compras/planificacion — planificación de abastecimiento (2026-10-01)
+#
+# Cada usuario arma "reportes" guardados (Postgres, ver
+# sql/compras_planificacion_reporte.sql) con listas de Línea (Nivel1), Rubro
+# (Nivel2), Sub rubro (Nivel3) y Sub sub rubro (Nivel4) + N meses hacia atrás.
+# Acá se calcula, por artículo del filtro:
+#   · Vendido  — unidades de pedidos válidos (mismo criterio que /compras/consumo:
+#                blacklist de comprobantes + Cerrados/Facturados) en el rango.
+#   · Stock    — StkReal del depósito 1 (central).
+#   · OC       — saldo pendiente de recibir (renglón Estado=1, cabecera no
+#                cancelada, FecMovim >= OC_DESDE_DEFAULT). Mismo criterio que
+#                SQL_OC_PENDIENTES pero SIN recorte por tipo de artículo: el
+#                universo ya lo define el filtro de niveles.
+# El faltante vivo y el recomendado se suman en el route de Next (vienen del
+# cálculo de /compras/faltantes).
+#
+# Semántica del filtro: dentro de un nivel es OR (lista), entre niveles es AND.
+# Nivel vacío = sin filtro. Al menos un nivel tiene que venir con algo.
+#
+# Rendimiento: UNA sola consulta con CTEs; `art` acota el universo por los
+# niveles (ints casteados en Python, nunca texto del cliente) y las tres
+# agregaciones joinean contra él, así SQL Server nunca agrega la empresa
+# entera. Joins char = char sin LTRIM para que usen índice.
+# ══════════════════════════════════════════════════════════════════════════════
+
+SQL_PLANIF_NIVELES_COMBOS = """
+SELECT ap.Nivel1, ap.Nivel2, ap.Nivel3, ap.Nivel4, COUNT(*) AS Cant
+FROM EVERWEAR.dbo.StkFer_Articulos s
+INNER JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+GROUP BY ap.Nivel1, ap.Nivel2, ap.Nivel3, ap.Nivel4
+"""
+
+SQL_PLANIF_NIVELES_NOMBRES = """
+SELECT 1 AS Niv, Nivel1 AS Id, LTRIM(RTRIM(Detalle)) AS Detalle FROM EVERWEAR.dbo.Stk_Nivel1
+UNION ALL SELECT 2, Nivel2, LTRIM(RTRIM(Detalle)) FROM EVERWEAR.dbo.Stk_Nivel2
+UNION ALL SELECT 3, Nivel3, LTRIM(RTRIM(Detalle)) FROM EVERWEAR.dbo.Stk_Nivel3
+UNION ALL SELECT 4, Nivel4, LTRIM(RTRIM(Detalle)) FROM EVERWEAR.dbo.Stk_Nivel4
+"""
+
+_PLANIF_NIVELES_CACHE: tuple[float, dict] | None = None
+_PLANIF_NIVELES_TTL = 900
+
+
+def fetch_planificacion_niveles():
+    """Catálogo para el modal de /compras/planificacion: nombres de los 4
+    niveles + las combinaciones (N1,N2,N3,N4) que existen con su cantidad de
+    artículos (~400 filas). Con eso el front arma las listas en cascada
+    (rubros de las líneas elegidas, etc.) y los contadores sin volver a pedir.
+    Cache 15 min: el catálogo casi no cambia."""
+    global _PLANIF_NIVELES_CACHE
+    if _PLANIF_NIVELES_CACHE and monotonic() - _PLANIF_NIVELES_CACHE[0] < _PLANIF_NIVELES_TTL:
+        return _PLANIF_NIVELES_CACHE[1]
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(SQL_PLANIF_NIVELES_NOMBRES)
+        nombres: dict[str, dict[str, str]] = {"1": {}, "2": {}, "3": {}, "4": {}}
+        for niv, nid, det in cur.fetchall():
+            if nid is None:
+                continue
+            nombres[str(int(niv))][str(int(nid))] = (str(det or "")).strip() or f"#{int(nid)}"
+        cur.execute(SQL_PLANIF_NIVELES_COMBOS)
+        combos = [
+            [int(n1 or 0), int(n2 or 0), int(n3 or 0), int(n4 or 0), int(c or 0)]
+            for n1, n2, n3, n4, c in cur.fetchall()
+        ]
+    finally:
+        conn.close()
+    out = {"nombres": nombres, "combos": combos}
+    _PLANIF_NIVELES_CACHE = (monotonic(), out)
+    return out
+
+
+SQL_PLANIFICACION = """
+WITH art AS (
+    SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida
+    FROM EVERWEAR.dbo.StkFer_Articulos s
+    INNER JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+    WHERE 1 = 1 {niveles}
+),
+ven AS (
+    SELECT r.CodArticu AS Cod, SUM(r.CantidadPedida) AS Vendido
+    FROM EVERWEAR.dbo.VenFer_PedidoReng r
+    INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
+    INNER JOIN art ON art.CodArticulo = r.CodArticu
+    WHERE cab.FechaPedido BETWEEN {d1} AND {d2}
+      {valido}
+    GROUP BY r.CodArticu
+),
+stk AS (
+    SELECT a.CodArticulo AS Cod, SUM(a.StkReal) AS Stock
+    FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
+    INNER JOIN art ON art.CodArticulo = a.CodArticulo
+    WHERE a.Deposito = 1
+    GROUP BY a.CodArticulo
+),
+oc AS (
+    SELECT r.CodArticulo AS Cod,
+           SUM(ISNULL(r.Cantidad, 0) - ISNULL(r.CantidadCumplida, 0)) AS Pend
+    FROM EVERWEAR.dbo.Com_OrdCompRenglones r
+    INNER JOIN EVERWEAR.dbo.Com_OrdCompCabecera cab ON cab.NroOrdCompra = r.NroOrdCompra
+    INNER JOIN art ON art.CodArticulo = r.CodArticulo
+    WHERE r.Estado = 1
+      AND ISNULL(r.Cantidad, 0) - ISNULL(r.CantidadCumplida, 0) > 0
+      {excl}
+      AND cab.FecMovim >= {oc_desde}
+    GROUP BY r.CodArticulo
+)
+SELECT LTRIM(RTRIM(art.CodArticulo)) AS Cod,
+       art.Detalle, art.DetalleMedida,
+       ISNULL(ven.Vendido, 0) AS Vendido,
+       ISNULL(stk.Stock, 0)   AS Stock,
+       ISNULL(oc.Pend, 0)     AS OC
+FROM art
+LEFT JOIN ven ON ven.Cod = art.CodArticulo
+LEFT JOIN stk ON stk.Cod = art.CodArticulo
+LEFT JOIN oc  ON oc.Cod  = art.CodArticulo
+WHERE ven.Cod IS NOT NULL OR ISNULL(stk.Stock, 0) <> 0 OR oc.Cod IS NOT NULL {extra}
+"""
+
+
+def _ints(valores) -> list[int]:
+    out = []
+    for v in valores or []:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(out))
+
+
+def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str] | None = None):
+    """Vendido / stock dep. 1 / OC pendiente por artículo para el filtro de
+    niveles. `desde`/`hasta` = YYYY-MM-DD (el route arma N meses cerrados).
+    `extra` = códigos con faltante vivo: se devuelven aunque no tengan venta,
+    stock ni OC (si están dentro del filtro de niveles)."""
+    niveles = {"Nivel1": _ints(n1), "Nivel2": _ints(n2), "Nivel3": _ints(n3), "Nivel4": _ints(n4)}
+    if not any(niveles.values()):
+        raise ValueError("Elegí al menos una línea, rubro, sub rubro o sub sub rubro")
+    frag_niv = "".join(
+        f"\n      AND ap.{col} IN ({','.join(str(i) for i in ids)})"
+        for col, ids in niveles.items() if ids
+    )
+    try:
+        d1 = datetime.strptime(desde[:10], "%Y-%m-%d").date()
+        d2 = datetime.strptime(hasta[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise ValueError("desde/hasta inválidos (YYYY-MM-DD)")
+    oc_desde = datetime.strptime(OC_DESDE_DEFAULT, "%Y-%m-%d").date()
+
+    # Cada código en sus dos variantes (tal cual / con espacio adelante, ver
+    # _variantes_cod) para que matchee el CHAR de Magnus por índice. Tope por
+    # el límite de ~2100 parámetros de SQL Server.
+    limpios = sorted({(str(c) or "").strip() for c in (extra or []) if (str(c) or "").strip()})[:1000]
+    extras = [v for c in limpios for v in _variantes_cod(c)]
+    frag_extra = f"OR art.CodArticulo IN ({','.join('?' for _ in extras)})" if extras else ""
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        sql = SQL_PLANIFICACION.format(
+            niveles=frag_niv, d1=_dias(d1), d2=_dias(d2),
+            valido=_cond_pedido_valido(cur), excl=_EXCL,
+            oc_desde=_dias(oc_desde), extra=frag_extra,
+        )
+        if extras:
+            cur.execute(sql, extras)
+        else:
+            cur.execute(sql)
+        rows = []
+        for cod, det, med, vend, stk, oc in cur.fetchall():
+            cod = (str(cod or "")).strip()
+            if not cod:
+                continue
+            nombre = " ".join(
+                " ".join((str(x or "")).strip() for x in (det, med)).split()
+            ) or None
+            rows.append({
+                "codigo": cod,
+                "detalle": nombre,
+                "vendido": round(float(_safe(vend) or 0), 2),
+                "stock": round(float(_safe(stk) or 0), 2),
+                "oc": round(float(_safe(oc) or 0), 2),
+            })
+    finally:
+        conn.close()
+    return {"desde": d1.isoformat(), "hasta": d2.isoformat(), "ocDesde": OC_DESDE_DEFAULT,
+            "total": len(rows), "rows": rows}

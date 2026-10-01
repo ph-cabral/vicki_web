@@ -34,6 +34,7 @@ const LABELS = {
   relojes: "Relojes",
   telefono: "Teléfono",
   lineas: "Líneas",
+  planificacion: "Planificación",
 };
 const label = (seg) =>
   LABELS[seg] ?? seg.charAt(0).toUpperCase() + seg.slice(1);

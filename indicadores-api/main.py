@@ -40,6 +40,7 @@ from compras import (
     fetch_compras_valorizado,
     fetch_consumo_articulo, fetch_consumo_articulos, fetch_consumo_lineas,
     fetch_lineas, fetch_lineas_por_articulos,
+    fetch_planificacion, fetch_planificacion_niveles,
 )
 from oc_areas import fetch_oc_por_area, fetch_oc_detalle_area
 from ingresos import fetch_remitos_ingreso
@@ -907,6 +908,40 @@ def compras_consumo_articulos_export(
 # pantalla que abre la vista, tiene que listar las 48 líneas de una. Lo que
 # viaja de SQL a Python es chico y no crece con el catálogo (ver docstring de
 # fetch_consumo_lineas).
+class PlanificacionIn(BaseModel):
+    n1: list[int] = []
+    n2: list[int] = []
+    n3: list[int] = []
+    n4: list[int] = []
+    desde: str
+    hasta: str
+    extra: list[str] = []
+
+
+@app.get("/compras/planificacion/niveles")
+def compras_planificacion_niveles():
+    """Nombres de Nivel1..4 + combinaciones existentes con cantidad de
+    artículos — catálogo del modal de /compras/planificacion."""
+    try:
+        return fetch_planificacion_niveles()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.post("/compras/planificacion")
+def compras_planificacion(body: PlanificacionIn):
+    """Vendido en rango / stock dep. 1 / OC pendiente por artículo para un
+    filtro de niveles (OR dentro de cada nivel, AND entre niveles). `extra` =
+    códigos con faltante vivo que se devuelven aunque estén en cero."""
+    try:
+        return fetch_planificacion(body.n1, body.n2, body.n3, body.n4,
+                                   body.desde, body.hasta, body.extra)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
 @app.get("/compras/consumo-lineas")
 def compras_consumo_lineas(
     desde: str = Query(...),
