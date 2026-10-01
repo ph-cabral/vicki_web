@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Users, UserPlus, ShieldCheck } from "lucide-react";
+import { Users, UserPlus, ShieldCheck, Smartphone } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +8,7 @@ const tiles = [
   { href: "/admin/usuarios", icon: Users, title: "Usuarios", desc: "Ver, activar/desactivar y cambiar rol." },
   { href: "/admin/usuarios/nuevo", icon: UserPlus, title: "Nuevo usuario", desc: "Dar de alta vinculado a un legajo." },
   { href: "/admin/permisos", icon: ShieldCheck, title: "Permisos por sector", desc: "Qué módulos habilita cada sector." },
+  { href: "/admin/vpn", icon: Smartphone, title: "App Vicki / VPN", desc: "Celulares con acceso desde afuera; bajas." },
 ];
 
 export default function AdminHome() {

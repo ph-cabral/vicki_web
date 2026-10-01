@@ -84,3 +84,8 @@ __pycache__/
 
 # puente de telefonía: claves SIP de las extensiones (sólo en el server)
 telefonia-gw/datos/
+
+# apps Android (android/*/build.sh)
+android/*/build/
+android/*/.cache/
+android/*/test/harness/target/

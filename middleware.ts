@@ -76,6 +76,8 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // Estado (pedido / s/e) de los "Enviados recién" del picker, por id.
   if (method === "GET" && pathname === "/api/picking/eventos/estados") return true;
   if (method === "GET" && pathname === "/apk/everwear-picker.apk") return true;
+  // APK de la app general "Vicki" (android/vicki): se baja desde el celular antes de tener sesión.
+  if (method === "GET" && pathname === "/apk/vicki.apk") return true;
   // APIs que el picker necesita, sólo en POST.
   if (
     method === "POST" &&

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
+import SerieMensual from "./SerieMensual";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // /ventas/vendedor: vista de ventas por línea de
@@ -2052,6 +2053,11 @@ export default function VentasVendedorPage() {
             </div>
           </div>
         )}
+
+        {/* Venta por mes (2026-10-01): serie de los últimos 12 meses por línea.
+            Usa el mismo filtro de vendedor del header (solo admin); un
+            no-admin queda acotado a lo suyo en el servidor. */}
+        <SerieMensual vendedor={vendedorSel} />
 
         {/* Rankings del pie — top clientes ($) o top líneas (unidades). El
             título, el botón "Mostrar" y el switch Clientes/Líneas se

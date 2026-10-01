@@ -50,7 +50,7 @@ from embolsado import (
 from ventas import (
     fetch_pedidos_mes, fetch_ventas_por_linea, fetch_vendedores,
     fetch_top_clientes, fetch_top_lineas, fetch_clientes_por_linea,
-    fetch_clientes_por_sub_linea,
+    fetch_clientes_por_sub_linea, fetch_serie_mensual,
 )
 # /ventas/bulones — misma vista que /ventas/vendedor pero acotada a la línea
 # BULONERÍA, con el corte por CÓDIGO PATRÓN y un ranking extra de vendedores
@@ -1251,6 +1251,19 @@ def ventas_vendedor_top_lineas(
         return fetch_top_lineas(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.get("/ventas/vendedor/serie-mensual")
+def ventas_vendedor_serie_mensual(
+    vendedor: int | None = Query(default=None, description="Filtra a este vendedor (eje comprobante); vacío = toda la empresa"),
+):
+    """Unidades y $ netos por mes y por línea, últimos 12 meses con el mes en
+    curso (parcial). Alimenta el gráfico de /ventas/vendedor. Ver
+    fetch_serie_mensual (ventas.py)."""
+    try:
+        return fetch_serie_mensual(vendedor=vendedor)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

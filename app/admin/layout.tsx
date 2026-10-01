@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, Users, UserPlus, ShieldCheck, UserCog, User, Phone } from "lucide-react";
+import { ArrowLeft, Users, UserPlus, ShieldCheck, UserCog, User, Phone, Smartphone } from "lucide-react";
 import { getSession } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +37,9 @@ export default async function AdminLayout({
             </Link>
             <Link href="/admin/telefonia" className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 hover:bg-muted">
               <Phone className="size-4" /> Telefonía
+            </Link>
+            <Link href="/admin/vpn" className="inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 hover:bg-muted">
+              <Smartphone className="size-4" /> App / VPN
             </Link>
           </nav>
           {/* Usuario logueado, arriba a la derecha (2026-08-25).

@@ -1411,6 +1411,15 @@ def _fetch_asignacion_activa(nro_operario: int) -> dict | None:
 #              preguntar. Si quedan TODAS listas, pasa sola a "tomado" y el
 #              widget, si está libre, se las asigna.
 #
+# RE-OFERTA EN "tomado" (2026-10-01): "prepAlDecidir" guarda cuántas unidades
+# había en preparación cuando quedó decidido. Si después se manda a armar OTRA
+# unidad del cliente (prep crece por encima de esa vara) se vuelve a preguntar
+# Tomar / Esperar, aunque ya estuviera "tomado". Caso real: pedido 763339
+# (cliente 606) se asignó a las 9:00:47 sin hermanos en preparación -> tomado
+# sin pregunta; el 763389 se mandó a armar a las 9:02:27 y el controlador
+# siguió con el primero sin enterarse. Esperar en ese momento devuelve a la
+# cola el pedido activo del cliente (reservado para él), igual que siempre.
+#
 # Liberación de la reserva: cuando en Magnus ya no queda ninguna unidad del
 # cliente (todo controlado/cerrado) o cuando el operario deja de dar señales
 # ("vistoEn" más viejo que RESERVA_INACTIVO_MIN: widget cerrado, PC apagada,
@@ -1433,10 +1442,13 @@ CREATE TABLE IF NOT EXISTS deposito.control_reserva_cliente (
     cliente           text,
     estado            text NOT NULL DEFAULT 'nuevo',
     "listosAlDecidir" integer NOT NULL DEFAULT 0,
+    "prepAlDecidir"   integer NOT NULL DEFAULT 0,
     "creadoEn"        timestamp NOT NULL DEFAULT now(),
     "actualizadoEn"   timestamp NOT NULL DEFAULT now(),
     "vistoEn"         timestamp NOT NULL DEFAULT now()
 );
+ALTER TABLE deposito.control_reserva_cliente
+    ADD COLUMN IF NOT EXISTS "prepAlDecidir" integer NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_control_reserva_operario
     ON deposito.control_reserva_cliente ("nroOperario");
 CREATE INDEX IF NOT EXISTS idx_control_asignacion_cliente
@@ -1644,6 +1656,7 @@ def _resumir(reserva: dict, unidades: list[dict], asignadas: set) -> dict:
 
     estado = reserva["estado"]
     listos_decidir = int(reserva.get("listosAlDecidir") or 0)
+    prep_decidir = int(reserva.get("prepAlDecidir") or 0)
     oferta = False
     auto = False
     nuevo_estado, nuevo_listos = estado, listos_decidir
@@ -1653,6 +1666,9 @@ def _resumir(reserva: dict, unidades: list[dict], asignadas: set) -> dict:
             nuevo_estado = "tomado"          # nada que esperar: no se pregunta
         else:
             oferta = True
+    elif estado == "tomado":
+        if prep > prep_decidir:
+            oferta = True                    # se mandó a armar otra: volver a preguntar
     elif estado == "espera":
         if prep == 0 and libres > 0:
             nuevo_estado = "tomado"          # quedaron todas listas: van a él
@@ -1678,6 +1694,10 @@ def _resumir(reserva: dict, unidades: list[dict], asignadas: set) -> dict:
         "pedidos": detalle,
         "_nuevoEstado": nuevo_estado if nuevo_estado != estado else None,
         "_nuevoListos": nuevo_listos if nuevo_listos != listos_decidir else None,
+        # Vara de preparación: baja sola cuando terminan de armarse (o el
+        # decidir la deja altísima a propósito). Nunca sube acá: subirla es
+        # lo que hace la pregunta, y eso lo resuelve decidir_grupo / asignar.
+        "_nuevoPrep": prep if (prep < prep_decidir and not oferta) else None,
     }
 
 
@@ -1697,7 +1717,7 @@ def evaluar_reservas(nro_operario: int | None = None) -> dict[int, dict]:
             (RESERVA_INACTIVO_MIN,),
         )
         sql = ('SELECT "codCliente", "nroOperario", "asignadoA", cliente, estado, '
-               '"listosAlDecidir" FROM deposito.control_reserva_cliente')
+               '"listosAlDecidir", "prepAlDecidir" FROM deposito.control_reserva_cliente')
         params: tuple = ()
         if nro_operario is not None:
             sql += ' WHERE "nroOperario" = %s'
@@ -1726,17 +1746,21 @@ def evaluar_reservas(nro_operario: int | None = None) -> dict[int, dict]:
                 )
                 continue
             res = _resumir(r, unidades, asignadas)
-            if res["_nuevoEstado"] is not None or res["_nuevoListos"] is not None:
+            if (res["_nuevoEstado"] is not None or res["_nuevoListos"] is not None
+                    or res["_nuevoPrep"] is not None):
                 cur.execute(
                     'UPDATE deposito.control_reserva_cliente '
-                    'SET estado = %s, "listosAlDecidir" = %s, "actualizadoEn" = now() '
+                    'SET estado = %s, "listosAlDecidir" = %s, "prepAlDecidir" = %s, '
+                    '    "actualizadoEn" = now() '
                     'WHERE "codCliente" = %s',
                     (res["estado"],
                      res["_nuevoListos"] if res["_nuevoListos"] is not None else r["listosAlDecidir"],
+                     res["_nuevoPrep"] if res["_nuevoPrep"] is not None else r["prepAlDecidir"],
                      r["codCliente"]),
                 )
             res.pop("_nuevoEstado", None)
             res.pop("_nuevoListos", None)
+            res.pop("_nuevoPrep", None)
             out[int(r["codCliente"])] = res
         conn.commit()
         return out
@@ -1920,7 +1944,7 @@ def decidir_grupo(nro_operario: int, cod_cliente: int, accion: str) -> dict:
                 'UPDATE deposito.control_reserva_cliente '
                 # Vara provisoria altísima: evaluar_reservas (abajo) la baja
                 # sola a las listas reales de este momento (rama libres < vara).
-                'SET estado = \'espera\', "listosAlDecidir" = 1000000, '
+                'SET estado = \'espera\', "listosAlDecidir" = 1000000, "prepAlDecidir" = 1000000, '
                 '    "actualizadoEn" = now(), "vistoEn" = now() '
                 'WHERE "codCliente" = %s',
                 (cod_cliente,),
@@ -1928,7 +1952,8 @@ def decidir_grupo(nro_operario: int, cod_cliente: int, accion: str) -> dict:
         else:
             cur.execute(
                 'UPDATE deposito.control_reserva_cliente '
-                'SET estado = \'tomado\', "actualizadoEn" = now(), "vistoEn" = now() '
+                'SET estado = \'tomado\', "prepAlDecidir" = 1000000, '
+                '    "actualizadoEn" = now(), "vistoEn" = now() '
                 'WHERE "codCliente" = %s',
                 (cod_cliente,),
             )
@@ -2062,7 +2087,8 @@ def asignar_siguiente(nro_operario: int) -> dict:
         # Lo que tenía en "nuevo" y no contestó: ya lo controló, lo tomó.
         cur.execute(
             'UPDATE deposito.control_reserva_cliente SET estado = \'tomado\', '
-            '"actualizadoEn" = now() WHERE "nroOperario" = %s AND estado = \'nuevo\'',
+            '"prepAlDecidir" = 1000000, "actualizadoEn" = now() '
+            'WHERE "nroOperario" = %s AND estado = \'nuevo\'',
             (nro_operario,),
         )
         row = _reclamar(cur, nro_operario, nombre, cod_cliente_afin)

@@ -1128,6 +1128,138 @@ def _case_anio_mes(anios: tuple[int, ...], columna: str = "vc.FecMovim") -> str:
     return "CASE " + " ".join(ramas) + " ELSE NULL END"
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Serie MENSUAL por línea — /ventas/vendedor/serie-mensual (2026-10-01:
+# gráfico "venta por mes" arriba de los rankings: cantidad y $ de cada mes,
+# abierto por línea, para que el vendedor vea cómo se mueve su venta).
+#
+# Ventana: los últimos 12 meses INCLUIDO el mes en curso (que viaja marcado
+# como parcial en `mesActual`). Una sola pasada por Ven_CompRenglon: se agrupa
+# por (CodArticu, YYYYMM) — el mes sale de un CASE de rangos ENTEROS sobre
+# vc.FecMovim (_case_anio_mes, sargable y sin DATEADD) — y el cruce
+# artículo→línea se hace en Python contra catalogo_pg, igual que
+# fetch_top_lineas. Mismo recorte por vendedor (eje comprobante), mismas dos
+# sub-empresas, mismo criterio de venta que los rankings.
+#
+# Son filas de artículo: la bonificación/ajuste por concepto no tiene línea y
+# NO entra (la serie es venta BRUTA por línea, como las filas de los rankings;
+# el neto sólo vive en el total del pie).
+_SERIE_MESES = 12
+_SERIE_MENSUAL_CACHE: dict[tuple, tuple[float, dict]] = {}
+_SERIE_MENSUAL_TTL_SEG = 15 * 60  # 15 minutos
+
+_SQL_SERIE_MENSUAL_TPL = """
+SELECT t.CodArticu, t.AnioMes, SUM(t.Unid) AS Unidades, SUM(t.Monto) AS Monto
+FROM (
+    SELECT
+        r.CodArticu AS CodArticu,
+        {case_mes} AS AnioMes,
+        {unid} AS Unid,
+        {monto} AS Monto
+    FROM Ven_CompCabecera vc
+    JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
+    JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
+    WHERE cc.EvitaInformesYListados <> 1
+      AND vc.FecMovim BETWEEN ? AND ?
+""" + MARCA_VENDEDOR + """
+) t
+WHERE t.AnioMes IS NOT NULL
+GROUP BY t.CodArticu, t.AnioMes
+"""
+
+
+def fetch_serie_mensual(vendedor: int | None = None, forzar: bool = False) -> dict:
+    """Unidades y $ netos por MES y por LÍNEA de los últimos 12 meses.
+
+    {"meses": ["YYYY-MM", ...12], "mesActual": "YYYY-MM",
+     "lineas": [{"linea", "unidades": [12], "monto": [12]}, ...],  # por $ desc
+     "totalUnidades": [12], "totalMonto": [12]}
+
+    Cada arreglo está alineado con `meses`. Devuelve TODAS las líneas con
+    movimiento; agrupar las chicas en "Otras" es decisión del front."""
+    hoy = date.today()
+    mes_ym = (hoy.year, hoy.month)
+    desde_ym = _mes_atras(mes_ym, _SERIE_MESES - 1)
+    meses = []
+    ym = desde_ym
+    for _ in range(_SERIE_MESES):
+        meses.append(ym)
+        ym = _mes_atras(ym, -1)
+
+    cache_key = (clave_vendedor(vendedor), desde_ym, mes_ym)
+    ahora = time.monotonic()
+    if not forzar:
+        cacheado = _SERIE_MENSUAL_CACHE.get(cache_key)
+        if cacheado is not None and (ahora - cacheado[0]) < _SERIE_MENSUAL_TTL_SEG:
+            return cacheado[1]
+
+    dia_desde = (date(desde_ym[0], desde_ym[1], 1) - BASE_DATE).days
+    dia_hasta = (
+        date(hoy.year, hoy.month, calendar.monthrange(hoy.year, hoy.month)[1])
+        - BASE_DATE
+    ).days
+    idx_mes = {a * 100 + m: i for i, (a, m) in enumerate(meses)}
+
+    base = _SQL_SERIE_MENSUAL_TPL.format(
+        case_mes=_case_anio_mes(tuple(sorted({a for a, _ in meses}))),
+        unid=_UNIDADES_NETAS,
+        monto=_MONTO_NETO,
+    )
+    sql_m = recortar_vendedor(_solo_venta(base), vendedor)
+    sql_p = recortar_vendedor(_prueba(_solo_venta(base)), vendedor)
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        mapa = mapa_articulo_sub_linea()
+
+        por_linea: dict[str, list[list[float]]] = {}
+        for codigo, anio_mes, unidades, monto in filas_dos(
+            cur, sql_m, sql_p, (dia_desde, dia_hasta)
+        ):
+            i = idx_mes.get(int(anio_mes))
+            if i is None:
+                continue
+            _, linea = mapa.get(
+                str(codigo or "").strip(), (SUB_LINEA_SIN_CLASIFICAR, LINEA_SIN_CLASIFICAR)
+            )
+            acc = por_linea.setdefault(
+                linea, [[0.0] * _SERIE_MESES, [0.0] * _SERIE_MESES]
+            )
+            acc[0][i] += float(_safe(unidades) or 0)
+            acc[1][i] += float(_safe(monto) or 0)
+
+        lineas = [
+            {
+                "linea": linea,
+                "unidades": [round(x, 2) for x in u],
+                "monto": [round(x, 2) for x in m],
+            }
+            for linea, (u, m) in por_linea.items()
+            if any(u) or any(m)
+        ]
+        lineas.sort(key=lambda l: sum(l["monto"]), reverse=True)
+
+        resultado = {
+            "meses": [f"{a:04d}-{m:02d}" for a, m in meses],
+            "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "lineas": lineas,
+            "totalUnidades": [
+                round(sum(l["unidades"][i] for l in lineas), 2)
+                for i in range(_SERIE_MESES)
+            ],
+            "totalMonto": [
+                round(sum(l["monto"][i] for l in lineas), 2)
+                for i in range(_SERIE_MESES)
+            ],
+        }
+        _SERIE_MENSUAL_CACHE[cache_key] = (ahora, resultado)
+        return resultado
+    finally:
+        conn.close()
+
+
 def fetch_clientes_por_linea(
     linea: str,
     vendedor: int | None = None,
