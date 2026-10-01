@@ -9,7 +9,7 @@ export const maxDuration = 60;
 
 // Proxy → FastAPI indicadores-api: unidades y $ por MES y por LÍNEA de los
 // últimos 12 meses (con el mes en curso, parcial), para el gráfico "Venta por
-// mes" de /ventas/vendedor (2026-10-01). Ver fetch_serie_mensual en ventas.py.
+// mes" del dashboard /ventas (2026-10-01). Ver fetch_serie_mensual en ventas.py.
 //
 // Acceso: mismo criterio que top-lineas — un no-admin SIEMPRE ve su propio
 // vendedorCodigo (el `?vendedor=` que mande se ignora, ver vendedorParam);

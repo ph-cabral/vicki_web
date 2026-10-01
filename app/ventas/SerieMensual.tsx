@@ -14,7 +14,7 @@ import {
 } from "recharts";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Gráfico "Venta por mes" de /ventas/vendedor (2026-10-01): los últimos 12
+// Gráfico "Venta por mes" del dashboard /ventas (2026-10-01; antes en /ventas/vendedor): los últimos 12
 // meses (el mes en curso, parcial, al final) en $ o en unidades, apilado por
 // línea o como un solo total. Así cada vendedor ve cómo se mueve su venta de
 // un mes a otro y en qué líneas.
@@ -22,7 +22,7 @@ import {
 // El alcance lo resuelve el SERVIDOR (ver app/api/ventas/vendedor/
 // serie-mensual/route.ts): un no-admin siempre ve SOLO lo suyo — el
 // `vendedor` que se mande se ignora —; un admin ve toda la empresa, o el
-// vendedor elegido en el filtro del header, que llega por la prop `vendedor`
+// vendedor elegido en el filtro del header de /ventas, que llega por la prop `vendedor`
 // ("" = todos). Por eso acá no hay ningún selector propio: se reusa el del
 // header y el gráfico no puede quedar desincronizado de los rankings.
 // ──────────────────────────────────────────────────────────────────────────

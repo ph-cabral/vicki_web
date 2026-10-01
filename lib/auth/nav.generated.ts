@@ -229,7 +229,7 @@ export const GENERATED_MODULES: { key: string; label: string; href: string; hasI
     "key": "ventas",
     "label": "Ventas",
     "href": "/ventas",
-    "hasIndex": false
+    "hasIndex": true
   },
   {
     "key": "vicki",
