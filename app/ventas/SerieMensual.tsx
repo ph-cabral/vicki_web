@@ -155,8 +155,8 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
       };
       for (const l of top) fila[l.linea] = l[campo][i] ?? 0;
       if (resto.length) fila[SERIE_OTROS] = resto.reduce((s, l) => s + (l[campo][i] ?? 0), 0);
-      // Admin: el ajuste se apila como segmento NEGATIVO (bajo cero, ver
-      // stackOffset="sign"). Al no-admin no le llega el desglose.
+      // Admin: el ajuste va en la fila SOLO para el tooltip (no es serie del
+      // gráfico ni de la leyenda). Al no-admin no le llega el desglose.
       if (ajuste) fila[SERIE_AJUSTE] = ajuste[i] ?? 0;
       return fila;
     });
@@ -241,9 +241,9 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
               {vista === "lineas" && (
                 <Legend wrapperStyle={{ fontSize: 11, color: MUTED, paddingTop: 6 }} />
               )}
-              {vista === "lineas" && conAjuste && (
-                <Bar dataKey={SERIE_AJUSTE} stackId="venta" fill={COLOR_AJUSTE} maxBarSize={48} />
-              )}
+              {/* "Bonif. y ajustes" NO se dibuja como serie (no es una línea, no
+                  va en la leyenda): queda en la fila para el tooltip (Bruto /
+                  Bonif. / Total neto) y ya está descontado en la etiqueta. */}
               {vista === "lineas" &&
                 series.map((nombre, i) => (
                   <Bar
@@ -287,7 +287,7 @@ export default function SerieMensual({ vendedor }: { vendedor: string }) {
               <>
                 El total del mes es NETO: descuenta bonificaciones y ajustes (ND/NC por concepto), igual
                 que /ventas/vendedor. Las líneas van en bruto porque la bonificación no tiene artículo
-                {conAjuste ? "; el tramo rojo bajo cero es ese descuento." : "."}
+                {conAjuste ? "; el detalle está en el tooltip." : "."}
               </>
             ) : (
               <>Las bonificaciones no tienen cantidad: en unidades no cambian nada.</>
