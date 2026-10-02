@@ -79,6 +79,10 @@ const fmtAr = (s: string | null) => {
 };
 const LS_KEY = "planificacion:sel";
 const lsCantKey = (id: number, hasta: string) => `planificacion:cant:${id}:${hasta}`;
+// Base de la columna Cantidad por reporte: "rec" = arranca en el recomendado,
+// "cero" = se limpió con el tacho y todo arranca en 0 (persiste hasta restaurar).
+const lsCantBaseKey = (id: number) => `planificacion:cantbase:${id}`;
+type CantBase = "rec" | "cero";
 
 type SortKey = keyof Row | "cantidad";
 const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
@@ -142,9 +146,12 @@ export default function PlanificacionPage() {
   };
   const ordenAlterado = orden.join() !== ORDEN_DEFAULT.join();
 
-  // Cantidades editadas a mano (codigo → valor). Lo no editado = recomendado.
+  // Cantidades editadas a mano (codigo → valor). Lo no editado = base
+  // (recomendado, o 0 si se limpió la columna con el tacho).
   const [cantEdit, setCantEdit] = useState<Record<string, number>>({});
+  const [cantBase, setCantBase] = useState<CantBase>("rec");
   const cantKey = datos ? lsCantKey(datos.reporte.id, datos.hasta) : null;
+  const cantBaseKey = datos ? lsCantBaseKey(datos.reporte.id) : null;
 
   useEffect(() => {
     if (!cantKey) {
@@ -158,22 +165,54 @@ export default function PlanificacionPage() {
     }
   }, [cantKey]);
 
+  useEffect(() => {
+    if (!cantBaseKey) {
+      setCantBase("rec");
+      return;
+    }
+    try {
+      setCantBase(localStorage.getItem(cantBaseKey) === "cero" ? "cero" : "rec");
+    } catch {
+      setCantBase("rec");
+    }
+  }, [cantBaseKey]);
+
+  const baseDe = useCallback((r: Row) => (cantBase === "cero" ? 0 : r.recomendado), [cantBase]);
+
   const cantidadDe = useCallback(
-    (r: Row) => (r.codigo in cantEdit ? cantEdit[r.codigo] : r.recomendado),
-    [cantEdit],
+    (r: Row) => (r.codigo in cantEdit ? cantEdit[r.codigo] : baseDe(r)),
+    [cantEdit, baseDe],
   );
 
+  const guardarEdits = (next: Record<string, number>) => {
+    setCantEdit(next);
+    try {
+      if (!cantKey) return;
+      if (Object.keys(next).length) localStorage.setItem(cantKey, JSON.stringify(next));
+      else localStorage.removeItem(cantKey);
+    } catch {}
+  };
+
   const setCantidad = (r: Row, v: string) => {
-    setCantEdit((prev) => {
-      const n = Math.max(0, Math.round(Number(v) || 0));
-      const next = { ...prev };
-      if (n === r.recomendado) delete next[r.codigo];
-      else next[r.codigo] = n;
-      try {
-        if (cantKey) localStorage.setItem(cantKey, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const n = Math.max(0, Math.round(Number(v) || 0));
+    const next = { ...cantEdit };
+    if (n === baseDe(r)) delete next[r.codigo];
+    else next[r.codigo] = n;
+    guardarEdits(next);
+  };
+
+  /** Tacho: toda la columna a 0 (persistente). Con base "cero" el botón
+   *  restaura el recomendado. En ambos casos se descartan las ediciones. */
+  const alternarBaseCantidad = () => {
+    const nueva: CantBase = cantBase === "cero" ? "rec" : "cero";
+    setCantBase(nueva);
+    try {
+      if (cantBaseKey) {
+        if (nueva === "cero") localStorage.setItem(cantBaseKey, "cero");
+        else localStorage.removeItem(cantBaseKey);
+      }
+    } catch {}
+    guardarEdits({});
   };
 
   const cargarReportes = useCallback(async () => {
@@ -533,6 +572,26 @@ export default function PlanificacionPage() {
                         }`}
                       >
                         <GripVertical size={11} className="inline mr-0.5 opacity-0 group-hover:opacity-50 cursor-grab" />
+                        {k === "cantidad" && datos && (
+                          <button
+                            type="button"
+                            draggable={false}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              alternarBaseCantidad();
+                            }}
+                            title={
+                              cantBase === "cero"
+                                ? "Volver a cargar la columna con el recomendado"
+                                : "Limpiar la columna: todas las cantidades en 0"
+                            }
+                            className={`inline-flex align-middle mr-1.5 p-0.5 rounded hover:bg-zinc-800 ${
+                              cantBase === "cero" ? "text-yellow-400 hover:text-yellow-300" : "text-zinc-500 hover:text-red-400"
+                            }`}
+                          >
+                            {cantBase === "cero" ? <RotateCcw size={12} /> : <Trash2 size={12} />}
+                          </button>
+                        )}
                         {c.label}
                         <ArrowUpDown size={11} className="inline ml-1 opacity-50" />
                       </th>
