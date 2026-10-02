@@ -1135,6 +1135,19 @@ export default function ControlStockPage() {
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
+            onClick={cambiarUsuario}
+            disabled={saliendo}
+            className={`flex items-center gap-1 rounded-md p-1.5 text-xs ${
+              confirmarSalir ? "bg-red-500/15 text-red-300" : "text-zinc-400 active:text-yellow-400"
+            }`}
+            title={`Cambiar usuario${usuarioNombre ? ` (${usuarioNombre})` : ""}`}
+          >
+            {confirmarSalir && <span>¿Salir?</span>}
+            {saliendo ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+          </button>
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={cargar}
             disabled={cargando}
             className="p-1.5 text-zinc-400 active:text-yellow-400"

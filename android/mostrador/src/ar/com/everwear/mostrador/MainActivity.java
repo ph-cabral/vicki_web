@@ -3,19 +3,26 @@ package ar.com.everwear.mostrador;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 
@@ -27,6 +34,10 @@ import ar.com.everwear.comun.Actualizador;
  * - Queda "encerrada" en /mostradores/control: cualquier otra ruta (menos /login) vuelve al control.
  * - Pantalla siempre encendida mientras está abierta (conteo).
  * - navigator.vibrate pasa por el Vibrator nativo (el WebView no lo implementa).
+ * - Límite de inactividad: sin tocar la pantalla ni el teclado/escáner Config.INACTIVIDAD_MIN minutos,
+ *   cierra la sesión (vuelve al login para que el próximo controlador entre con su usuario).
+ *   Avisa 1 min antes. La última actividad se guarda: si la app se cerró y vuelve pasado el límite,
+ *   arranca deslogueada.
  */
 public class MainActivity extends Activity {
 
@@ -39,8 +50,23 @@ public class MainActivity extends Activity {
                     + "navigator.vibrate=function(p){try{EwMostrador.vibrar(JSON.stringify(p));}catch(e){}return true;};"
                     + "}catch(e){}})()";
 
+    private static final long LIMITE_MS = Config.INACTIVIDAD_MIN * 60_000L;
+    private static final long AVISO_MS = 60_000L;
+    private static final long TICK_MS = 15_000L;
+    private static final String PREFS = "mostrador", PREF_ULTIMA = "ultimaActividad";
+
     private WebView web;
     private Actualizador actualizador;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private long ultimaActividad = System.currentTimeMillis();
+    private boolean avisado;
+    private final Runnable tick = new Runnable() {
+        @Override
+        public void run() {
+            revisarInactividad();
+            handler.postDelayed(this, TICK_MS);
+        }
+    };
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -64,7 +90,12 @@ public class MainActivity extends Activity {
         actualizador = new Actualizador(this, Config.BASE_URL, "/apk/everwear-mostrador.json");
         web.addJavascriptInterface(new Puente(), "EwMostrador");
         web.setWebViewClient(new Cliente());
-        web.loadUrl(URL_CONTROL);
+        if (vencidaAlVolver()) {
+            cerrarSesion(true); // estuvo cerrada más que el límite: arranca en el login
+        } else {
+            guardarActividad();
+            web.loadUrl(URL_CONTROL);
+        }
         web.requestFocus();
     }
 
@@ -72,12 +103,19 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         actualizador.enResume();
+        if (vencidaAlVolver() && haySesion()) cerrarSesion(true);
+        actividad();
+        handler.removeCallbacks(tick);
+        handler.postDelayed(tick, TICK_MS);
     }
 
     @Override
     protected void onPause() {
         CookieManager.getInstance().flush(); // que la sesión sobreviva a un cierre forzado
         actualizador.enPausa();
+        handler.removeCallbacks(tick);
+        if (!haySesion()) actividad(); // en el login no corre el reloj
+        prefs().edit().putLong(PREF_ULTIMA, ultimaActividad).apply();
         super.onPause();
     }
 
@@ -94,16 +132,82 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    // ── Límite de inactividad ──────────────────────────────────────────────
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        actividad();
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        actividad(); // escáner del PDA (entra como teclado) y teclado en pantalla
+        return super.dispatchKeyEvent(ev);
+    }
+
+    private void actividad() {
+        ultimaActividad = System.currentTimeMillis();
+        avisado = false;
+    }
+
+    private void guardarActividad() {
+        actividad();
+        prefs().edit().putLong(PREF_ULTIMA, ultimaActividad).apply();
+    }
+
+    private SharedPreferences prefs() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE);
+    }
+
+    /** La app estuvo cerrada / en segundo plano más que el límite. */
+    private boolean vencidaAlVolver() {
+        long u = prefs().getLong(PREF_ULTIMA, 0);
+        return u > 0 && System.currentTimeMillis() - u >= LIMITE_MS;
+    }
+
+    private static boolean haySesion() {
+        String c = CookieManager.getInstance().getCookie(Config.BASE_URL);
+        return c != null && c.contains("ever_session=");
+    }
+
+    private void revisarInactividad() {
+        if (LIMITE_MS <= 0 || !haySesion()) {
+            actividad(); // en el login no corre el reloj
+            return;
+        }
+        long quieto = System.currentTimeMillis() - ultimaActividad;
+        if (quieto >= LIMITE_MS) {
+            cerrarSesion(true);
+        } else if (!avisado && quieto >= LIMITE_MS - AVISO_MS) {
+            avisado = true;
+            Puente p = new Puente();
+            p.vibrar("[200,150,200]");
+            Toast.makeText(this, "Sin actividad: en 1 minuto se cierra la sesión. Tocá la pantalla para seguir.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void cargarControl() {
         web.loadUrl(URL_CONTROL);
     }
 
-    private void cerrarSesion() {
-        CookieManager cm = CookieManager.getInstance();
-        cm.removeAllCookies(null);
-        cm.flush();
-        web.clearHistory();
-        cargarControl(); // sin cookie -> middleware manda a /login?returnTo=/mostradores/control
+    private void cerrarSesion(boolean porInactividad) {
+        guardarActividad();
+        if (porInactividad) {
+            Toast.makeText(this, "Sesión cerrada por inactividad (" + Config.INACTIVIDAD_MIN + " min)",
+                    Toast.LENGTH_LONG).show();
+        }
+        final CookieManager cm = CookieManager.getInstance();
+        // removeAllCookies es asíncrono: recién al terminar se recarga (si no, viaja la cookie vieja).
+        cm.removeAllCookies(new ValueCallback<Boolean>() {
+            @Override
+            public void onReceiveValue(Boolean ok) {
+                cm.flush();
+                web.clearHistory();
+                cargarControl(); // sin cookie -> middleware manda a /login?returnTo=/mostradores/control
+            }
+        });
     }
 
     private void pantallaMensaje(String titulo, String detalle, boolean conCerrarSesion) {
@@ -151,9 +255,15 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    MainActivity.this.cerrarSesion();
+                    MainActivity.this.cerrarSesion(false);
                 }
             });
+        }
+
+        /** Minutos de inactividad antes de cerrar la sesión (para mostrarlo en la página). */
+        @JavascriptInterface
+        public int inactividadMin() {
+            return Config.INACTIVIDAD_MIN;
         }
 
         @JavascriptInterface

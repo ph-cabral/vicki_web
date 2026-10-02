@@ -72,6 +72,9 @@ import ecommerce
 from bonificaciones import fetch_bonificacion_bulones
 
 from catalogo_pg import lineas_catalogo, linea_por_defecto
+# Configuración de artículos: los que no están en el catálogo (sin línea) y
+# cómo clasificarlos. Ver articulos_config.py.
+import articulos_config
 from bulones import (
     fetch_top_clientes as fetch_bulones_top_clientes,
     fetch_top_patrones as fetch_bulones_top_patrones,
@@ -2506,5 +2509,72 @@ def sistema_clientes_buscar(q: str = Query(...), limit: int = Query(default=50))
         return ecommerce.buscar(q, limit)
     except ecommerce.EcomError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+# ── /admin/articulos — configuración de artículos (sin línea) ─────────────
+# Cruce Magnus (StkFer_Articulos) vs catálogo Postgres (catalogo.articulo).
+# Lecturas con foto cacheada 60 s; las escrituras sólo tocan Postgres y la
+# invalidan. Ver articulos_config.py.
+class AsignarPatronIn(BaseModel):
+    patron: str
+    subLineaId: int
+
+
+@app.get("/articulos/config/resumen")
+def articulos_config_resumen(activos: bool = Query(default=True)):
+    try:
+        return articulos_config.resumen(activos)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/articulos/config/patrones-nuevos")
+def articulos_config_patrones_nuevos(activos: bool = Query(default=True)):
+    try:
+        return {"patrones": articulos_config.patrones_nuevos(activos)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/articulos/config/articulos")
+def articulos_config_articulos(
+    modo: str = Query(default="sin_linea", description="sin_linea | todos"),
+    activos: bool = Query(default=True),
+    q: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limite: int = Query(default=100, ge=1, le=200),
+):
+    try:
+        return articulos_config.articulos(modo, activos, q, offset, limite)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.get("/articulos/config/sub-lineas")
+def articulos_config_sub_lineas():
+    try:
+        return {"subLineas": articulos_config.sub_lineas()}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.post("/articulos/config/asignar-patron")
+def articulos_config_asignar_patron(body: AsignarPatronIn):
+    try:
+        return articulos_config.asignar_patron(body.patron, body.subLineaId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+
+@app.post("/articulos/config/sincronizar")
+def articulos_config_sincronizar():
+    try:
+        return articulos_config.sincronizar()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")

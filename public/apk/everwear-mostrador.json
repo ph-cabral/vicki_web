@@ -1,11 +1,11 @@
 {
  "paquete": "ar.com.everwear.mostrador",
- "versionCode": 2,
- "versionName": "1.1",
- "apk": "/apk/everwear-mostrador.apk?v=2",
- "sha256": "642cdf050103f1f3c875c4276ba4ec0c65fc5b8860f4291530e65fadd78f621a",
- "bytes": 25064,
+ "versionCode": 3,
+ "versionName": "1.2",
+ "apk": "/apk/everwear-mostrador.apk?v=3",
+ "sha256": "a82f284a49320b5d4414b11d8d292cead370d2e5b82b3f45e049f9091de066d0",
+ "bytes": 29160,
  "obligatoria": false,
- "notas": "Primera versión con actualización automática",
- "fecha": "2026-10-02T13:42:06"
+ "notas": "Cambio de usuario en el conteo y cierre de sesión automático tras 15 min sin uso",
+ "fecha": "2026-10-02T13:50:05"
 }

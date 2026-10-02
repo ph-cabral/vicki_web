@@ -14,9 +14,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION_CODE=2
-VERSION_NAME="1.1"
+VERSION_CODE=3
+VERSION_NAME="1.2"
 BASE_URL="${BASE_URL:-http://10.10.0.159:3001}"
+INACTIVIDAD_MIN="${INACTIVIDAD_MIN:-15}"   # sin tocar la pantalla N min -> cierra sesión (cambio de usuario)
 OUT="${OUT:-../../public/apk/everwear-mostrador.apk}"
 KS="everwear-mostrador.jks"       # MISMA firma siempre: si se pierde, hay que desinstalar en cada equipo
 KS_PASS="${KS_PASS:-everwear-mostrador}"
@@ -42,6 +43,7 @@ package ar.com.everwear.mostrador;
 final class Config {
     static final String BASE_URL = "${BASE_URL}";
     static final String VERSION = "${VERSION_NAME}";
+    static final int INACTIVIDAD_MIN = ${INACTIVIDAD_MIN};
     private Config() {}
 }
 JAVA

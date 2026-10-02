@@ -219,3 +219,19 @@ def codigos_de_linea_id(linea_id: int) -> list[str]:
     """Códigos de artículo de una línea (por id). Lista vacía si la línea no
     tiene artículos cargados."""
     return _lineas_cacheadas()[1].get(int(linea_id), [])
+
+
+def invalidar_caches() -> None:
+    """Descarta TODOS los caches de este módulo (mapa artículo -> línea,
+    apertura comercial, líneas por id). Lo llama articulos_config.py después
+    de clasificar artículos/patrones, para que los reportes de ventas los
+    vean al toque en vez de esperar el TTL de 15 min."""
+    global _cache, _cache_ts, _cache_apertura, _cache_apertura_ts
+    global _cache_lineas, _cache_codigos_linea, _cache_lineas_ts
+    _cache = None
+    _cache_ts = 0.0
+    _cache_apertura = None
+    _cache_apertura_ts = 0.0
+    _cache_lineas = None
+    _cache_codigos_linea = None
+    _cache_lineas_ts = 0.0
