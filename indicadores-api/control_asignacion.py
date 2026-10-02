@@ -2782,3 +2782,271 @@ def fetch_cola_diag(limit: int = 20) -> dict:
         if m.get("asignadoEn") is not None:
             m["asignadoEn"] = m["asignadoEn"].isoformat()
     return {"libres": libres, "asignados": asignados, "muestra": muestra}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TABLERO POR OPERARIO (2026-10-02) — vista "Por operario" de
+# /deposito/deposito → Mesas. Una tabla por operario con lo que se le asignó
+# (Postgres) y lo que controló (Magnus) en el día:
+#   · controlado  = la unidad cerró en Magnus (pedido: VenFer_PedidoCabecera
+#                   .FechaCierre; acopio: el remito 71).
+#   · en_proceso  = asignada (control_asignacion) y todavía sin cierre.
+#   · esperando   = preasignada a ese operario (control_preasignacion), sale
+#                   cuando termine lo actual. Solo para el día de hoy.
+#   · noAsignado  = lo controló en Magnus (Ven_PedImpresoCP.CodControlador1/2)
+#                   un pedido que NO se le asignó → fila en rojo. En la tabla
+#                   del asignado esa fila figura controlada "por <otro>".
+# No se replica Magnus a Postgres: los controles del día salen por seek de
+# IX_VICKI_PedCab_FechaCierre_Estado (FechaCierre = día) + clustered de
+# Ven_PedImpresoCP (NroMovVenta) — unos cientos de filas, en vivo y sin
+# job de sincronización. Ven_PedImpresoCP no tiene índice por FechaControl:
+# NO filtrar por esa columna (scan de ~335k filas).
+# Acopio (nroRemito > 0): el cierre lo firma el puesto MESA CONTROL 1/2/3
+# (174/175/214), no la persona → no entra al chequeo de "no asignado".
+# Horas: "asignadoEn"/"creadoEn"/"vistoEn" son now() de Postgres (UTC, sin
+# zona); "cerradoEn" viene de Magnus (hora local). Acá todo sale en local.
+# ══════════════════════════════════════════════════════════════════════════
+_TZ_LOCAL = "America/Argentina/Buenos_Aires"
+
+_SQL_CONTROLES_DIA = """
+SELECT cab.NroMovVenta, cp.CodControlador1, cp.CodControlador2, cab.FechaCierre, cab.HoraCierre
+FROM dbo.VenFer_PedidoCabecera cab
+JOIN dbo.Ven_PedImpresoCP cp ON cp.NroMovVenta = cab.NroMovVenta
+WHERE cab.FechaCierre = ?
+  AND (cp.CodControlador1 > 0 OR cp.CodControlador2 > 0)
+"""
+
+_SQL_CONTROLADORES_PEDIDOS = """
+SELECT NroMovVenta, CodControlador1, CodControlador2
+FROM dbo.Ven_PedImpresoCP
+WHERE NroMovVenta IN ({ph}) AND (CodControlador1 > 0 OR CodControlador2 > 0)
+"""
+
+
+def _codigos_ctrl(c1, c2) -> set[int]:
+    return {int(c) for c in (c1, c2) if c is not None and int(c) > 0}
+
+
+def fetch_mesa_por_operario(dia: str | None = None) -> dict:
+    """Ver TABLERO POR OPERARIO arriba. `dia` = 'YYYY-MM-DD' (default hoy).
+    Devuelve {dia, esHoy, operarios: [{nroOperario, nombre, activo, filas,
+    totales}]}, filas = {nroPedido, nroRemito, items, estado, noAsignado,
+    asignadoA, controladoPor, cliente, hora}."""
+    from datetime import date as _date
+
+    _asegurar_tabla_reserva()
+    completar_historial()          # throttled: marca cierres ya ocurridos
+    hoy = datetime.now().date()
+    d = _date.fromisoformat(dia) if dia else hoy
+    es_hoy = d == hoy
+    d_mag = (d - _MAGNUS_BASE.date()).days
+
+    # ── 1. Magnus: controles cerrados en el día (pedidos) ────────────────
+    ctrl_dia: dict[int, dict] = {}           # nroPedido -> {codigos, hora}
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(_SQL_CONTROLES_DIA, (d_mag,))
+        for nro, c1, c2, f_cie, h_cie in cur.fetchall():
+            e = ctrl_dia.setdefault(int(nro), {"codigos": set(), "hora": _magnus_dt(f_cie, h_cie)})
+            e["codigos"] |= _codigos_ctrl(c1, c2)
+    finally:
+        conn.close()
+
+    # ── 2. Postgres: asignaciones, preasignaciones, latidos ──────────────
+    peds_magnus = sorted(ctrl_dia)
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT "nroPedido", "nroRemito", "nroOperarioAsignado", "asignadoA", cliente,
+                   ("asignadoEn" AT TIME ZONE 'UTC' AT TIME ZONE %(tz)s) AS asignado_local,
+                   "cerradoEn", "usuarioCierre", lineas
+            FROM deposito.control_asignacion
+            WHERE "nroOperarioAsignado" IS NOT NULL AND "asignadoEn" IS NOT NULL
+              AND NOT (COALESCE("compCodigo", 0) IN (70, 75) AND "nroRemito" = 0)
+              AND (
+                    ("asignadoEn" >= (%(d)s::timestamp AT TIME ZONE %(tz)s AT TIME ZONE 'UTC')
+                     AND "asignadoEn" < ((%(d)s::timestamp + interval '1 day') AT TIME ZONE %(tz)s AT TIME ZONE 'UTC'))
+                 OR ("cerradoEn" >= %(d)s::timestamp AND "cerradoEn" < %(d)s::timestamp + interval '1 day')
+                 OR (%(hoy)s AND "cerradoEn" IS NULL AND "asignadoEn" > now() - interval '3 days')
+                 OR ("nroRemito" = 0 AND "nroPedido" = ANY(%(peds)s))
+              )
+            """,
+            {"tz": _TZ_LOCAL, "d": d.isoformat(), "hoy": es_hoy, "peds": peds_magnus},
+        )
+        cols = [c[0] for c in cur.description]
+        asignadas = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        pre: list[dict] = []
+        if es_hoy:
+            cur.execute(
+                'SELECT "nroPedido", "nroRemito", "nroOperario", "asignadoA", cliente, '
+                '       ("creadoEn" AT TIME ZONE \'UTC\' AT TIME ZONE %s) AS creado_local '
+                'FROM deposito.control_preasignacion WHERE "nroOperario" IS NOT NULL',
+                (_TZ_LOCAL,),
+            )
+            cols = [c[0] for c in cur.description]
+            pre = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        cur.execute(
+            'SELECT "nroOperario", nombre, "vistoEn" > now() - make_interval(mins => %s) '
+            'FROM deposito.control_operario_latido '
+            'WHERE "vistoEn" > now() - make_interval(days => %s)',
+            (RESERVA_INACTIVO_MIN, CONTROLADORES_DIAS),
+        )
+        latidos = {int(n): {"nombre": (nom or "").strip() or None, "activo": bool(act)}
+                   for n, nom, act in cur.fetchall()}
+    finally:
+        conn.close()
+
+    # ── 3. Magnus: cierre/líneas en vivo + controladores de lo asignado ──
+    abiertas = [a for a in asignadas if a["cerradoEn"] is None]
+    sin_lineas_ped = {int(a["nroPedido"]) for a in asignadas if not a["nroRemito"] and a["lineas"] is None}
+    peds_vivo = sorted(
+        {int(a["nroPedido"]) for a in abiertas if not a["nroRemito"]}
+        | {int(p["nroPedido"]) for p in pre if not p["nroRemito"]}
+        | sin_lineas_ped
+        | set(peds_magnus)
+    )
+    rems_vivo = sorted(
+        {int(a["nroRemito"]) for a in abiertas if a["nroRemito"]}
+        | {int(p["nroRemito"]) for p in pre if p["nroRemito"]}
+    )
+    vivo = _fetch_cierre_y_lineas(peds_vivo, rems_vivo)
+
+    # Controladores de pedidos asignados cerrados que no cerraron en el día
+    # (o recién cerrados y todavía sin foto): seek por PK, en lotes.
+    ctrl_ped: dict[int, set[int]] = {n: e["codigos"] for n, e in ctrl_dia.items()}
+    faltan = sorted({int(a["nroPedido"]) for a in asignadas if not a["nroRemito"]} - set(ctrl_ped))
+    if faltan:
+        conn = get_connection("EVERWEAR")
+        try:
+            cur = conn.cursor()
+            cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+            for i in range(0, len(faltan), 1000):
+                chunk = faltan[i : i + 1000]
+                cur.execute(_SQL_CONTROLADORES_PEDIDOS.format(ph=",".join("?" for _ in chunk)), chunk)
+                for nro, c1, c2 in cur.fetchall():
+                    ctrl_ped.setdefault(int(nro), set()).update(_codigos_ctrl(c1, c2))
+        finally:
+            conn.close()
+
+    # ── 4. Armado de filas por operario ──────────────────────────────────
+    nombres: dict[int, str] = {n: l["nombre"] for n, l in latidos.items() if l["nombre"]}
+    for a in asignadas:
+        if a["asignadoA"]:
+            nombres.setdefault(int(a["nroOperarioAsignado"]), a["asignadoA"].strip())
+    for p in pre:
+        if p["asignadoA"]:
+            nombres.setdefault(int(p["nroOperario"]), p["asignadoA"].strip())
+    faltan_nom = sorted({c for s in ctrl_ped.values() for c in s} - set(nombres))
+    if faltan_nom:
+        conn = get_connection("EVERWEAR")
+        try:
+            cur = conn.cursor()
+            cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+            cur.execute(
+                "SELECT Numero, Nombre FROM dbo.Gen_Usuarios WHERE Numero IN ({})".format(
+                    ",".join("?" for _ in faltan_nom)),
+                faltan_nom,
+            )
+            for n, nom in cur.fetchall():
+                if nom and str(nom).strip():
+                    nombres[int(n)] = str(nom).strip()
+        finally:
+            conn.close()
+
+    def _nom(n: int) -> str:
+        return nombres.get(n) or f"Operario {n}"
+
+    def _iso(v) -> str | None:
+        return v.isoformat() if v is not None else None
+
+    filas: dict[int, list[dict]] = {}
+    asignado_a: dict[int, int] = {}      # nroPedido (no acopio) -> operario asignado
+    ini = datetime.combine(d, datetime.min.time())
+    fin = ini + timedelta(days=1)
+
+    for a in asignadas:
+        op = int(a["nroOperarioAsignado"])
+        ped, rem = int(a["nroPedido"]), int(a["nroRemito"] or 0)
+        if not rem:
+            asignado_a[ped] = op
+        v = vivo["remito"].get(rem) if rem else vivo["pedido"].get(ped)
+        cerrado = a["cerradoEn"] or (v["cerradoEn"] if v else None)
+        asig_dia = a["asignado_local"] is not None and ini <= a["asignado_local"] < fin
+        if cerrado is not None and not (ini <= cerrado < fin) and not asig_dia:
+            continue          # entró sólo por "nroPedido" o cerró otro día
+        if cerrado is None and not asig_dia and not es_hoy:
+            continue
+        items = a["lineas"] if a["lineas"] is not None else (v["lineas"] if v else None)
+        if v and cerrado is None:
+            items = v["lineas"]
+        controlado_por = None
+        if cerrado is not None and not rem:
+            otros = ctrl_ped.get(ped, set()) - {op}
+            if otros and op not in ctrl_ped.get(ped, set()):
+                controlado_por = ", ".join(_nom(c) for c in sorted(otros))
+        filas.setdefault(op, []).append({
+            "nroPedido": ped, "nroRemito": rem,
+            "items": int(items) if items is not None else None,
+            "estado": "controlado" if cerrado is not None else "en_proceso",
+            "noAsignado": False, "asignadoA": None, "controladoPor": controlado_por,
+            "cliente": a["cliente"],
+            "hora": _iso(cerrado if cerrado is not None else a["asignado_local"]),
+        })
+
+    ya = {(op, f["nroPedido"], f["nroRemito"]) for op, fs in filas.items() for f in fs}
+    for p in pre:
+        op = int(p["nroOperario"])
+        ped, rem = int(p["nroPedido"]), int(p["nroRemito"] or 0)
+        if (op, ped, rem) in ya:
+            continue
+        v = vivo["remito"].get(rem) if rem else vivo["pedido"].get(ped)
+        filas.setdefault(op, []).append({
+            "nroPedido": ped, "nroRemito": rem,
+            "items": v["lineas"] if v else None,
+            "estado": "esperando", "noAsignado": False, "asignadoA": None,
+            "controladoPor": None, "cliente": p["cliente"], "hora": _iso(p["creado_local"]),
+        })
+        ya.add((op, ped, rem))
+
+    for ped, e in ctrl_dia.items():
+        asig = asignado_a.get(ped)
+        v = vivo["pedido"].get(ped)
+        for op in e["codigos"]:
+            if op == asig or (op, ped, 0) in ya:
+                continue
+            filas.setdefault(op, []).append({
+                "nroPedido": ped, "nroRemito": 0,
+                "items": v["lineas"] if v else None,
+                "estado": "controlado", "noAsignado": True,
+                "asignadoA": _nom(asig) if asig is not None else None,
+                "controladoPor": None, "cliente": None, "hora": _iso(e["hora"]),
+            })
+            ya.add((op, ped, 0))
+
+    orden = {"en_proceso": 0, "esperando": 1, "controlado": 2}
+    operarios = []
+    for op in set(filas) | {n for n, l in latidos.items() if l["activo"]}:
+        # en proceso → esperando → controlados (más reciente arriba)
+        fs = sorted(filas.get(op, []), key=lambda f: f["hora"] or "", reverse=True)
+        fs.sort(key=lambda f: orden[f["estado"]])
+        operarios.append({
+            "nroOperario": op, "nombre": _nom(op),
+            "activo": bool(latidos.get(op, {}).get("activo")),
+            "filas": fs,
+            "totales": {
+                "controlados": sum(1 for f in fs if f["estado"] == "controlado"),
+                "itemsControlados": sum(f["items"] or 0 for f in fs if f["estado"] == "controlado"),
+                "enProceso": sum(1 for f in fs if f["estado"] == "en_proceso"),
+                "esperando": sum(1 for f in fs if f["estado"] == "esperando"),
+                "noAsignados": sum(1 for f in fs if f["noAsignado"]),
+            },
+        })
+    operarios.sort(key=lambda o: (not o["activo"], o["nombre"].lower()))
+    return {"dia": d.isoformat(), "esHoy": es_hoy, "operarios": operarios,
+            "actualizado": datetime.now().isoformat()}

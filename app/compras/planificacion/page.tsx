@@ -84,11 +84,12 @@ const lsCantKey = (id: number, hasta: string) => `planificacion:cant:${id}:${has
 const lsCantBaseKey = (id: number) => `planificacion:cantbase:${id}`;
 type CantBase = "rec" | "cero";
 
-type SortKey = keyof Row | "cantidad";
+type SortKey = keyof Row | "cantidad" | "cobertura";
 const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "codigo", label: "Código", num: false },
   { k: "detalle", label: "Detalle", num: false },
   { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en el recomendado, editable" },
+  { k: "cobertura", label: "Cobertura (meses)", num: true, title: "(stock + OC pendiente + cantidad) / prom. vendido — meses que cubre lo que hay más lo que se pide (stock negativo cuenta 0)" },
   { k: "recomendado", label: "Recomendado", num: true, title: "promedio + faltante − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
   { k: "promedio", label: "Prom. vendido", num: true, title: "unidades vendidas en el rango / meses" },
   { k: "maximo", label: "Máximo", num: true, title: "mes con más unidades vendidas del rango" },
@@ -182,6 +183,13 @@ export default function PlanificacionPage() {
   const cantidadDe = useCallback(
     (r: Row) => (r.codigo in cantEdit ? cantEdit[r.codigo] : baseDe(r)),
     [cantEdit, baseDe],
+  );
+
+  // Meses de cobertura: (stock + OC + cantidad) / promedio. null = sin venta en el rango.
+  const coberturaDe = useCallback(
+    (r: Row): number | null =>
+      r.promedio > 0 ? (Math.max(r.stock, 0) + r.oc + cantidadDe(r)) / r.promedio : null,
+    [cantidadDe],
   );
 
   const guardarEdits = (next: Record<string, number>) => {
@@ -280,14 +288,26 @@ export default function PlanificacionPage() {
     if (soloRec) rs = rs.filter((r) => r.recomendado > 0 || cantidadDe(r) > 0);
     if (q) rs = rs.filter((r) => r.codigo.toLowerCase().includes(q) || (r.detalle || "").toLowerCase().includes(q));
     const { k, dir } = sort;
-    const val = (r: Row) => (k === "cantidad" ? cantidadDe(r) : k === "minimo" ? r.minimo ?? 0 : r[k] ?? "");
+    const val = (r: Row) =>
+      k === "cantidad"
+        ? cantidadDe(r)
+        : k === "cobertura"
+          ? coberturaDe(r) ?? Number.POSITIVE_INFINITY
+          : k === "minimo"
+            ? r.minimo ?? 0
+            : r[k] ?? "";
     return [...rs].sort((a, b) => {
       const va = val(a);
       const vb = val(b);
-      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      if (typeof va === "number" && typeof vb === "number") {
+        if (va === vb) return 0;
+        if (va === Number.POSITIVE_INFINITY) return 1; // sin venta siempre al final
+        if (vb === Number.POSITIVE_INFINITY) return -1;
+        return (va - vb) * dir;
+      }
       return String(va).localeCompare(String(vb), "es") * dir;
     });
-  }, [datos, buscar, soloRec, sort, cantidadDe]);
+  }, [datos, buscar, soloRec, sort, cantidadDe, coberturaDe]);
 
   const nombreNivel = useCallback(
     (n: 1 | 2 | 3 | 4, id: number) => niveles?.nombres[String(n) as "1"]?.[String(id)] ?? `#${id}`,
@@ -302,7 +322,14 @@ export default function PlanificacionPage() {
   const exportar = useCallback(() => {
     if (!datos || !visibles.length) return;
     const valorXls = (r: Row, k: SortKey): string | number =>
-      k === "cantidad" ? cantidadDe(r) : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : r[k];
+      k === "cantidad"
+        ? cantidadDe(r)
+        : k === "cobertura"
+          ? (() => {
+              const c = coberturaDe(r);
+              return c == null ? "" : Math.round(c * 10) / 10;
+            })()
+          : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : r[k];
     const filas = visibles.map((r) => {
       const o: Record<string, string | number> = {};
       for (const k of orden) o[COL_BY[k].label] = valorXls(r, k);
@@ -314,7 +341,7 @@ export default function PlanificacionPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
     XLSX.writeFile(wb, `planificacion_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
-  }, [datos, visibles, cantidadDe, orden]);
+  }, [datos, visibles, cantidadDe, coberturaDe, orden]);
 
   const tot = useMemo(
     () => ({
@@ -348,6 +375,19 @@ export default function PlanificacionPage() {
             />
           </td>
         );
+      case "cobertura": {
+        const c = coberturaDe(r);
+        return (
+          <td
+            key={k}
+            className={`px-2 py-1.5 text-right tabular-nums ${
+              c == null ? "text-zinc-600" : c < 1 ? "text-red-400" : c < 2 ? "text-yellow-300" : "text-zinc-300"
+            }`}
+          >
+            {c == null ? "—" : new Intl.NumberFormat("es-AR", { maximumFractionDigits: 1, minimumFractionDigits: 1 }).format(c)}
+          </td>
+        );
+      }
       case "recomendado":
         return (
           <td

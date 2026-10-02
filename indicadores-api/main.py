@@ -108,6 +108,7 @@ from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
     estado_grupos, decidir_grupo,
     fetch_tablero_asignacion, fetch_controladores, preasignar,
+    fetch_mesa_por_operario,
 )
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
@@ -2114,6 +2115,20 @@ def deposito_control_asignacion_preasignar(body: PreasignarIn):
     except ValueError as e:
         msg = str(e)
         raise HTTPException(status_code=409 if msg.startswith("Ya lo") else 404, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/deposito/control-asignacion/por-operario")
+def deposito_control_asignacion_por_operario(dia: str | None = Query(default=None)):
+    """Vista "Por operario" (/deposito/deposito → Mesas): por operario, lo
+    asignado (Postgres) y lo controlado (Magnus) en el día, con estado
+    controlado / en proceso / esperando y marca de controlado sin asignar.
+    `dia` = YYYY-MM-DD (default hoy). Ver TABLERO POR OPERARIO en
+    control_asignacion.py."""
+    try:
+        return fetch_mesa_por_operario(dia)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

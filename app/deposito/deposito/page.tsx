@@ -5,6 +5,7 @@ import { WmsTab } from "../components/wmsTab";
 import { MesaControlTab } from "../components/mesaControl";
 import { PedidosAsignadosTab } from "../components/pedidosAsignados";
 import { AsignarPedidosTab } from "../components/asignarPedidos";
+import { PorOperarioTab } from "../components/porOperario";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
 
@@ -16,11 +17,12 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 // "Mesas" tiene 2 sub-vistas propias (agregado 2026-07-31): "Resumen" (la Mesa de Control de siempre, agregado mensual) y
 // "Pedidos asignados" (detalle por pedido, deposito.control_asignacion — ver
 // pedidosAsignados.tsx). 2026-09-24: "Asignar pedidos" (asignarPedidos.tsx) —
-// elegir quién controla cada pedido listo o en preparación.
+// elegir quién controla cada pedido listo o en preparación. 2026-10-02: "Por
+// operario" (porOperario.tsx) — asignado vs controlado en Magnus por operario.
 // ──────────────────────────────────────────────────────────────────────────────
 
 type Tab = "wms" | "mesas";
-type MesasSubTab = "resumen" | "asignados" | "asignar";
+type MesasSubTab = "resumen" | "asignados" | "asignar" | "operario";
 
 const NAV: { id: Tab; label: string; icon: typeof PackageSearch }[] = [
   { id: "wms", label: "WMS", icon: PackageSearch },
@@ -31,6 +33,7 @@ const MESAS_SUB: { id: MesasSubTab; label: string }[] = [
   { id: "resumen", label: "Resumen" },
   { id: "asignados", label: "Pedidos asignados" },
   { id: "asignar", label: "Asignar pedidos" },
+  { id: "operario", label: "Por operario" },
 ];
 
 export default function DepositoDepositoPage() {
@@ -92,6 +95,7 @@ export default function DepositoDepositoPage() {
               {mesasSub === "resumen" && <MesaControlTab />}
               {mesasSub === "asignados" && <PedidosAsignadosTab />}
               {mesasSub === "asignar" && <AsignarPedidosTab />}
+              {mesasSub === "operario" && <PorOperarioTab />}
             </main>
           </div>
         )}
