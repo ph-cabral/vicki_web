@@ -185,6 +185,7 @@ export async function GET(req: NextRequest) {
             nombre          = EXCLUDED.nombre,
             "clienteNombre" = COALESCE(EXCLUDED."clienteNombre", preparado.faltante_pedido."clienteNombre"),
             vendedor        = COALESCE(NULLIF(EXCLUDED.vendedor, ''), preparado.faltante_pedido.vendedor),
+            ubicacion       = COALESCE(NULLIF(EXCLUDED.ubicacion, ''), preparado.faltante_pedido.ubicacion),
             "estadoPedido"  = EXCLUDED."estadoPedido",
             "estadoRenglon" = EXCLUDED."estadoRenglon",
             "cantPedida"    = EXCLUDED."cantPedida",

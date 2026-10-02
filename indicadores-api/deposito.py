@@ -2218,6 +2218,40 @@ def _info_articulos_faltante(codigos, conn=None):
             conn.close()
 
 
+def _ubicaciones_maestro(codigos, conn=None):
+    """{CodArticulo trim -> ubicación del maestro (Ubicacion#)}. Fallback para
+    renglones de pedido con r.Ubicacion en blanco (nunca se prepararon: Magnus
+    la completa recién al preparar). Mismo criterio que SQL_FALTANTES: solo
+    ubicaciones numéricas con guión (sin PULMON_*/letras), MIN por artículo."""
+    out: dict[str, str] = {}
+    codigos = sorted({_txt(c) for c in codigos if c})
+    if not codigos:
+        return out
+    propia = conn is None
+    conn = conn or get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        CH = 1000
+        for i in range(0, len(codigos), CH):
+            chunk = codigos[i:i + CH]
+            ph = ",".join("?" for _ in chunk)
+            cur.execute(f"""
+                SELECT LTRIM(RTRIM(codArticulo)), MIN(ubicacion)
+                FROM EVERWEAR.dbo.[Ubicacion#]
+                WHERE codArticulo IN ({ph})
+                  AND ubicacion NOT LIKE '%[A-Za-z]%'
+                  AND ubicacion LIKE '%-%'
+                GROUP BY codArticulo
+            """, chunk)
+            for cod, ubi in cur.fetchall():
+                out[_txt(cod)] = _txt(ubi)
+        return out
+    finally:
+        if propia:
+            conn.close()
+
+
 def _ultimo_dia_cierre() -> int:
     """Último día ANTERIOR a hoy con algún pedido cerrado/facturado (salta
     findes y feriados, igual que hacía la fuente de OT)."""
@@ -2422,6 +2456,8 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
     info = _info_pedidos(pedidos)
     nombres = _nombres_articulos([f.get("CodArticulo") for f in filas])
     extra = _info_articulos_faltante([f.get("CodArticulo") for f in filas])
+    ubi_m = _ubicaciones_maestro(
+        [f.get("CodArticulo") for f in filas if not _txt(f.get("Ubicacion"))])
 
     rows = []
     for f in filas:
@@ -2442,7 +2478,7 @@ def fetch_faltante_pedidos(desde=None, hasta=None, por="fecha"):
             "Cliente":       meta.get("Cliente"),
             "ClienteNombre": meta.get("ClienteNombre"),
             "Vendedor":      _txt(meta.get("Vendedor")),
-            "Ubicacion":     _txt(f.get("Ubicacion")),
+            "Ubicacion":     _txt(f.get("Ubicacion")) or ubi_m.get(cod, ""),
             "CodArticulo":   cod,
             "Nombre":        nombres.get(cod, ""),
             "CantPedida":    pedida,

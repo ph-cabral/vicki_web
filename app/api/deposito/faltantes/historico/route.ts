@@ -271,7 +271,7 @@ export async function GET(req: NextRequest) {
           nroRengOrigen: r.nroRengOrigen,
           codArticulo: cod,
           nombre: p?.nombre ?? ot?.nombre ?? w?.nombre ?? "",
-          ubicacion: p?.ubicacion ?? ot?.ubicacion ?? w?.ubicacion ?? "",
+          ubicacion: p?.ubicacion || ot?.ubicacion || w?.ubicacion || "",
           cliente:
             p?.clienteNombre ??
             (p?.cliente != null ? String(p.cliente) : undefined) ??
