@@ -1718,7 +1718,7 @@ def fetch_planificacion_niveles():
 
 SQL_PLANIFICACION = """
 WITH art AS (
-    SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida
+    SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida, s.CodProveedHabitual
     FROM EVERWEAR.dbo.StkFer_Articulos s
     INNER JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
     WHERE 1 = 1 {niveles}
@@ -1767,11 +1767,23 @@ SELECT LTRIM(RTRIM(art.CodArticulo)) AS Cod,
        ISNULL(ven.Vendido, 0) AS Vendido,
        ven.Maximo, ven.Minimo,
        ISNULL(stk.Stock, 0)   AS Stock,
-       ISNULL(oc.Pend, 0)     AS OC
+       ISNULL(oc.Pend, 0)     AS OC,
+       ISNULL(prh.RazonSocial, ult.RazonSocial) AS Proveedor
 FROM art
 LEFT JOIN ven ON ven.Cod = art.CodArticulo
 LEFT JOIN stk ON stk.Cod = art.CodArticulo
 LEFT JOIN oc  ON oc.Cod  = art.CodArticulo
+-- Proveedor: el habitual del maestro (StkFer_Articulos.CodProveedHabitual);
+-- si no tiene, el de la última OC del artículo (el APPLY solo corre para esos).
+LEFT JOIN EVERWEAR.dbo.Com_Proveedores prh ON prh.CodProveed = art.CodProveedHabitual
+OUTER APPLY (
+    SELECT TOP 1 pr2.RazonSocial
+    FROM EVERWEAR.dbo.Com_OrdCompRenglones r2
+    INNER JOIN EVERWEAR.dbo.Com_OrdCompCabecera c2 ON c2.NroOrdCompra = r2.NroOrdCompra
+    INNER JOIN EVERWEAR.dbo.Com_Proveedores pr2 ON pr2.CodProveed = c2.CodProveed
+    WHERE prh.CodProveed IS NULL AND r2.CodArticulo = art.CodArticulo
+    ORDER BY c2.FecMovim DESC, c2.NroOrdCompra DESC
+) ult
 WHERE ven.Cod IS NOT NULL OR ISNULL(stk.Stock, 0) <> 0 OR oc.Cod IS NOT NULL {extra}
 """
 
@@ -1826,7 +1838,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
         else:
             cur.execute(sql)
         rows = []
-        for cod, det, med, vend, vmax, vmin, stk, oc in cur.fetchall():
+        for cod, det, med, vend, vmax, vmin, stk, oc, prov in cur.fetchall():
             cod = (str(cod or "")).strip()
             if not cod:
                 continue
@@ -1842,6 +1854,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
                 "minimo": round(float(_safe(vmin)), 2) if _safe(vmin) is not None else None,
                 "stock": round(float(_safe(stk) or 0), 2),
                 "oc": round(float(_safe(oc) or 0), 2),
+                "proveedor": " ".join((str(prov or "")).split()) or None,
             })
     finally:
         conn.close()

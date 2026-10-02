@@ -48,6 +48,7 @@ interface Row {
   stock: number;
   oc: number;
   faltante: number;
+  proveedor: string | null;
 }
 interface Datos {
   reporte: Reporte;
@@ -88,6 +89,7 @@ type SortKey = keyof Row | "cantidad" | "cobertura";
 const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "codigo", label: "Código", num: false },
   { k: "detalle", label: "Detalle", num: false },
+  { k: "proveedor", label: "Proveedor", num: false, title: "proveedor habitual del artículo; si no tiene, el de la última OC" },
   { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en el recomendado, editable" },
   { k: "cobertura", label: "Cobertura (meses)", num: true, title: "(stock + OC pendiente + cantidad) / prom. vendido — meses que cubre lo que hay más lo que se pide (stock negativo cuenta 0)" },
   { k: "recomendado", label: "Recomendado", num: true, title: "promedio + faltante − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
@@ -286,7 +288,13 @@ export default function PlanificacionPage() {
     const q = buscar.trim().toLowerCase();
     let rs = datos.rows;
     if (soloRec) rs = rs.filter((r) => r.recomendado > 0 || cantidadDe(r) > 0);
-    if (q) rs = rs.filter((r) => r.codigo.toLowerCase().includes(q) || (r.detalle || "").toLowerCase().includes(q));
+    if (q)
+      rs = rs.filter(
+        (r) =>
+          r.codigo.toLowerCase().includes(q) ||
+          (r.detalle || "").toLowerCase().includes(q) ||
+          (r.proveedor || "").toLowerCase().includes(q),
+      );
     const { k, dir } = sort;
     const val = (r: Row) =>
       k === "cantidad"
@@ -329,7 +337,7 @@ export default function PlanificacionPage() {
               const c = coberturaDe(r);
               return c == null ? "" : Math.round(c * 10) / 10;
             })()
-          : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : r[k];
+          : k === "detalle" ? r.detalle || "" : k === "proveedor" ? r.proveedor || "" : k === "minimo" ? r.minimo ?? "" : r[k];
     const filas = visibles.map((r) => {
       const o: Record<string, string | number> = {};
       for (const k of orden) o[COL_BY[k].label] = valorXls(r, k);
@@ -337,7 +345,7 @@ export default function PlanificacionPage() {
       return o;
     });
     const ws = XLSX.utils.json_to_sheet(filas);
-    ws["!cols"] = Object.keys(filas[0]).map((c) => ({ wch: c === "Detalle" ? 45 : Math.max(12, c.length + 2) }));
+    ws["!cols"] = Object.keys(filas[0]).map((c) => ({ wch: c === "Detalle" ? 45 : c === "Proveedor" ? 35 : Math.max(12, c.length + 2) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
     XLSX.writeFile(wb, `planificacion_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
@@ -358,6 +366,8 @@ export default function PlanificacionPage() {
         return <td key={k} className="px-2 py-1.5 font-mono text-yellow-400 whitespace-nowrap">{r.codigo}</td>;
       case "detalle":
         return <td key={k} className="px-2 py-1.5">{r.detalle || "—"}</td>;
+      case "proveedor":
+        return <td key={k} className="px-2 py-1.5 text-zinc-300 whitespace-nowrap">{r.proveedor || "—"}</td>;
       case "cantidad":
         return (
           <td key={k} className="px-2 py-1 text-right">

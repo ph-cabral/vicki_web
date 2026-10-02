@@ -104,6 +104,7 @@ export async function GET(req: NextRequest) {
       minimo: number | null;
       stock: number;
       oc: number;
+      proveedor?: string | null;
     }[];
     ocDesde?: string;
   };
@@ -149,6 +150,7 @@ export async function GET(req: NextRequest) {
         stock: r2(r.stock),
         oc: r2(r.oc),
         faltante: r2(faltante),
+        proveedor: r.proveedor ?? null,
       };
     })
     .sort((a, b) => b.recomendado - a.recomendado || b.promedio - a.promedio || (a.codigo < b.codigo ? -1 : 1));
