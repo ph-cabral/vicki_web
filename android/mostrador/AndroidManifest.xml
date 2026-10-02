@@ -3,6 +3,9 @@
     package="ar.com.everwear.mostrador">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Auto-actualización (comun/Actualizador): instalar el APK nuevo; en Android 12+ sin diálogo. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
@@ -25,5 +28,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Resultado de la instalación de una actualización (comun/InstalarReceiver). -->
+        <receiver
+            android:name="ar.com.everwear.comun.InstalarReceiver"
+            android:exported="false" />
     </application>
 </manifest>

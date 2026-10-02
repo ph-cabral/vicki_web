@@ -1,0 +1,11 @@
+{
+ "paquete": "ar.com.everwear.picker",
+ "versionCode": 2,
+ "versionName": "1.1",
+ "apk": "/apk/everwear-picker.apk?v=2",
+ "sha256": "dcde019ec1e66e3c4752b6528a38c352f27202f5e098aab0cddb31249271bfef",
+ "bytes": 61995,
+ "obligatoria": false,
+ "notas": "Primera versión con actualización automática",
+ "fecha": "2026-10-02T13:42:03"
+}

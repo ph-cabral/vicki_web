@@ -19,6 +19,8 @@ import android.webkit.WebViewClient;
 
 import org.json.JSONArray;
 
+import ar.com.everwear.comun.Actualizador;
+
 /**
  * Pantalla única: /mostradores/control de vicki en un WebView.
  * - Login normal de vicki (cookie de sesión persistente en el WebView).
@@ -38,6 +40,7 @@ public class MainActivity extends Activity {
                     + "}catch(e){}})()";
 
     private WebView web;
+    private Actualizador actualizador;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -58,6 +61,7 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setUserAgentString(s.getUserAgentString() + " EverWearMostrador/" + Config.VERSION);
 
+        actualizador = new Actualizador(this, Config.BASE_URL, "/apk/everwear-mostrador.json");
         web.addJavascriptInterface(new Puente(), "EwMostrador");
         web.setWebViewClient(new Cliente());
         web.loadUrl(URL_CONTROL);
@@ -65,8 +69,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        actualizador.enResume();
+    }
+
+    @Override
     protected void onPause() {
         CookieManager.getInstance().flush(); // que la sesión sobreviva a un cierre forzado
+        actualizador.enPausa();
         super.onPause();
     }
 
@@ -199,6 +210,7 @@ public class MainActivity extends Activity {
         public void onPageFinished(WebView view, String url) {
             view.evaluateJavascript(JS_VIBRAR, null);
             CookieManager.getInstance().flush();
+            actualizador.revisar();
         }
 
         @Override

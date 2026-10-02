@@ -1,0 +1,11 @@
+{
+ "paquete": "ar.com.everwear.vicki",
+ "versionCode": 2,
+ "versionName": "1.1",
+ "apk": "/apk/vicki.apk?v=2",
+ "sha256": "46832daf4ec3b5efe07be1235619ffea9bf4532839dd425f87ee0f9a3bc77617",
+ "bytes": 86498,
+ "obligatoria": false,
+ "notas": "Primera versión con actualización automática",
+ "fecha": "2026-10-02T13:42:10"
+}

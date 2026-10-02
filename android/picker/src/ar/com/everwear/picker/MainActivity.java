@@ -19,6 +19,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import ar.com.everwear.comun.Actualizador;
+
 /**
  * Pantalla única: la página /picking/picker de vicki en un WebView.
  * La página le pasa el nombre del picker por window.EverWearApp.setPicker(...)
@@ -29,6 +31,7 @@ public class MainActivity extends Activity {
     static final String URL_PICKER = Config.BASE_URL + "/picking/picker";
 
     private WebView web;
+    private Actualizador actualizador;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -46,6 +49,7 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setUserAgentString(s.getUserAgentString() + " EverWearPicker/" + Config.VERSION);
 
+        actualizador = new Actualizador(this, Config.BASE_URL, "/apk/everwear-picker.json");
         web.addJavascriptInterface(new Puente(), "EverWearApp");
         web.setWebViewClient(new Cliente());
         web.loadUrl(URL_PICKER);
@@ -72,6 +76,18 @@ public class MainActivity extends Activity {
                 // algunos equipos no tienen esa pantalla
             }
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        actualizador.enResume();
+    }
+
+    @Override
+    protected void onPause() {
+        actualizador.enPausa();
+        super.onPause();
     }
 
     @Override
@@ -128,6 +144,7 @@ public class MainActivity extends Activity {
 
         @Override
         public void onPageFinished(WebView view, String url) {
+            actualizador.revisar();
             // Toma el nombre que ya estaba en localStorage (picker que ya venía usando la página).
             view.evaluateJavascript(
                     "(function(){try{return localStorage.getItem('picker_nombre')||''}catch(e){return ''}})()",

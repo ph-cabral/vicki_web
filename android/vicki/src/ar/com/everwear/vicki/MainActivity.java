@@ -49,6 +49,8 @@ import java.net.URL;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import ar.com.everwear.comun.Actualizador;
+
 /**
  * Vicki en un WebView, con la VPN adentro.
  *
@@ -59,6 +61,8 @@ import java.util.concurrent.Executors;
  *  3. Si nunca se dio de alta -> pide abrir la app una vez en la oficina.
  */
 public class MainActivity extends Activity {
+
+    private Actualizador actualizador;
 
     private static final int REQ_VPN = 10, REQ_ARCHIVO = 11;
     private static final long PARAR_EN_FONDO_MS = 5 * 60_000;
@@ -97,6 +101,7 @@ public class MainActivity extends Activity {
         root.addView(web, new FrameLayout.LayoutParams(-1, -1));
         root.addView(crearPanel(), new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
+        actualizador = new Actualizador(this, Config.BASE_URL, "/apk/vicki.json");
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -124,6 +129,18 @@ public class MainActivity extends Activity {
         // Volvió después de un rato: puede haber cambiado de red o bajado el túnel.
         if (enFondoDesde > 0 && System.currentTimeMillis() - enFondoDesde > 60_000) asegurar(false);
         enFondoDesde = 0;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        actualizador.enResume(); // sin red/túnel falla en silencio y reintenta al cargar la página
+    }
+
+    @Override
+    protected void onPause() {
+        actualizador.enPausa();
+        super.onPause();
     }
 
     @Override
@@ -498,6 +515,7 @@ public class MainActivity extends Activity {
             view.evaluateJavascript(JS_DESCARGAS, null);
             CookieManager.getInstance().flush();
             quizasAlta();
+            actualizador.revisar();
         }
 
         @Override

@@ -11,6 +11,7 @@ import {
   Keyboard,
   Loader2,
   Lock,
+  LogOut,
   Play,
   RefreshCw,
   ScanLine,
@@ -162,6 +163,11 @@ function BarraAvance({ valor, total }: { valor: number; total: number }) {
 export default function ControlStockPage() {
   const [deposito, setDeposito] = useState<number | null>(null);
   const [depListo, setDepListo] = useState(false); // ya se leyó el guardado
+  // Usuario logueado en el PDA (para "Cambiar usuario": otro controlador toma el equipo).
+  const [usuarioNombre, setUsuarioNombre] = useState<string>("");
+  const [confirmarSalir, setConfirmarSalir] = useState(false);
+  const [saliendo, setSaliendo] = useState(false);
+  const salirTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const depRef = useRef<number | null>(null);
   depRef.current = deposito;
   const [patrones, setPatrones] = useState<Patron[]>([]);
@@ -244,6 +250,16 @@ export default function ControlStockPage() {
   useEffect(() => {
     setDeposito(leerDeposito());
     setDepListo(true);
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((j) => setUsuarioNombre(j?.usuario?.nombre ?? ""))
+      .catch(() => {});
+    return () => {
+      if (salirTimer.current) clearTimeout(salirTimer.current);
+    };
   }, []);
 
   const elegirDeposito = useCallback((id: number) => {
@@ -862,27 +878,83 @@ export default function ControlStockPage() {
     );
   }
 
-  const chipDeposito = (
-    <button
-      type="button"
-      onClick={() => {
-        if (activo) {
-          vibrar([80, 60, 80]);
-          mostrarAviso("error", `Finalizá el patrón ${activo.codigo} antes de cambiar de depósito`);
-          return;
-        }
-        try {
-          localStorage.removeItem(LS_DEPOSITO);
-        } catch {
-          /* nada */
-        }
-        setDeposito(null);
-      }}
-      className="rounded-md border border-yellow-400/60 px-2 py-0.5 text-xs font-bold uppercase text-yellow-400 active:bg-yellow-400/15"
-      title="Cambiar depósito"
-    >
-      {nombreDep(deposito)}
-    </button>
+  // Depósito fijo en el PDA: queda guardado y sólo cambia tocando el otro.
+  const selectorDeposito = (
+    <div className="inline-flex rounded-lg border border-yellow-400/60 p-0.5">
+      {DEPOSITOS.map((d) => {
+        const sel = d.id === deposito;
+        return (
+          <button
+            key={d.id}
+            type="button"
+            onClick={() => {
+              if (sel) return;
+              if (activo) {
+                vibrar([80, 60, 80]);
+                mostrarAviso("error", `Finalizá el patrón ${activo.codigo} antes de cambiar de depósito`);
+                return;
+              }
+              elegirDeposito(d.id);
+            }}
+            className={`rounded-md px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+              sel ? "bg-yellow-400 text-black" : "text-yellow-400/80 active:bg-yellow-400/15"
+            }`}
+          >
+            {d.nombre}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // Cambiar usuario: doble toque (1º avisa, 2º sale). El patrón tomado queda a nombre de quien lo tenía.
+  const cambiarUsuario = async () => {
+    if (saliendo) return;
+    if (!confirmarSalir) {
+      setConfirmarSalir(true);
+      vibrar(40);
+      mostrarAviso(
+        "error",
+        activo
+          ? `Tocá de nuevo para salir. El patrón ${activo.codigo} queda a tu nombre`
+          : "Tocá de nuevo para cambiar de usuario",
+        3000,
+      );
+      if (salirTimer.current) clearTimeout(salirTimer.current);
+      salirTimer.current = setTimeout(() => setConfirmarSalir(false), 3000);
+      return;
+    }
+    setSaliendo(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.replace("/login?returnTo=" + encodeURIComponent("/mostradores/control"));
+    }
+  };
+
+  const barraSesion = (
+    <div className="flex items-center gap-2 px-3 pb-2">
+      {selectorDeposito}
+      <button
+        type="button"
+        onClick={cambiarUsuario}
+        disabled={saliendo}
+        className={`ml-auto flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${
+          confirmarSalir
+            ? "border-red-500 bg-red-500/15 text-red-300"
+            : "border-zinc-700 text-zinc-300 active:bg-zinc-800"
+        }`}
+        title="Cambiar usuario"
+      >
+        <User className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate max-w-[9rem]">{confirmarSalir ? "¿Salir?" : usuarioNombre || "Usuario"}</span>
+        {saliendo ? (
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+        ) : (
+          <LogOut className="h-3.5 w-3.5 shrink-0" />
+        )}
+      </button>
+    </div>
   );
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -896,7 +968,6 @@ export default function ControlStockPage() {
           <header className="flex items-center gap-2 px-3 py-2">
             <InicioButton label="" iconSize={16} className="text-zinc-500 active:text-yellow-400" />
             <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide">Control stock</h1>
-            {chipDeposito}
             <span className="ml-auto text-xs text-zinc-500 tabular-nums">
               {patrones.length} {patrones.length === 1 ? "patrón" : "patrones"}
             </span>
@@ -910,6 +981,7 @@ export default function ControlStockPage() {
               <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
             </button>
           </header>
+          {barraSesion}
           {avisoEl}
         </div>
 
