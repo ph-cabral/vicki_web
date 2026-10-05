@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { pasaRecorte, ORIGEN_LABEL } from "@/lib/compras/faltantesMes";
 import {
-  agruparFaltantesMes,
-  pasaRecorte,
-  ORIGEN_LABEL,
-  adaptarFilaFaltantePedido,
-  type FilaFaltantePedidoApi,
-} from "@/lib/compras/faltantesMes";
+  cargarFaltantesMesCompras,
+  FALTANTES_MES_VACIO,
+} from "@/lib/compras/faltantesMesConsumo";
 import type { OrigenArticulo } from "@/lib/compras/origenArticulo";
 
 const API_URL =
@@ -92,7 +90,8 @@ export async function GET(req: NextRequest) {
   //    · compras-valorizado    → unidades y $ de OC del mes por artículo
   const q = encodeURIComponent;
   const [faltRes, valRes] = await Promise.allSettled([
-    getJson(`${API_URL}/deposito/faltante-pedidos?desde=${q(desde)}&hasta=${q(hasta)}`),
+    // Universo = el de /compras/faltantes (2026-10-05, ver lib/compras/faltantesMesConsumo.ts).
+    cargarFaltantesMesCompras(desde, hasta),
     getJson(`${API_URL}/compras/compras-valorizado?desde=${q(desde)}&hasta=${q(hasta)}`),
   ]);
 
@@ -100,11 +99,7 @@ export async function GET(req: NextRequest) {
   if (clasifWarn) {
     console.error("GET /api/compras/faltantes-linea — deposito/faltantes", faltRes.reason);
   }
-  const faltMes = agruparFaltantesMes(
-    clasifWarn
-      ? []
-      : ((faltRes.value.rows ?? []) as FilaFaltantePedidoApi[]).map(adaptarFilaFaltantePedido),
-  );
+  const faltMes = clasifWarn ? FALTANTES_MES_VACIO : faltRes.value;
 
   const compradoUnid = new Map<string, number>();
   const compradoMonto = new Map<string, number>();

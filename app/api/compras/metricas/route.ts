@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  agruparFaltantesMes,
   codigosPorOrigen,
   ORIGEN_LABEL,
-  adaptarFilaFaltantePedido,
   OC_DESDE_DEFAULT,
-  type FilaFaltantePedidoApi,
   type FaltantesMes,
   type OrigenFunnel,
 } from "@/lib/compras/faltantesMes";
+import {
+  cargarFaltantesMesCompras,
+  FALTANTES_MES_VACIO,
+} from "@/lib/compras/faltantesMesConsumo";
 import type { OrigenArticulo } from "@/lib/compras/origenArticulo";
 
 const API_URL =
@@ -104,6 +105,15 @@ export const maxDuration = 60;
 //   Los 3 fetches a Magnus salen EN PARALELO (antes eran secuenciales, 4
 //   roundtrips uno atrás del otro) y son best-effort: si alguno no responde, la
 //   columna correspondiente se informa en `warn` pero no rompe la vista.
+//
+// 2026-10-05 — UNIVERSO UNIFICADO con /compras/faltantes: la columna 1 ya NO es
+// "todo renglón pendiente del mes" sino exactamente los artículos de
+// /compras/faltantes (marca "sin existencia" de la mesa, menos extraordinarios
+// por cliente, descartados y cubiertos por stock; incluye los que ya tienen
+// fecha de arribo). Ver lib/compras/faltantesMesConsumo.ts. Esto revierte el
+// criterio del 2026-09-03 (sin marcas): pedido explícito de que las dos vistas
+// muestren los mismos faltantes. El reporte de Magnus / detalle-mes ya no cierra
+// contra la card por esta misma razón.
 // ──────────────────────────────────────────────────────────────────────────────
 
 async function getJson(url: string) {
@@ -271,7 +281,8 @@ export async function GET(req: NextRequest) {
     getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}`),
     getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}`),
     getJson(`${API_URL}/compras/ingresos?desde=${q(desde)}&hasta=${q(hasta)}`),
-    getJson(`${API_URL}/deposito/faltante-pedidos?desde=${q(desde)}&hasta=${q(hasta)}`),
+    // Universo = el de /compras/faltantes (ver lib/compras/faltantesMesConsumo.ts).
+    cargarFaltantesMesCompras(desde, hasta),
   ]);
 
   // Set B: artículos con OC hecha en el mes.
@@ -335,11 +346,7 @@ export async function GET(req: NextRequest) {
   if (clasifWarn) {
     console.error("GET /api/compras/metricas — deposito/faltantes", faltRes.reason);
   }
-  const faltMes = agruparFaltantesMes(
-    clasifWarn
-      ? []
-      : ((faltRes.value.rows ?? []) as FilaFaltantePedidoApi[]).map(adaptarFilaFaltantePedido),
-  );
+  const faltMes = clasifWarn ? FALTANTES_MES_VACIO : faltRes.value;
 
   // Precio unitario por artículo (venta), para valorizar las etapas 2 y 3 sin
   // pedirle nada más a Magnus.
