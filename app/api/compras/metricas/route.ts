@@ -4,6 +4,7 @@ import {
   codigosPorOrigen,
   ORIGEN_LABEL,
   adaptarFilaFaltantePedido,
+  OC_DESDE_DEFAULT,
   type FilaFaltantePedidoApi,
   type FaltantesMes,
   type OrigenFunnel,
@@ -33,7 +34,10 @@ export const maxDuration = 60;
 //   Columna 2 "Con OC": de los artículos de la columna 1, cuántos tuvieron
 //     al menos un renglón de Orden de Compra HECHO ese mismo mes (indicadores-
 //     api GET /compras/ordenes-mes, por FecMovim de la cabecera) — no importa
-//     si ya se recibió o sigue pendiente.
+//     si ya se recibió o sigue pendiente — O tienen OC VIVA hoy (saldo
+//     pendiente, GET /compras/ordenes-pendientes, OC hechas desde
+//     OC_DESDE_DEFAULT) aunque se haya emitido en un mes anterior. Esa
+//     segunda mitad es el mismo criterio de /compras/faltantes (2026-10-05).
 //
 //   Columna 3 "Ingresados": de los artículos de la columna 2, cuántos tuvieron
 //     un remito de ingreso ya concretado ese mismo mes (indicadores-api
@@ -263,8 +267,9 @@ export async function GET(req: NextRequest) {
   //    · ingresos         → set C (remito x OC concretado ese mes)
   //    · deposito/faltantes → origen, estado, unidades e importe por artículo
   const q = encodeURIComponent;
-  const [ocRes, ingRes, faltRes] = await Promise.allSettled([
+  const [ocRes, ocVivaRes, ingRes, faltRes] = await Promise.allSettled([
     getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}`),
+    getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}`),
     getJson(`${API_URL}/compras/ingresos?desde=${q(desde)}&hasta=${q(hasta)}`),
     getJson(`${API_URL}/deposito/faltante-pedidos?desde=${q(desde)}&hasta=${q(hasta)}`),
   ]);
@@ -272,7 +277,7 @@ export async function GET(req: NextRequest) {
   // Set B: artículos con OC hecha en el mes.
   const setB = new Set<string>();
   const ocUnidMap = new Map<string, number>();
-  const ocWarn = ocRes.status !== "fulfilled";
+  const ocWarn = ocRes.status !== "fulfilled" || ocVivaRes.status !== "fulfilled";
   if (ocRes.status === "fulfilled") {
     const ocJson = ocRes.value;
     for (const cod of (ocJson.articulos ?? []) as string[]) setB.add(cod);
@@ -281,6 +286,25 @@ export async function GET(req: NextRequest) {
     }
   } else {
     console.error("GET /api/compras/metricas — ordenes-mes", ocRes.reason);
+  }
+
+  // OC VIVA (2026-10-05): mismo criterio de "tiene OC" que /compras/faltantes —
+  // saldo pendiente hoy en una OC hecha desde OC_DESDE_DEFAULT, sin importar el
+  // mes en que se emitió. Se SUMA a las OC emitidas en el mes (que ya pueden
+  // estar recibidas): así un faltante cubierto por una OC de un mes anterior
+  // todavía sin llegar deja de figurar como "sin cubrir", y lo recibido en el
+  // mes sigue contando (si no, "Ingresados" dejaría de ser subconjunto de
+  // "Con OC"). Mismo universo de comprobantes (70/75) y de tipo de artículo en
+  // las dos fuentes (indicadores-api/compras.py).
+  if (ocVivaRes.status === "fulfilled") {
+    for (const r of (ocVivaRes.value.rows ?? []) as { CodArticulo: string; PorLlegar?: number }[]) {
+      const cod = String(r.CodArticulo ?? "").trim();
+      if (!cod || !(Number(r.PorLlegar) > 0)) continue;
+      setB.add(cod);
+      if (!ocUnidMap.has(cod)) ocUnidMap.set(cod, Number(r.PorLlegar) || 0);
+    }
+  } else {
+    console.error("GET /api/compras/metricas — ordenes-pendientes", ocVivaRes.reason);
   }
 
   // Set C: artículos con remito de ingreso concretado en el mes (todos los

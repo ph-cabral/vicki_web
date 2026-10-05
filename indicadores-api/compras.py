@@ -127,6 +127,7 @@ LEFT  JOIN EVERWEAR.dbo.Com_Proveedores    pr  ON pr.CodProveed   = cab.CodProve
 WHERE ISNULL(r.Cantidad, 0) - ISNULL(r.CantidadCumplida, 0) > 0
   AND r.Estado = 1   -- solo renglones PENDIENTES (2 cumplido / 3 cerrado con saldo ya ingresaron con remito o no van a entrar)
   {_excl}
+  {_comp}
   {_tipo}
   {_fecha}
 """
@@ -235,6 +236,12 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
     sql = SQL_OC_PENDIENTES.format(
         _join_tipo=_JOIN_TIPO,
         _excl=_EXCL,
+        # 2026-10-05: mismo criterio de comprobante que SQL_OC_RANGO (70/75).
+        # Antes la OC "viva" de /compras/faltantes incluía presupuestos por área
+        # (74/76/77/78) y el pase 80, que no cubren ningún faltante de venta.
+        # Con incluir_fabril (/fabrica/faltantes) NO se filtra: la OC de
+        # producción interna cuelga de otros comprobantes.
+        _comp="" if incluir_fabril else _COMP,
         _tipo=_cond_tipo(incluir_fabril),
         _fecha=f"AND cab.FecMovim >= {_dias(corte)}" if corte else "",
     )

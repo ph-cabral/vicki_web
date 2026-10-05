@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { esCancelado } from "@/lib/compras/faltantesMes";
+import { esCancelado, OC_DESDE_DEFAULT } from "@/lib/compras/faltantesMes";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -236,7 +236,6 @@ const r2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 // Fecha de corte del cruce: el FIFO arranca acá. Solo se consideran las OC hechas
 // desde esta fecha y los faltantes que aparecen desde esta fecha, así una OC nueva
 // no se "gasta" cubriendo faltantes viejos (de hace años). Override: ?ocDesde=YYYY-MM-DD.
-const OC_DESDE_DEFAULT = "2026-06-26";
 
 async function getJson(url: string) {
   const res = await fetch(url, {

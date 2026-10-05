@@ -1274,7 +1274,7 @@ def _fetch_pedido_cerrado(nro_pedido: int) -> bool:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT FechaCierre FROM EVERWEAR.dbo.VenFer_PedidoCabecera WHERE NroMovVenta = ?",
+            "SELECT FechaCierre, EstadoPedido FROM EVERWEAR.dbo.VenFer_PedidoCabecera WHERE NroMovVenta = ?",
             (nro_pedido,),
         )
         row = cur.fetchone()
@@ -1282,7 +1282,13 @@ def _fetch_pedido_cerrado(nro_pedido: int) -> bool:
         conn.close()
     if row is None:
         return True
-    fecha_cierre = row[0]
+    fecha_cierre, estado = row[0], row[1]
+    # Anulado (7) o cerrado (4) también libera: si no, queda trabado.
+    try:
+        if estado is not None and int(estado) != 2:
+            return True
+    except (TypeError, ValueError):
+        pass
     try:
         return fecha_cierre is not None and int(fecha_cierre) > 0
     except (TypeError, ValueError):
@@ -1308,7 +1314,7 @@ def _fetch_remito_controlado(nro_remito: int) -> bool:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT FechaCierre FROM EVERWEAR.dbo.VenFer_RmtoCabecera WHERE NroMovVenta = ?",
+            "SELECT FechaCierre, EstadoRemito FROM EVERWEAR.dbo.VenFer_RmtoCabecera WHERE NroMovVenta = ?",
             (nro_remito,),
         )
         row = cur.fetchone()
@@ -1316,7 +1322,16 @@ def _fetch_remito_controlado(nro_remito: int) -> bool:
         conn.close()
     if row is None:
         return True
-    fecha_cierre = row[0]
+    fecha_cierre, estado = row[0], row[1]
+    # FIX 2026-10-05: remito en borrador (3, vuelta "SIN EXISTENCIA", sin
+    # renglones) o anulado (4) nunca pasa por mesa -> también libera al
+    # operario (mismas exclusiones que SQL_REMITOS_YA_NO_VAN). Caso 763596 /
+    # remito 346990: Marcos Flores quedaba trabado y su reserva SCAUSO en espera.
+    try:
+        if estado is not None and int(estado) in (3, 4):
+            return True
+    except (TypeError, ValueError):
+        pass
     try:
         return fecha_cierre is not None and int(fecha_cierre) > 0
     except (TypeError, ValueError):

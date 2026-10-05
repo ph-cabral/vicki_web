@@ -40,6 +40,11 @@ import { origenArticulo, type OrigenArticulo } from "./origenArticulo";
 // /compras/detalle-mes.
 // ──────────────────────────────────────────────────────────────────────────────
 
+// Corte del cruce faltante↔OC, compartido por /compras y /compras/faltantes:
+// solo cuentan como "OC viva" las OC hechas (FecMovim) desde esta fecha. Mismo
+// valor que OC_DESDE_DEFAULT de indicadores-api/compras.py.
+export const OC_DESDE_DEFAULT = "2026-06-26";
+
 // Mismo criterio de "cancelado" que indicadores-api/deposito.py
 // (PATRONES_CANCELADO): los estados de Magnus no son una lista fija.
 const PATRONES_CANCELADO = ["CANCEL"];
