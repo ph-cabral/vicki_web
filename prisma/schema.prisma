@@ -60,6 +60,7 @@ model picking_eventos {
   respondido_en  DateTime?
   creado_en      DateTime  @default(now())
 
+  @@index([picker_nombre, creado_en(sort: Desc)], map: "picking_eventos_picker_creado_idx")
   @@schema("preparado")
 }
 

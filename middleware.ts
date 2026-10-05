@@ -75,6 +75,8 @@ function esRutaPublica(pathname: string, method: string): boolean {
   if (method === "GET" && pathname === "/api/picking/notificaciones") return true;
   // Estado (pedido / s/e) de los "Enviados recién" del picker, por id.
   if (method === "GET" && pathname === "/api/picking/eventos/estados") return true;
+  // Historial del picker (sus propios pedidos de los últimos días, por nombre).
+  if (method === "GET" && pathname === "/api/picking/eventos/historial") return true;
   // APKs de las apps Android (picker, vicki, mostrador) y su manifiesto de versión (.json) que
   // cada app consulta sin sesión para ofrecer "Actualizar" (android/comun/Actualizador.java).
   // Se bajan desde el equipo antes de loguearse. Solo archivos planos dentro de /apk/.

@@ -7,6 +7,8 @@ import {
   ArrowRight,
   Check,
   Download,
+  Eye,
+  EyeOff,
   Keyboard,
   Loader2,
   MessageSquare,
@@ -41,6 +43,13 @@ import {
 // El atrás del PDA cierra la capa de arriba (consulta → cantidad → código).
 //
 // Datos: POST /api/picking/eventos (pedido) y POST /api/chat (consulta).
+//
+// Historial: la lista de abajo es el historial del picker de los últimos
+// HISTORIAL_DIAS días (GET /api/picking/eventos/historial, por nombre), con
+// scroll propio (la cabecera con el input queda fija) y un separador fuerte
+// por día (sticky). Los rojos (s/e) se pueden ocultar de a uno o todos juntos
+// ("Ocultar rojos"); los ids ocultos quedan en localStorage por picker y
+// "Ver ocultos" los vuelve a mostrar atenuados. Los verdes no se ocultan.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Reciente {
@@ -50,18 +59,48 @@ interface Reciente {
   hora: string;
   estado?: string; // "pendiente" | "pedido" | "s/e"
   nota?: string | null;
+  dia?: string; // YYYY-MM-DD (hora AR)
 }
 
-// "Enviados recién" sobrevive a recargas/reaperturas en el día (por picker).
+const HISTORIAL_DIAS = 7;
+const MAX_ITEMS = 300;
+
+// Copia local del historial: se muestra al instante (y sin red) mientras
+// llega el del servidor. Ítems viejos sin `dia` toman el del guardado.
 const RECIENTES_KEY = "picker_recientes";
 const hoy = () => new Date().toLocaleDateString("sv-SE");
 const leerRecientes = (picker: string): Reciente[] => {
   try {
     const g = JSON.parse(localStorage.getItem(RECIENTES_KEY) ?? "null");
-    return g && g.dia === hoy() && g.picker === picker && Array.isArray(g.items) ? g.items : [];
+    if (!g || g.picker !== picker || !Array.isArray(g.items)) return [];
+    return (g.items as Reciente[]).map((r) => (r.dia ? r : { ...r, dia: g.dia ?? hoy() }));
   } catch {
     return [];
   }
+};
+
+// Rojos que el picker sacó de la vista (ids de picking_eventos, por picker).
+const OCULTOS_KEY = "picker_ocultos";
+const leerOcultos = (picker: string): Set<number> => {
+  try {
+    const g = JSON.parse(localStorage.getItem(OCULTOS_KEY) ?? "null");
+    return new Set(g && g.picker === picker && Array.isArray(g.ids) ? (g.ids as number[]) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const DIAS_SEMANA = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const etiquetaDia = (dia: string) => {
+  const [a, m, d] = dia.split("-").map(Number);
+  const f = new Date(a, m - 1, d);
+  const ddmm = `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+  const h = new Date();
+  const dif = Math.round(
+    (new Date(h.getFullYear(), h.getMonth(), h.getDate()).getTime() - f.getTime()) / 86400000,
+  );
+  const nombre = DIAS_SEMANA[f.getDay()];
+  return dif === 0 ? `Hoy · ${nombre} ${ddmm}` : dif === 1 ? `Ayer · ${nombre} ${ddmm}` : `${nombre} ${ddmm}`;
 };
 
 const fmtCant = (n: number) => n.toLocaleString("es-AR", { maximumFractionDigits: 3 });
@@ -106,6 +145,8 @@ export default function PickerPage() {
   const [teclado, setTeclado] = useState(false);
   const [aviso, setAviso] = useState<{ tipo: "ok" | "error"; texto: string } | null>(null);
   const [recientes, setRecientes] = useState<Reciente[]>([]);
+  const [ocultos, setOcultos] = useState<Set<number>>(() => new Set());
+  const [verOcultos, setVerOcultos] = useState(false);
 
   // Carga de cantidad
   const [sel, setSel] = useState<string | null>(null); // código escaneado
@@ -146,6 +187,7 @@ export default function PickerPage() {
       if (n) {
         setPickerNombre(n);
         setRecientes(leerRecientes(n));
+        setOcultos(leerOcultos(n));
       }
     } catch {
       /* sin storage */
@@ -168,15 +210,82 @@ export default function PickerPage() {
   useEffect(() => {
     if (!listo || !pickerNombre) return;
     try {
-      localStorage.setItem(RECIENTES_KEY, JSON.stringify({ dia: hoy(), picker: pickerNombre, items: recientes }));
+      localStorage.setItem(
+        RECIENTES_KEY,
+        JSON.stringify({ dia: hoy(), picker: pickerNombre, items: recientes.slice(0, MAX_ITEMS) }),
+      );
     } catch {
       /* sin storage */
     }
   }, [listo, pickerNombre, recientes]);
 
-  // Mientras haya enviados sin responder, consulto su estado cada 5 s (por PK, máx. 8 ids).
+  // Ocultos: sólo se guardan los ids que siguen en el historial (no crece sin fin).
+  useEffect(() => {
+    if (!listo || !pickerNombre) return;
+    try {
+      const vivos = new Set(recientes.map((r) => r.id));
+      const ids = [...ocultos].filter((id) => vivos.has(id) || recientes.length === 0);
+      localStorage.setItem(OCULTOS_KEY, JSON.stringify({ picker: pickerNombre, ids }));
+    } catch {
+      /* sin storage */
+    }
+  }, [listo, pickerNombre, ocultos, recientes]);
+
+  // Historial del servidor (últimos HISTORIAL_DIAS días): al entrar y cada vez
+  // que la pantalla vuelve a estar visible. Se conservan los locales que el
+  // servidor todavía no devuelve (recién enviados).
+  useEffect(() => {
+    if (!listo || !pickerNombre) return;
+    let vivo = true;
+    const cargar = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch(
+          `/api/picking/eventos/historial?picker=${encodeURIComponent(pickerNombre)}&dias=${HISTORIAL_DIAS}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok || !vivo) return;
+        const filas = (await res.json()) as {
+          id: number;
+          codigo: string;
+          cantidad: number;
+          estado: string;
+          respuesta_nota: string | null;
+          dia: string;
+          hora: string;
+        }[];
+        if (!vivo || !Array.isArray(filas)) return;
+        const delServidor: Reciente[] = filas.map((f) => ({
+          id: f.id,
+          codigo: f.codigo,
+          cantidad: Number(f.cantidad),
+          hora: f.hora,
+          estado: f.estado,
+          nota: f.respuesta_nota,
+          dia: f.dia,
+        }));
+        const ids = new Set(delServidor.map((r) => r.id));
+        setRecientes((prev) => {
+          const sueltos = prev.filter((r) => !r.id || (!ids.has(r.id) && r.dia === hoy()));
+          return [...sueltos, ...delServidor].slice(0, MAX_ITEMS);
+        });
+      } catch {
+        /* sin red: queda la copia local */
+      }
+    };
+    cargar();
+    document.addEventListener("visibilitychange", cargar);
+    return () => {
+      vivo = false;
+      document.removeEventListener("visibilitychange", cargar);
+    };
+  }, [listo, pickerNombre]);
+
+  // Mientras haya enviados sin responder, consulto su estado cada 5 s (por PK,
+  // los 20 más nuevos: el endpoint corta en 20).
   const idsPendientes = recientes
     .filter((r) => r.id && (!r.estado || r.estado === "pendiente"))
+    .slice(0, 20)
     .map((r) => r.id)
     .join(",");
   useEffect(() => {
@@ -222,6 +331,7 @@ export default function PickerPage() {
       /* sin storage */
     }
     setRecientes(leerRecientes(n));
+    setOcultos(leerOcultos(n));
     setPickerNombre(n);
   };
 
@@ -234,6 +344,21 @@ export default function PickerPage() {
     setNombreInput("");
     setPickerNombre(null);
     setRecientes([]);
+    setOcultos(new Set());
+    setVerOcultos(false);
+  };
+
+  const ocultar = (ids: number[]) => {
+    vibrar(20);
+    setOcultos((prev) => new Set([...prev, ...ids]));
+  };
+  const mostrar = (id: number) => {
+    vibrar(20);
+    setOcultos((prev) => {
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
   };
 
   const mostrarAviso = useCallback((tipo: "ok" | "error", texto: string, ms?: number) => {
@@ -448,7 +573,9 @@ export default function PickerPage() {
       const creado = (await res.json().catch(() => null)) as { id?: number } | null;
       vibrar(40);
       const hora = new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
-      setRecientes((prev) => [{ id: creado?.id, codigo: sel, cantidad: n, hora, estado: "pendiente" }, ...prev].slice(0, 8));
+      setRecientes((prev) =>
+        [{ id: creado?.id, codigo: sel, cantidad: n, hora, estado: "pendiente", dia: hoy() }, ...prev].slice(0, MAX_ITEMS),
+      );
       mostrarAviso("ok", `✓ Pedido enviado ${sel} · ${fmtCant(n)}`);
       cerrar();
     } catch (e) {
@@ -680,9 +807,23 @@ export default function PickerPage() {
   // ════════════════════════════════════════════════════════════════════════════
   // Vista principal: escaneo del código
   // ════════════════════════════════════════════════════════════════════════════
+  // Historial agrupado por día (ya viene más nuevo primero).
+  const rojosVisibles = recientes.filter((r) => r.estado === "s/e" && r.id && !ocultos.has(r.id));
+  const cantOcultos = recientes.filter((r) => r.id && ocultos.has(r.id)).length;
+  const visibles = verOcultos ? recientes : recientes.filter((r) => !(r.id && ocultos.has(r.id)));
+  const porDia: { dia: string; items: Reciente[] }[] = [];
+  for (const r of visibles) {
+    const d = r.dia ?? hoy();
+    const ult = porDia[porDia.length - 1];
+    if (ult && ult.dia === d) ult.items.push(r);
+    else porDia.push({ dia: d, items: [r] });
+  }
+
+  // Cabecera fija (input) y la lista con scroll propio: el historial se
+  // recorre sin mover el campo de escaneo.
   return (
-    <div className="dark min-h-[100dvh] bg-[#111111] text-white flex flex-col">
-      <div className="sticky top-0 z-10 bg-[#111111] border-b border-zinc-800">
+    <div className="dark h-[100dvh] overflow-hidden bg-[#111111] text-white flex flex-col">
+      <div className="shrink-0 z-10 bg-[#111111] border-b border-zinc-800">
         <header className="flex items-center gap-2 px-3 py-2">
           <div className="min-w-0 flex-1">
             <h1 className="text-yellow-400 font-bold text-lg uppercase tracking-wide leading-tight">Picking</h1>
@@ -754,7 +895,7 @@ export default function PickerPage() {
         )}
       </div>
 
-      <div className="flex-1 px-3 py-3">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         {recientes.length === 0 ? (
           <div className="py-12 text-center text-zinc-500">
             <ScanLine className="h-10 w-10 mx-auto mb-3 text-zinc-700" />
@@ -762,57 +903,112 @@ export default function PickerPage() {
           </div>
         ) : (
           <>
-            <div className="text-xs text-zinc-500 uppercase tracking-wider mb-1">Enviados recién</div>
-            <ul className="divide-y divide-zinc-800/70">
-              {recientes.map((r, i) => {
-                // verde = con existencia (pedido), rojo = sin existencia, gris = esperando respuesta
-                const ok = r.estado === "pedido";
-                const sinEx = r.estado === "s/e";
-                return (
-                  <li
-                    key={`${r.id ?? r.codigo}-${r.hora}-${i}`}
-                    className={`py-2 px-2 -mx-2 rounded ${
-                      ok ? "bg-emerald-950/60" : sinEx ? "bg-red-950/60" : ""
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      {ok ? (
-                        <Check className="h-4 w-4 text-emerald-400 shrink-0" />
-                      ) : sinEx ? (
-                        <X className="h-4 w-4 text-red-400 shrink-0" />
-                      ) : (
-                        <Loader2 className="h-4 w-4 text-zinc-500 shrink-0 animate-spin" />
-                      )}
-                      <span
-                        className={`font-mono font-semibold break-all flex-1 ${
-                          ok ? "text-emerald-200" : sinEx ? "text-red-200" : "text-zinc-100"
-                        }`}
+            <div className="flex items-center gap-2 px-3 pt-2 pb-2">
+              <div className="text-xs text-zinc-500 uppercase tracking-wider mr-auto">
+                Historial · {HISTORIAL_DIAS} días
+              </div>
+              {rojosVisibles.length > 0 && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => ocultar(rojosVisibles.map((r) => r.id as number))}
+                  className="flex items-center gap-1.5 rounded-lg border-2 border-red-500/70 bg-red-500/10 active:bg-red-500/25 text-red-300 font-semibold text-xs px-2.5 py-1.5"
+                >
+                  <EyeOff className="h-3.5 w-3.5" />
+                  Ocultar rojos ({rojosVisibles.length})
+                </button>
+              )}
+              {cantOcultos > 0 && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setVerOcultos((v) => !v)}
+                  className={`flex items-center gap-1.5 rounded-lg border-2 font-semibold text-xs px-2.5 py-1.5 ${
+                    verOcultos
+                      ? "border-yellow-400 text-yellow-400 bg-yellow-400/10"
+                      : "border-zinc-700 text-zinc-400 active:bg-zinc-800"
+                  }`}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  {verOcultos ? "Esconder" : "Ver"} ocultos ({cantOcultos})
+                </button>
+              )}
+            </div>
+
+            {porDia.length === 0 && (
+              <div className="py-8 text-center text-sm text-zinc-500">Todo oculto. Tocá “Ver ocultos” para verlos.</div>
+            )}
+
+            {porDia.map((g) => (
+              <section key={g.dia} className="mb-3">
+                {/* Separador de día: barra amarilla fija arriba mientras se recorre ese día */}
+                <div className="sticky top-0 z-[1] bg-yellow-400 text-black border-y-4 border-black px-3 py-1.5 flex items-center gap-2 shadow-[0_4px_8px_rgba(0,0,0,0.6)]">
+                  <span className="font-extrabold uppercase tracking-wide text-sm">{etiquetaDia(g.dia)}</span>
+                  <span className="ml-auto text-xs font-bold tabular-nums">{g.items.length}</span>
+                </div>
+                <ul className="divide-y divide-zinc-800/70 px-3 pt-1">
+                  {g.items.map((r, i) => {
+                    // verde = con existencia (pedido), rojo = sin existencia, gris = esperando respuesta
+                    const ok = r.estado === "pedido";
+                    const sinEx = r.estado === "s/e";
+                    const oculto = !!r.id && ocultos.has(r.id);
+                    return (
+                      <li
+                        key={`${r.id ?? r.codigo}-${r.hora}-${i}`}
+                        className={`py-2 px-2 -mx-2 rounded ${
+                          ok ? "bg-emerald-950/60" : sinEx ? "bg-red-950/60" : ""
+                        } ${oculto ? "opacity-40" : ""}`}
                       >
-                        {r.codigo}
-                      </span>
-                      <span
-                        className={`tabular-nums font-bold ${
-                          ok ? "text-emerald-300" : sinEx ? "text-red-300" : "text-zinc-300"
-                        }`}
-                      >
-                        {fmtCant(r.cantidad)}
-                      </span>
-                      <span className="text-xs text-zinc-500 tabular-nums">{r.hora}</span>
-                    </div>
-                    {r.nota && (
-                      <div className={`text-xs mt-0.5 pl-7 ${sinEx ? "text-red-300/80" : "text-emerald-300/80"}`}>
-                        {r.nota}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+                        <div className="flex items-center gap-3">
+                          {ok ? (
+                            <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+                          ) : sinEx ? (
+                            <X className="h-4 w-4 text-red-400 shrink-0" />
+                          ) : (
+                            <Loader2 className="h-4 w-4 text-zinc-500 shrink-0 animate-spin" />
+                          )}
+                          <span
+                            className={`font-mono font-semibold break-all flex-1 ${
+                              ok ? "text-emerald-200" : sinEx ? "text-red-200" : "text-zinc-100"
+                            }`}
+                          >
+                            {r.codigo}
+                          </span>
+                          <span
+                            className={`tabular-nums font-bold ${
+                              ok ? "text-emerald-300" : sinEx ? "text-red-300" : "text-zinc-300"
+                            }`}
+                          >
+                            {fmtCant(r.cantidad)}
+                          </span>
+                          <span className="text-xs text-zinc-500 tabular-nums">{r.hora}</span>
+                          {sinEx && r.id && (
+                            <button
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => (oculto ? mostrar(r.id as number) : ocultar([r.id as number]))}
+                              className="-my-1 -mr-1 p-2 rounded text-red-300/80 active:bg-red-500/25"
+                              title={oculto ? "Volver a mostrar" : "Ocultar"}
+                            >
+                              {oculto ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                            </button>
+                          )}
+                        </div>
+                        {r.nota && (
+                          <div className={`text-xs mt-0.5 pl-7 ${sinEx ? "text-red-300/80" : "text-emerald-300/80"}`}>
+                            {r.nota}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
           </>
         )}
-      </div>
 
-      <div className="px-3 pb-4 space-y-3">
+      <div className="px-3 pt-2 pb-4 space-y-3">
         <div className="rounded-lg bg-[#171717] border border-zinc-800 p-3 space-y-1.5">
           <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Notificaciones</p>
           {enApp ? (
@@ -833,7 +1029,7 @@ export default function PickerPage() {
           Cambiar nombre
         </button>
       </div>
-
+      </div>
     </div>
   );
 }
