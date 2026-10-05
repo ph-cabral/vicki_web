@@ -108,7 +108,13 @@ const toHHMM = (iso: string) => {
 const calcEstado = (
   r: Row,
 ): "Normal" | "Ausente" | "Revisar" | "Presente" | "Feriado" => {
-  if (!r.check_in) return r.feriado ? "Feriado" : "Ausente";
+  if (!r.check_in) {
+    if (r.feriado) return "Feriado";
+    // Viajantes (otras provincias) y Directorio no fichan -> no cuentan como ausentes.
+    return ["viajante", "directorio"].includes((r.departamento ?? "").trim().toLowerCase())
+      ? "Normal"
+      : "Ausente";
+  }
   if (!r.check_out) return r.fecha === todayLocal() ? "Presente" : "Revisar";
   if ((r.minutos ?? 0) < 60) return "Revisar";
   return "Normal";

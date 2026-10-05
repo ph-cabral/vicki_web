@@ -118,6 +118,15 @@ const todayLocal = (): string => {
   return `${y}-${m}-${day}`;
 };
 
+// Los viajantes trabajan en otras provincias y NO fichan en el reloj: sin
+// fichada no se los marca "Ausente" (inflaba horas inactivas y faltas). Si
+// fichan igual, o tienen un estado cargado (Vacaciones, Enfermedad, Gira...),
+// todo sigue como siempre.
+// Directorio tampoco marca.
+export const AREAS_NO_FICHAN = ["viajante", "directorio"];
+export const noFichaPorArea = (departamento: string | null | undefined): boolean =>
+  AREAS_NO_FICHAN.includes((departamento ?? "").trim().toLowerCase());
+
 // Estado auto cuando no hay uno guardado en BD. Si el día es feriado (botón
 // "Feriados" en /rrhh/asistencia) y no hay fichaje, no cuenta como falta.
 // Con 1 solo fichaje (sin egreso): "Presente" si es hoy (puede seguir
@@ -125,7 +134,10 @@ const todayLocal = (): string => {
 export const calcEstado = (
   r: ResumenRow,
 ): "Normal" | "Ausente" | "Revisar" | "Presente" | "Feriado" => {
-  if (!r.check_in) return r.feriado ? "Feriado" : "Ausente";
+  if (!r.check_in) {
+    if (r.feriado) return "Feriado";
+    return noFichaPorArea(r.departamento) ? "Normal" : "Ausente";
+  }
   if (!r.check_out) return r.fecha === todayLocal() ? "Presente" : "Revisar";
   if ((r.minutos ?? 0) < 60) return "Revisar";
   return "Normal";
@@ -281,6 +293,8 @@ export function horasPorEmpleado(
 ): HorasEmpleado[] {
   const m = new Map<string, HorasEmpleado>();
   for (const r of rows) {
+    // Quien no ficha por su tarea (viajantes) no se mide contra horas objetivo.
+    if (noFichaPorArea(r.departamento)) continue;
     const tope = resolveTope ? resolveTope(r) : topeMin(r.fecha);
     const min = rrhhMin(r, tope);
     const cur = m.get(r.employee_no);
