@@ -81,6 +81,9 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // cada app consulta sin sesión para ofrecer "Actualizar" (android/comun/Actualizador.java).
   // Se bajan desde el equipo antes de loguearse. Solo archivos planos dentro de /apk/.
   if (method === "GET" && /^\/apk\/[\w.-]+\.(apk|json)$/.test(pathname)) return true;
+  // Código de los widgets de escritorio (ErroresMesa.exe es un lanzador que baja
+  // /widgets/errores_mesa.py al arrancar y cada 2 min; ver widgets/errores-mesa-widget/lanzador.py).
+  if (method === "GET" && /^\/widgets\/[\w.-]+\.py$/.test(pathname)) return true;
   // APIs que el picker necesita, sólo en POST.
   if (
     method === "POST" &&

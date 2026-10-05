@@ -1243,7 +1243,120 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
         conn.commit()
     finally:
         conn.close()
+    try:
+        preasignar_por_cp2()
+    except Exception:  # noqa: BLE001 — sin auto-preasignación la cola sigue
+        pass
     return nuevos
+
+
+# ── AUTO-PREASIGNACIÓN POR CP2 (2026-10-05) ───────────────────────────────
+# CP2 corre en orden inverso: el controlador de mesa cierra el CP2 en Magnus
+# (Ven_PedImpresoCP, CodCentroPrep = 2, CodControlador1/2) y recién ahí el
+# pedido pasa el gate de centros y entra a la cola. El resto del pedido (CP1)
+# lo tiene que controlar el MISMO que cerró el CP2, así que se le preasigna:
+# fila en control_preasignacion con "creadoPor" = AUTO_CP2 -> _reclamar se lo
+# entrega primero a él apenas termine lo actual y no se lo da a nadie más.
+#   · Solo filas de la cola sin asignar, de pedido (nroRemito 0), entradas en
+#     los últimos AUTO_CP2_VENTANA_MIN (si la quitan a mano no se re-crea).
+#   · Nunca pisa una preasignación manual (ON CONFLICT DO NOTHING).
+#   · Solo si el controlador tiene el widget activo (latido dentro de
+#     RESERVA_INACTIVO_MIN); si después deja de estarlo, la auto-preasignación
+#     se borra y el pedido vuelve a la cola general.
+# Magnus: seek por la clustered V_PEDIMPCP_Cla_NroCP (NroMovVenta, CodCentroPrep).
+AUTO_CP2 = "auto CP2"
+AUTO_CP2_VENTANA_MIN = 15
+
+_SQL_CP2_CONTROLADOR = """
+SELECT NroMovVenta, CodControlador1, CodControlador2
+FROM dbo.Ven_PedImpresoCP
+WHERE NroMovVenta IN ({ph}) AND CodCentroPrep = 2
+  AND (CodControlador1 > 0 OR CodControlador2 > 0)
+"""
+
+
+def preasignar_por_cp2() -> int:
+    """Ver AUTO-PREASIGNACIÓN POR CP2. Devuelve cuántas preasignaciones creó."""
+    _asegurar_tabla_reserva()
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        # Auto-preasignaciones de controladores que dejaron el widget.
+        cur.execute(
+            """
+            DELETE FROM deposito.control_preasignacion p
+            WHERE p."creadoPor" = %(auto)s
+              AND NOT EXISTS (
+                    SELECT 1 FROM deposito.control_operario_latido l
+                    WHERE l."nroOperario" = p."nroOperario"
+                      AND l."vistoEn" > now() - make_interval(mins => %(inact)s))
+            """,
+            {"auto": AUTO_CP2, "inact": RESERVA_INACTIVO_MIN},
+        )
+        cur.execute(
+            """
+            SELECT ca."nroPedido"
+            FROM deposito.control_asignacion ca
+            WHERE ca."asignadoEn" IS NULL AND ca."nroRemito" = 0
+              AND ca."createdAt" > now() - make_interval(mins => %s)
+              AND NOT EXISTS (
+                    SELECT 1 FROM deposito.control_preasignacion p
+                    WHERE p."nroPedido" = ca."nroPedido" AND p."nroRemito" = 0)
+            """,
+            (AUTO_CP2_VENTANA_MIN,),
+        )
+        peds = sorted({int(r[0]) for r in cur.fetchall()})
+        cur.execute(
+            'SELECT "nroOperario", nombre FROM deposito.control_operario_latido '
+            'WHERE "vistoEn" > now() - make_interval(mins => %s)',
+            (RESERVA_INACTIVO_MIN,),
+        )
+        activos = {int(n): (nom or "").strip() or None for n, nom in cur.fetchall()}
+        conn.commit()
+    finally:
+        conn.close()
+    if not peds or not activos:
+        return 0
+
+    ctrl: dict[int, int] = {}
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        for i in range(0, len(peds), _PURGA_CHUNK):
+            chunk = peds[i : i + _PURGA_CHUNK]
+            cur.execute(_SQL_CP2_CONTROLADOR.format(ph=",".join("?" for _ in chunk)), chunk)
+            for nro, c1, c2 in cur.fetchall():
+                op = int(c1) if c1 and int(c1) > 0 else int(c2 or 0)
+                if op in activos:
+                    ctrl[int(nro)] = op
+    finally:
+        conn.close()
+    if not ctrl:
+        return 0
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        creadas = 0
+        for nro, op in ctrl.items():
+            cur.execute(
+                """
+                INSERT INTO deposito.control_preasignacion
+                    ("nroPedido", "nroRemito", "nroOperario", "asignadoA", "codCliente", cliente, "creadoPor")
+                SELECT ca."nroPedido", 0, %s, %s, ca."codCliente", ca.cliente, %s
+                FROM deposito.control_asignacion ca
+                WHERE ca."nroPedido" = %s AND ca."nroRemito" = 0 AND ca."asignadoEn" IS NULL
+                ON CONFLICT ("nroPedido", "nroRemito") DO NOTHING
+                """,
+                (op, activos[op] or fetch_operario_nombre(op), AUTO_CP2, nro),
+            )
+            creadas += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return creadas
 
 
 _cola_refrescada = 0.0   # monotonic del último refrescar_cola de este proceso
@@ -1906,7 +2019,19 @@ def estado_grupos(nro_operario: int) -> dict:
         pre = preasignado_listo(nro_operario)
     except Exception:  # noqa: BLE001 — informativo, no rompe el polling
         pre = {"preasignados": [], "preasignadoListo": False}
-    return {"grupos": grupos, **pre}
+    # CAMBIO AUTOMÁTICO (2026-10-05): la unidad que el operario tiene asignada
+    # y si ya cerró en Magnus (seek por PK). El widget, al verla cerrada, pide
+    # la siguiente solo. None si nunca reclamó nada.
+    actual = None
+    try:
+        activa = _fetch_asignacion_activa(nro_operario)
+        if activa is not None:
+            actual = {"nroPedido": int(activa["nroPedido"]),
+                      "nroRemito": int(activa.get("nroRemito") or 0),
+                      "cerrado": bool(_fetch_asignacion_cerrada(activa))}
+    except Exception:  # noqa: BLE001
+        actual = None
+    return {"grupos": grupos, **pre, "actual": actual}
 
 
 def decidir_grupo(nro_operario: int, cod_cliente: int, accion: str) -> dict:
@@ -2521,6 +2646,14 @@ def preasignado_listo(nro_operario: int) -> dict:
 
     pres = _leer()
     if not pres:
+        # Puede haber cerrado un CP2 recién: refrescar crea la
+        # auto-preasignación (preasignar_por_cp2) y el widget lo pide solo.
+        try:
+            refrescar_cola_si_hace_falta(30)
+            pres = _leer()
+        except Exception:  # noqa: BLE001
+            pass
+    if not pres:
         return {"preasignados": [], "preasignadoListo": False}
     if not any(p["listo"] for p in pres):
         # Puede haber terminado de armarse y la cola no se refrescó todavía.
@@ -2823,18 +2956,24 @@ def fetch_cola_diag(limit: int = 20) -> dict:
 # ══════════════════════════════════════════════════════════════════════════
 _TZ_LOCAL = "America/Argentina/Buenos_Aires"
 
+# CP2 (CodCentroPrep = 2) fuera: ese centro controla y cierra en Magnus ANTES
+# de que el pedido entre a la cola (orden inverso), así que su controlador no
+# es un control de mesa y salía como fila roja "no asignado". Los pedidos
+# solo-CP2 nunca llegan a control_asignacion. Pedidos mixtos: cuenta la fila CP1.
 _SQL_CONTROLES_DIA = """
 SELECT cab.NroMovVenta, cp.CodControlador1, cp.CodControlador2, cab.FechaCierre, cab.HoraCierre
 FROM dbo.VenFer_PedidoCabecera cab
 JOIN dbo.Ven_PedImpresoCP cp ON cp.NroMovVenta = cab.NroMovVenta
 WHERE cab.FechaCierre = ?
+  AND cp.CodCentroPrep <> 2
   AND (cp.CodControlador1 > 0 OR cp.CodControlador2 > 0)
 """
 
 _SQL_CONTROLADORES_PEDIDOS = """
 SELECT NroMovVenta, CodControlador1, CodControlador2
 FROM dbo.Ven_PedImpresoCP
-WHERE NroMovVenta IN ({ph}) AND (CodControlador1 > 0 OR CodControlador2 > 0)
+WHERE NroMovVenta IN ({ph}) AND CodCentroPrep <> 2
+  AND (CodControlador1 > 0 OR CodControlador2 > 0)
 """
 
 
