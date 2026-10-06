@@ -393,7 +393,7 @@ export function AsignarPedidosTab() {
   const filtradas = useMemo(() => {
     const qp = fPedido.trim();
     const qc = fCliente.trim().toLowerCase();
-    return unidades.filter((u) => {
+    const filtrado = unidades.filter((u) => {
       if (fEstado !== "todos" && u.estado !== fEstado) return false;
       if (qp && !String(u.nroPedido).includes(qp) && !(u.nroRemito && String(u.nroRemito).includes(qp)))
         return false;
@@ -404,7 +404,26 @@ export function AsignarPedidosTab() {
       }
       return true;
     });
+    // Agrupa por cliente; grupos con rojo primero, luego amarillo, luego el resto (orden original).
+    const sev = (u: Unidad) => {
+      const d = u.estado === "listo" ? diasEspera(u.desde) : 0;
+      return d >= 4 ? 0 : d >= 2 ? 1 : 2;
+    };
+    const grupos = new Map<string, { filas: Unidad[]; rank: number; orden: number }>();
+    filtrado.forEach((u, i) => {
+      const k = u.codCliente != null ? `c${u.codCliente}` : u.cliente ? `n${u.cliente}` : `p${claveDe(u)}`;
+      const g = grupos.get(k) ?? { filas: [], rank: 2, orden: i };
+      g.filas.push(u);
+      g.rank = Math.min(g.rank, sev(u));
+      grupos.set(k, g);
+    });
+    return [...grupos.values()]
+      .sort((a, b) => a.rank - b.rank || a.orden - b.orden)
+      .flatMap((g) => g.filas.map((u, i) => ({ u, i })).sort((a, b) => sev(a.u) - sev(b.u) || a.i - b.i).map((x) => x.u));
   }, [unidades, fPedido, fCliente, fEstado]);
+
+  const claveCliente = (u: Unidad) =>
+    u.codCliente != null ? `c${u.codCliente}` : u.cliente ? `n${u.cliente}` : `p${claveDe(u)}`;
 
   const nPre = unidades.filter((u) => u.preasignado).length;
 
@@ -571,14 +590,15 @@ export function AsignarPedidosTab() {
                 </tr>
               </thead>
               <tbody>
-                {filtradas.map((u) => {
+                {filtradas.map((u, idx) => {
+                  const nuevoGrupo = idx > 0 && claveCliente(filtradas[idx - 1]) !== claveCliente(u);
                   const listo = u.estado === "listo";
                   const dias = listo ? diasEspera(u.desde) : 0;
                   const vencido = dias >= 4 ? "rojo" : dias >= 2 ? "amarillo" : null;
                   return (
                     <tr
                       key={claveDe(u)}
-                      className={`border-b border-zinc-800/60 transition-colors ${
+                      className={`border-b border-zinc-800/60 transition-colors ${nuevoGrupo ? "border-t-2 border-t-zinc-600" : ""} ${
                         vencido === "rojo"
                           ? "bg-red-500/25 hover:bg-red-500/30 shadow-[inset_3px_0_0_0_#ef4444]"
                           : vencido === "amarillo"
