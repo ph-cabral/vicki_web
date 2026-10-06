@@ -80,6 +80,13 @@ const fmtDesde = (iso: string | null) => {
   return `${dia} ${hora}`;
 };
 
+// Antigüedad en días desde que el pedido está esperando (solo fecha → medianoche AR).
+const diasEspera = (iso: string | null) => {
+  if (!iso) return 0;
+  const t = new Date(iso.length <= 10 ? `${iso}T00:00:00-03:00` : iso).getTime();
+  return Number.isNaN(t) ? 0 : (Date.now() - t) / 86_400_000;
+};
+
 const labelPre = (p: Preasignado | null) =>
   !p ? "" : p.urgente ? "Urgente · primero libre" : `${p.asignadoA ?? "Operario"} · ${p.nroOperario}`;
 
@@ -566,11 +573,17 @@ export function AsignarPedidosTab() {
               <tbody>
                 {filtradas.map((u) => {
                   const listo = u.estado === "listo";
+                  const dias = listo ? diasEspera(u.desde) : 0;
+                  const vencido = dias >= 4 ? "rojo" : dias >= 2 ? "amarillo" : null;
                   return (
                     <tr
                       key={claveDe(u)}
                       className={`border-b border-zinc-800/60 transition-colors ${
-                        listo
+                        vencido === "rojo"
+                          ? "bg-red-500/25 hover:bg-red-500/30 shadow-[inset_3px_0_0_0_#ef4444]"
+                          : vencido === "amarillo"
+                          ? "bg-yellow-400/25 hover:bg-yellow-400/30 shadow-[inset_3px_0_0_0_#facc15]"
+                          : listo
                           ? "bg-sky-500/[0.07] hover:bg-sky-500/[0.12] shadow-[inset_3px_0_0_0_#38bdf8]"
                           : "bg-yellow-400/[0.05] hover:bg-yellow-400/[0.10] shadow-[inset_3px_0_0_0_#facc15]"
                       }`}
