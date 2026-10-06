@@ -145,7 +145,7 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
 
   const [vista, setVista] = useState<TopVista>("vendedores");
   const [metrica, setMetrica] = useState<Modo>("pesos");
-  const [items, setItems] = useState<TopItem[]>([]);
+  const [itemsTodos, setItems] = useState<TopItem[]>([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState(false);
@@ -200,6 +200,10 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
   }, [cargar]);
 
   const valorDe = (i: TopItem) => (modo === "pesos" ? i.monto : i.unidades);
+  // Sólo se listan los que vendieron algo (neto > 0) en la métrica elegida:
+  // un vendedor en cero o negativo (sólo notas de crédito) no es parte del
+  // ranking. `itemsTodos` queda para el modal de objetivos.
+  const items = itemsTodos.filter((i) => valorDe(i) > 0);
   // Sólo los valores POSITIVOS entran en el líder y en el total: el ranking de
   // vendedores puede traer a alguien en cero o en negativo por una nota de
   // crédito (ver fetch_top_vendedores en bulones.py), y sumarlo achicaría el
@@ -594,7 +598,7 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
       {modal && (
         <ObjetivoModal
           lineaNombre={linea.nombre}
-          vendedores={items
+          vendedores={itemsTodos
             .filter((i) => i.codigo != null)
             .map((i) => ({ codigo: i.codigo as number, nombre: i.etiqueta }))}
           objetivos={obj.objetivos}

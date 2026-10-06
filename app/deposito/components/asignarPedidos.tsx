@@ -67,11 +67,17 @@ const fmtDesde = (iso: string | null) => {
     return `${d}/${m}`;
   }
   const dt = new Date(iso);
-  const hoy = new Date();
-  const hora = dt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
-  return dt.toDateString() === hoy.toDateString()
-    ? hora
-    : `${dt.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" })} ${hora}`;
+  const hora = dt.toLocaleTimeString("es-AR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Argentina/Buenos_Aires",
+  });
+  const dia = dt.toLocaleDateString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "America/Argentina/Buenos_Aires",
+  });
+  return `${dia} ${hora}`;
 };
 
 const labelPre = (p: Preasignado | null) =>

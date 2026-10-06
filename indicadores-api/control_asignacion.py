@@ -225,7 +225,7 @@ pregunta Tomar/Esperar cuando el cliente tiene unidades en preparación y
 vuelve a preguntar cada vez que se suma una lista. Ver el bloque "RESERVA POR
 CLIENTE" más abajo (evaluar_reservas, _reclamar, decidir_grupo, estado_grupos).
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from db import get_connection
 from db_pg import get_pg_connection
@@ -952,7 +952,7 @@ WHERE rmt.CompCodigo = 71                 -- remito de acopio
         -- FechaArmado > 0 dejaba la cola de acopio siempre vacía.
         OR (ISNULL(rmt.FechaArmado, 0) = 0 AND rmt.EstadoRemito IN (1, 2)
             AND ISNULL(rmt.OTId, 0) > 0
-            AND rmt.FecRegistracion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias})
+            AND rmt.FecRegistracion >= DATEDIFF(DAY, '1800-12-28', GETDATE()) - {dias_reg})
       )
   AND EXISTS (
         SELECT 1 FROM EVERWEAR.dbo.VenFer_RmtoReng rr
@@ -964,6 +964,11 @@ ORDER BY COALESCE(cab.Prioridad, 999) ASC, rmt.NroMovVenta ASC
 # Ventana (días desde el registro del remito) en la que una vuelta con la OT
 # cumplida en WMS pero FechaArmado = 0 en Magnus entra a la cola de mesa.
 ACOPIO_WMS_DIAS = 30
+# 2026-10-06: la ventana se mide por la fecha en que se CUMPLIÓ la OT en WMS
+# (ACOPIO_WMS_DIAS, filtro en Python), no por el registro del remito: una
+# vuelta registrada hace 40-80 días y armada hoy (ej. pedidos 750258/750326,
+# cliente 13282) quedaba afuera. ACOPIO_REG_DIAS es sólo el tope del SQL.
+ACOPIO_REG_DIAS = 365
 
 
 def _wms_ots_cumplidas(ot_ids) -> dict[int, dict]:
@@ -1017,7 +1022,7 @@ def fetch_acopio_vueltas_espera_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> l
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         cur.execute(SQL_MAGNUS_ACOPIO_ESPERA_CONTROL.format(
-            limit=limit, dias=int(ACOPIO_WMS_DIAS)))
+            limit=limit, dias_reg=int(ACOPIO_REG_DIAS)))
         cols = [c[0] for c in cur.description]
         filas = [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:
@@ -1039,6 +1044,8 @@ def fetch_acopio_vueltas_espera_control(limit: int = MAGNUS_ABIERTOS_LIMIT) -> l
             wms = cumplidas.get(int(d["Ot"])) if d.get("Ot") else None
             if wms is None:
                 continue          # OT sin cumplir: todavía se está armando
+            if wms["fin"] is not None and wms["fin"] < datetime.now() - timedelta(days=ACOPIO_WMS_DIAS):
+                continue          # cumplida hace mucho: basura vieja, no es de hoy
             fecha = wms["fin"]
         ubic = d.get("Ubicacion")
         if not (ubic and str(ubic).strip()) and wms:
@@ -2445,7 +2452,9 @@ def fetch_tablero_asignacion() -> dict:
             "codCliente": r.get("codCliente"), "prioridad": r.get("prioridad"),
             "compCodigo": r.get("compCodigo"), "ubicacion": r.get("ubicacion"),
             "armador": r.get("nombreArmador"),
-            "desde": r["createdAt"].isoformat() if r.get("createdAt") else None,
+            # createdAt es timestamp SIN zona guardado en UTC (now() del server): se
+            # marca como UTC para que el navegador lo pase a hora local.
+            "desde": r["createdAt"].replace(tzinfo=timezone.utc).isoformat() if r.get("createdAt") else None,
         })
     for u in prep:
         k = (u["nroPedido"], u["nroRemito"])
