@@ -150,7 +150,7 @@ def _detectar_col_comprobante(cur):
     return _col_comprobante
 
 
-def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
+def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False, por_registracion=False):
     """Agrega por artículo los remitos de ingreso ya concretados.
 
     desde = 'YYYY-MM-DD' (o None → hoy - INGRESOS_DIAS_DEFAULT): solo remitos
@@ -160,7 +160,13 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
     hasta = 'YYYY-MM-DD' opcional: acota también por arriba (FecComprobante
     <= hasta). Usado por /compras/metricas para acotar a un mes calendario
     exacto (sin esto, un remito de un mes futuro también contaría).
-    solo_oc = True: recorte viejo, solo remitos ligados a una OC."""
+    solo_oc = True: recorte viejo, solo remitos ligados a una OC.
+    por_registracion = True (2026-10-07): el rango [desde, hasta] se aplica a
+    FecRegistracion (fecha en que se registró el remito) en vez de
+    FecComprobante, y esa misma fecha es la que se devuelve como fecha de cada
+    remito / último ingreso. Es el criterio de la planilla del sector compras
+    (hoja RTO09: remitos por "Fecha Registración" del mes). Default False →
+    todas las demás vistas siguen por FecComprobante."""
     if desde:
         try:
             corte = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
@@ -177,7 +183,8 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
             hasta_dias = (hasta_date - BASE_DATE).days
         except ValueError:
             hasta_dias = None
-    _hasta_cond = f"AND cab.FecComprobante <= {hasta_dias}" if hasta_dias is not None else ""
+    _col_fecha = "FecRegistracion" if por_registracion else "FecComprobante"
+    _hasta_cond = f"AND cab.{_col_fecha} <= {hasta_dias}" if hasta_dias is not None else ""
     _oc_cond = "AND cab.NroOrdCompra <> 0" if solo_oc else ""
 
     conn = get_connection("EVERWEAR")
@@ -200,6 +207,7 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
             cab.CompCentro               AS CompCentro,
             cab.CompNumero               AS CompNumero,
             cab.FecComprobante           AS FecComprobante,
+            cab.FecRegistracion          AS FecRegistracion,
             cab.NroOrdCompra             AS NroOrdCompra,
             {_comp_sel}                  AS CodComprobante,
             LTRIM(RTRIM(r.CodArticulo))  AS CodArticu,
@@ -208,7 +216,7 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
         FROM EVERWEAR.dbo.Com_RemitoRenglones r
         INNER JOIN EVERWEAR.dbo.Com_RemitoCabecera cab ON cab.NroMovRemito = r.NroMovRemito
         LEFT  JOIN EVERWEAR.dbo.Com_Proveedores    pr  ON pr.CodProveed   = cab.CodProveed
-        WHERE cab.FecComprobante >= {corte_dias}
+        WHERE cab.{_col_fecha} >= {corte_dias}
           {_hasta_cond}
           {_comp_cond}
           {_oc_cond}
@@ -232,7 +240,9 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
             cod = (str(d.get("CodArticu") or "")).strip()
             if not cod:
                 continue
-            fecha = _fecha_comprobante(d.get("FecComprobante"))
+            fecha = _fecha_comprobante(
+                d.get("FecRegistracion") if por_registracion else d.get("FecComprobante")
+            )
             if fecha is None:
                 continue
             cant = float(_safe(d.get("Cantidad")) or 0)
@@ -288,6 +298,7 @@ def fetch_remitos_ingreso(desde=None, hasta=None, solo_oc=False):
             "hasta": (BASE_DATE + timedelta(days=hasta_dias)).isoformat() if hasta_dias is not None else None,
             # diagnóstico del recorte (lo consumen las vistas para el aviso)
             "soloOc": bool(solo_oc),
+            "porRegistracion": bool(por_registracion),
             "colComprobante": col_comp or None,
             "comprobanteWarn": not col_comp,
             "comprobantes": CODIGOS_REMITO_INGRESO if col_comp else [],

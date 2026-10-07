@@ -72,16 +72,18 @@ import { abrirPicker } from "@/components/ui/abrirPicker";
 //   preparado.faltante_control (/api/compras/faltantes-arribo). Por defecto
 //   un bucket con TODOS sus renglones ya con fecha de arribo se oculta de esta
 //   vista — botón "Ver con arribo" para corroborar los que ya se pasaron.
-//   Cargar esa fecha es además el "pase a compras": queda registrado con la
-//   foto del bucket en preparado.faltante_pase_compras y se consulta por mes
-//   en /compras/pases (comparación fin de mes: pasado a compras vs comprado).
 //   Reemplaza a /deposito/faltantes/control (ahora redirige acá). "¿Cliente lo
 //   quiere?" se sigue decidiendo en /ventas/faltantes, sin cambios.
 //   El consumo por día se guarda solo (preparado.faltante_oc_consumo).
 // ──────────────────────────────────────────────────────────────────────────────
 
 type Estado = "completo" | "incompleto" | "sin_orden" | "entregado";
-type Filtro = "todos" | Estado;
+// Estado "de vista": el del backend + "oc_recibida" (2026-10-07) = sin OC viva
+// (sin_orden) pero con una OC emitida en el período ya recibida/cerrada — lo que
+// el sector compras ve como OC en su hoja OC09. Solo afecta chips/filtro y la
+// etiqueta; el color de fila y la cobertura siguen por `estado` (backend).
+type EstadoVista = Estado | "oc_recibida";
+type Filtro = "todos" | EstadoVista;
 // Origen del artículo (r.tipoArticulo, Magnus): el botón cicla
 // Nacionales → Importados → Otros (sin tipo cargado o tipo desconocido; se
 // saltea si no hay ninguno). NO se muestran acá: Fábrica (tipo Fabril, o
@@ -141,14 +143,26 @@ interface Row {
   // ahora manda siempre que haya OC vigente en Magnus. `fechaArribo` queda
   // solo como último fallback cuando el artículo se quedó sin OC pendiente.
   fechaArribo: string | null; // más vieja cargada a mano entre los renglones del bucket
-  tieneArribo: boolean; // true = TODOS los renglones del bucket ya tienen el pase a compras registrado
+  tieneArribo: boolean; // true = TODOS los renglones del bucket ya tienen fecha de arribo
   // Ingresos por remito del PERÍODO (no del día): total del artículo entre el
   // ancla del cruce y el "hasta" del rango. Entran todos los tipos de remito
   // de ingreso (59/60/61/160/590), no solo los que cuelgan de una OC.
   ingresado: number;
   remitos: { nro: string; fecha: string; cant: number }[];
   ultimoIngreso: string | null;
+  // OC emitidas en el período (recibidas o no; comprobante 70, comprador 1),
+  // por artículo. null = ninguna en el rango. No entra en la cobertura.
+  ocMes: {
+    pedida: number;
+    recibida: number;
+    nros: string[];
+    fechaOC: string | null;
+    fechaEntrega: string | null;
+  } | null;
 }
+
+const estadoVista = (r: Pick<Row, "estado" | "ocMes">): EstadoVista =>
+  r.estado === "sin_orden" && r.ocMes ? "oc_recibida" : r.estado;
 
 // Porción extraordinaria de un bucket, por CLIENTE (2026-09-16) — ver
 // `extraordinarios` en GET /api/compras/faltantes-consumo, y sql/compras_
@@ -221,6 +235,7 @@ const FILTROS: { key: Filtro; label: string }[] = [
   { key: "completo", label: "Cubiertos" },
   { key: "incompleto", label: "Parciales" },
   { key: "sin_orden", label: "Sin OC" },
+  { key: "oc_recibida", label: "OC recibida" },
   { key: "entregado", label: "Entregados" },
 ];
 
@@ -520,9 +535,19 @@ function Tabla({
                     {r.stock > 0 ? fmtNum(r.stock) : "—"}
                   </span>
                   <span className="text-zinc-600">/</span>
-                  <span className={r.ocTotal > 0 ? cubiertoCls[r.estado] : "text-zinc-600"}>
-                    {r.ocTotal > 0 ? fmtNum(r.ocTotal) : "—"}
-                  </span>
+                  {r.ocTotal > 0 ? (
+                    <span className={cubiertoCls[r.estado]}>{fmtNum(r.ocTotal)}</span>
+                  ) : r.ocMes ? (
+                    // Sin OC viva, pero hay OC emitida en el período ya recibida/cerrada.
+                    <span
+                      className="text-sky-300"
+                      title={`OC del período ya recibida: pedidas ${fmtNum(r.ocMes.pedida)}, recibidas ${fmtNum(r.ocMes.recibida)}\n${r.ocMes.nros.join(", ")}${r.ocMes.fechaOC ? `\nEmitida ${fmtAr(r.ocMes.fechaOC)}` : ""}`}
+                    >
+                      {fmtNum(r.ocMes.pedida)}
+                    </span>
+                  ) : (
+                    <span className="text-zinc-600">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-red-300/90">
                   {r.descubierto > 0 ? fmtNum(r.descubierto) : "—"}
@@ -933,25 +958,74 @@ export default function ComprasFaltantesPage() {
       const res = await fetch("/api/compras/faltantes-arribo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // `snapshot`: foto del bucket al momento del pase — el backend la
-        // guarda en preparado.faltante_pase_compras (registro de faltantes que
-        // pasan a compras, para comparar a fin de mes contra lo comprado en
-        // /compras/pases). No se recalcula después.
+        body: JSON.stringify({
+          fecha: row.fecha,
+          codArticulo: row.CodArticulo,
+          codCliente: row.codCliente,
+          clienteNombre: row.clienteNombre,
+          cantidad: row.cantidad,
+          comprar,
+        }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setExtraordinarios((rs) =>
+        rs.map((r) => (extraKey(r) === extraKey(row) ? { ...r, comprar: prev } : r)),
+      );
+      setError("No se pudo guardar la decisión de comprar");
+    }
+  }, []);
+
+  // Desmarcar (reverso): borra la marca de ese cliente — la cantidad vuelve a
+  // sumar al faltante normal del artículo en la próxima lectura.
+  const desmarcarExtraordinario = useCallback(
+    (row: ExtraRow) => {
+      const k = extraKey(row);
+      setLeavingExtra((m) => ({ ...m, [k]: "left" }));
+      window.setTimeout(async () => {
+        setExtraordinarios((rs) => rs.filter((r) => extraKey(r) !== k));
+        setLeavingExtra((m) => {
+          const n = { ...m };
+          delete n[k];
+          return n;
+        });
+        try {
+          const res = await fetch(
+            `/api/compras/faltantes-extraordinario?fecha=${encodeURIComponent(row.fecha)}` +
+              `&codArticulo=${encodeURIComponent(row.CodArticulo)}` +
+              `&codCliente=${encodeURIComponent(row.codCliente)}`,
+            { method: "DELETE" },
+          );
+          if (!res.ok) throw new Error();
+        } catch {
+          setError("No se pudo desmarcar");
+        } finally {
+          await load();
+        }
+      }, EXIT_MS);
+    },
+    [load],
+  );
+
+  // Carga/borra la fecha de arribo del bucket (artículo+día). El fan-out por
+  // renglón a preparado.faltante_control lo hace el backend (ver
+  // /api/compras/faltantes-arribo) — acá solo se actualiza optimista y se
+  // revierte si falla. Reemplaza a /deposito/faltantes/control.
+  const guardarArribo = useCallback(async (row: Row, fechaArribo: string | null) => {
+    const prev = { fechaArribo: row.fechaArribo, tieneArribo: row.tieneArribo };
+    setRows((rs) =>
+      rs.map((r) =>
+        rowKey(r) === rowKey(row) ? { ...r, fechaArribo, tieneArribo: !!fechaArribo } : r,
+      ),
+    );
+    try {
+      const res = await fetch("/api/compras/faltantes-arribo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fecha: row.fecha,
           codArticulo: row.CodArticulo,
           fechaArribo,
-          snapshot: {
-            nombre: row.Nombre,
-            proveedor: row.Proveedor,
-            linea: row.Linea == null ? null : String(row.Linea),
-            faltan: row.faltan,
-            descubierto: row.descubierto,
-            ocTotal: row.ocTotal,
-            stock: row.stock,
-            importe: row.importe,
-            importacion: row.importacion,
-          },
         }),
       });
       if (!res.ok) throw new Error();
@@ -1062,8 +1136,8 @@ export default function ComprasFaltantesPage() {
   );
 
   const conteo = useMemo(() => {
-    const c = { todos: porArticuloOrigen.length, completo: 0, incompleto: 0, sin_orden: 0, entregado: 0 };
-    for (const r of porArticuloOrigen) c[r.estado]++;
+    const c = { todos: porArticuloOrigen.length, completo: 0, incompleto: 0, sin_orden: 0, oc_recibida: 0, entregado: 0 };
+    for (const r of porArticuloOrigen) c[estadoVista(r)]++;
     return c as Record<Filtro, number>;
   }, [porArticuloOrigen]);
 
@@ -1084,7 +1158,7 @@ export default function ComprasFaltantesPage() {
     const base =
       filtro === "todos"
         ? porArticuloOrigen.filter((r) => r.estado !== "completo")
-        : porArticuloOrigen.filter((r) => r.estado === filtro);
+        : porArticuloOrigen.filter((r) => estadoVista(r) === filtro);
 
     const provImporte = new Map<string, number>();
     const artImporte = new Map<string, number>();

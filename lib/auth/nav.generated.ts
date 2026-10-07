@@ -15,10 +15,6 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/compras/faltantes"
     },
     {
-      "label": "Pases",
-      "href": "/compras/pases"
-    },
-    {
       "label": "Planificación",
       "href": "/compras/planificacion"
     },

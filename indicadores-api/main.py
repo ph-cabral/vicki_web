@@ -36,7 +36,7 @@ from ot_reposicion import (
 # OT de reposición vivas y no cumplidas — marca en /picking (sólo lectura).
 from repo_en_curso import fetch_repo_en_curso
 from compras import (
-    fetch_ordenes_pendientes, fetch_faltantes_marcados_mes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
+    fetch_ordenes_pendientes, fetch_faltantes_marcados_mes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango, fetch_ordenes_rango_estado,
     fetch_compras_valorizado,
     fetch_consumo_articulo, fetch_consumo_articulos, fetch_consumo_lineas,
     fetch_lineas, fetch_lineas_por_articulos,
@@ -761,6 +761,7 @@ def compras_ingresos(
     desde: str | None = Query(default=None),
     hasta: str | None = Query(default=None),
     soloOc: int = Query(default=0),
+    registracion: int = Query(default=0),
 ):
     """Remitos de ingreso de mercadería ya concretados (Com_RemitoCabecera/
     Renglones), agregado por artículo. Desde 2026-09-03 entran TODOS los tipos
@@ -771,9 +772,12 @@ def compras_ingresos(
     Ingresado) y /ventas/faltantes ("Tabla 2": confirma que un renglón con
     fecha de arribo YA llegó físicamente).
     `desde`='YYYY-MM-DD' (default: hoy-60). `hasta`='YYYY-MM-DD' opcional
-    (para /compras/metricas: acotar a un mes calendario)."""
+    (para /compras/metricas: acotar a un mes calendario).
+    `registracion=1` (2026-10-07): el rango se aplica a la fecha de REGISTRACIÓN
+    del remito en vez de la fecha de comprobante (criterio de la planilla RTO09
+    del sector compras). Lo usa /compras/faltantes."""
     try:
-        return fetch_remitos_ingreso(desde, hasta, solo_oc=bool(soloOc))
+        return fetch_remitos_ingreso(desde, hasta, solo_oc=bool(soloOc), por_registracion=bool(registracion))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
@@ -792,6 +796,24 @@ def compras_ordenes_mes(
     Para /compras/metricas: funnel faltantes del mes → con OC ese mes."""
     try:
         return fetch_ordenes_articulos_rango(desde, hasta, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Compras: OC hechas en un rango, por artículo, con pedida/recibida ───────
+@app.get("/compras/ordenes-mes-estado")
+def compras_ordenes_mes_estado(
+    desde: str = Query(...),
+    hasta: str = Query(...),
+    fabril: int = Query(default=0),
+    comp: int | None = Query(default=None),
+    comprador: int | None = Query(default=None),
+):
+    """Por artículo: CantPedida, CantRecibida y NroOCs de las OC hechas en
+    [desde, hasta] (FecMovim de la cabecera), recibidas o no. Para
+    /compras/faltantes: mostrar la OC del período aunque ya esté cumplida (la
+    hoja OC09 del sector compras)."""
+    try:
+        return fetch_ordenes_rango_estado(desde, hasta, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

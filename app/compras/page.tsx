@@ -482,7 +482,7 @@ export default function ComprasMetricasPage() {
   // números) / ingreso (y sus remitos). Los datos se piden recién al apretar el
   // botón (/api/compras/detalle-mes) — es la consulta más pesada de la vista y
   // no tiene sentido pagarla en cada carga de página. El .xlsx se arma en el
-  // browser, mismo patrón que /compras/pases.
+  // browser.
   const [exportando, setExportando] = useState(false);
 
   const exportar = useCallback(async () => {

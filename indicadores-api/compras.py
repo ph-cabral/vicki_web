@@ -445,6 +445,97 @@ def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool =
         conn.close()
 
 
+# ── OC HECHAS en un rango, por artículo, con pedida / recibida y números ────
+# 2026-10-07 — para /compras/faltantes: que el artículo muestre la OC emitida en
+# el período AUNQUE ya esté recibida (cumplida), igual que la hoja OC09 del sector
+# compras (OC por FecMovim de la cabecera, sin canceladas). Mismo recorte que
+# SQL_OC_RANGO (+ CantidadCumplida y el número impreso de la OC). La "viva" de
+# /compras/ordenes-pendientes sigue aparte: acá NO importa si queda saldo.
+SQL_OC_RANGO_ESTADO = """
+SELECT
+    cab.FecMovim                         AS FecMovim,
+    cab.CompCentro                       AS CompCentro,
+    cab.CompNumero                       AS CompNumero,
+    LTRIM(RTRIM(r.CodArticulo))          AS CodArticu,
+    r.Cantidad                           AS Cantidad,
+    ISNULL(r.CantidadCumplida, 0)        AS Cumplida,
+    r.FecEntregaPactada                  AS FechaEntrega
+FROM EVERWEAR.dbo.Com_OrdCompRenglones r
+INNER JOIN EVERWEAR.dbo.Com_OrdCompCabecera cab ON cab.NroOrdCompra = r.NroOrdCompra
+{_join_tipo}
+WHERE cab.FecMovim BETWEEN {_d1} AND {_d2}
+  {_excl}
+  {_comp}
+  {_tipo}
+"""
+
+
+def fetch_ordenes_rango_estado(desde: str, hasta: str, incluir_fabril: bool = False, comp=None, comprador=None):
+    """Por artículo, lo pedido y lo recibido de las OC hechas en [desde, hasta]
+    (FecMovim de la cabecera): CantPedida, CantRecibida, NroOCs (formato impreso
+    '0001-00015088'), FechaOC (más temprana) y FechaEntrega (más temprana
+    pactada). Una fila por artículo. El rango va EN EL SQL (literales int)."""
+    d1 = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
+    d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
+
+    sql = SQL_OC_RANGO_ESTADO.format(
+        _join_tipo=_JOIN_TIPO, _excl=_EXCL,
+        _comp=_cond_comp_comprador(comp, comprador) or _COMP,
+        _tipo=_cond_tipo(incluir_fabril),
+        _d1=_dias(d1), _d2=_dias(d2),
+    )
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+
+        agg: dict[str, dict] = {}
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            cod = (str(d.get("CodArticu") or "")).strip()
+            if not cod:
+                continue
+            nro = _nro_comp(d.get("CompCentro"), d.get("CompNumero"))
+            fmov = _fecha_entrega(d.get("FecMovim"))
+            fent = _fecha_entrega(d.get("FechaEntrega"))
+            a = agg.get(cod)
+            if not a:
+                a = {
+                    "CodArticulo": cod,
+                    "CantPedida": 0.0,
+                    "CantRecibida": 0.0,
+                    "NroOCs": [],
+                    "FechaOC": fmov,
+                    "FechaEntrega": fent,
+                }
+                agg[cod] = a
+            a["CantPedida"] += float(_safe(d.get("Cantidad")) or 0)
+            a["CantRecibida"] += float(_safe(d.get("Cumplida")) or 0)
+            if nro and nro not in a["NroOCs"]:
+                a["NroOCs"].append(nro)
+            if fmov and (not a["FechaOC"] or fmov < a["FechaOC"]):
+                a["FechaOC"] = fmov
+            if fent and (not a["FechaEntrega"] or fent < a["FechaEntrega"]):
+                a["FechaEntrega"] = fent
+
+        rows = sorted(agg.values(), key=lambda x: x["CodArticulo"])
+        for r in rows:
+            r["CantPedida"] = round(r["CantPedida"], 2)
+            r["CantRecibida"] = round(r["CantRecibida"], 2)
+            r["NroOCs"].sort()
+        return {
+            "total": len(rows),
+            "rows": rows,
+            "desde": d1.isoformat(),
+            "hasta": d2.isoformat(),
+        }
+    finally:
+        conn.close()
+
+
 # ── Detalle de OC del mes por artículo (export a Excel de /compras) ──────────
 # Mismo recorte que SQL_OC_RANGO (FecMovim de la cabecera, sin canceladas, sin
 # Genérico/Fabril) pero agrega lo que el funnel no necesita y el Excel sí:

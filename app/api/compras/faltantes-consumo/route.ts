@@ -162,6 +162,22 @@ interface IngRow {
   NroRemitos?: string[];
   Remitos?: { nro: string; fecha: string; cant: number; cod: string | null; prov: string | null }[];
 }
+// OC HECHAS en el período consultado (GET /compras/ordenes-mes-estado), por
+// artículo, recibidas o no — lo mismo que ve el sector compras en su hoja OC09
+// (comprobante 70, comprador 1, FecMovim dentro del rango, sin canceladas).
+// 2026-10-07: la "OC viva" de arriba (ocMap) solo trae lo que sigue por llegar,
+// así que una OC del mes ya recibida figuraba como "Sin OC" acá y como OC en la
+// planilla de compras. NO interviene en la cobertura (cubierto/descubierto/
+// estado): es información que se muestra aparte y que saca al artículo del chip
+// "Sin OC" (ver estadoVista en page.tsx).
+interface OcMesRow {
+  CodArticulo: string;
+  CantPedida: number;
+  CantRecibida: number;
+  NroOCs: string[];
+  FechaOC: string | null;
+  FechaEntrega: string | null;
+}
 type Estado = "completo" | "incompleto" | "sin_orden" | "entregado";
 
 interface Bucket {
@@ -292,15 +308,31 @@ export async function GET(req: NextRequest) {
   // el fin del rango consultado — con el rango puesto en un mes cerrado, el
   // total por artículo cierra con el reporte de remitos de ese mes. Sin
   // `hasta`, llega hasta hoy.
+  //
+  // 2026-10-07: el rango del usuario manda (desdeParam/hastaParam) y los
+  // remitos se cuentan por fecha de REGISTRACIÓN (registracion=1), igual que la
+  // hoja RTO09 del sector compras. Antes: desde el ancla (faltDesde) y por fecha
+  // de comprobante, así que remitos de julio/agosto sumaban a "Ingresado" de un
+  // análisis de septiembre. Sin rango explícito sigue arrancando en el ancla.
+  const hoyISO0 = new Date().toISOString().slice(0, 10);
+  const ingDesde = desdeParam || faltDesde;
   const ingUrl =
-    `${API_URL}/compras/ingresos?desde=${encodeURIComponent(faltDesde)}` +
-    (hastaParam ? `&hasta=${encodeURIComponent(hastaParam)}` : "");
+    `${API_URL}/compras/ingresos?desde=${encodeURIComponent(ingDesde)}` +
+    (hastaParam ? `&hasta=${encodeURIComponent(hastaParam)}` : "") +
+    "&registracion=1";
+  // OC emitidas en el mismo rango (recibidas o no), del sector compras
+  // (comprobante 70, comprador 1: mismo recorte que OC_COMPRADOR de
+  // /api/compras/metricas). Sin `hasta` explícito llega hasta hoy.
+  const ocMesUrl =
+    `${API_URL}/compras/ordenes-mes-estado?desde=${encodeURIComponent(ingDesde)}` +
+    `&hasta=${encodeURIComponent(hastaParam || hoyISO0)}&comp=70&comprador=1`;
 
-  // 1) faltantes (obligatorio) + OC e ingresos (best-effort) en paralelo
-  const [faltRes, ocRes, ingRes] = await Promise.allSettled([
+  // 1) faltantes (obligatorio) + OC, ingresos y OC del período (best-effort) en paralelo
+  const [faltRes, ocRes, ingRes, ocMesRes] = await Promise.allSettled([
     getJson(faltUrl),
     getJson(ocUrl),
     getJson(ingUrl),
+    getJson(ocMesUrl),
   ]);
 
   if (faltRes.status !== "fulfilled") {
@@ -338,6 +370,19 @@ export async function GET(req: NextRequest) {
     }
   } else {
     ocWarn = true;
+  }
+
+  // OC del período por artículo (recibidas o no) — ver OcMesRow.
+  let ocMesWarn = false;
+  const ocMesMap = new Map<string, OcMesRow>();
+  if (ocMesRes.status === "fulfilled") {
+    for (const r of (ocMesRes.value.rows ?? []) as OcMesRow[]) {
+      const cod = String(r.CodArticulo ?? "").trim();
+      if (cod) ocMesMap.set(cod, r);
+    }
+  } else {
+    ocMesWarn = true;
+    console.error("GET /api/compras/faltantes-consumo — ordenes-mes-estado", ocMesRes.reason);
   }
 
   // Ingresos por artículo (cantidad + remitos). Es un total del PERÍODO, por
@@ -1052,6 +1097,21 @@ export async function GET(req: NextRequest) {
         ingresado: r2(ingMap.get(b.CodArticulo)?.cant ?? 0),
         remitos: ingMap.get(b.CodArticulo)?.remitos ?? [],
         ultimoIngreso: ingMap.get(b.CodArticulo)?.ultimo ?? null,
+        // OC emitidas en el período (recibidas o no), por artículo (igual en
+        // todos los días del artículo). null = ninguna en el rango. NO cuenta
+        // para cubierto/descubierto/estado (ver OcMesRow).
+        ocMes: (() => {
+          const o = ocMesMap.get(b.CodArticulo);
+          return o
+            ? {
+                pedida: r2(o.CantPedida),
+                recibida: r2(o.CantRecibida),
+                nros: o.NroOCs ?? [],
+                fechaOC: o.FechaOC ?? null,
+                fechaEntrega: o.FechaEntrega ?? null,
+              }
+            : null;
+        })(),
       };
     });
 
@@ -1134,7 +1194,9 @@ export async function GET(req: NextRequest) {
     ocWarn,
     ingresoWarn,
     comprobanteWarn,
-    ingresosDesde: faltDesde,
+    ingresosDesde: ingDesde,
+    ingresosPorRegistracion: true,
+    ocMesWarn,
     ingresosHasta: hastaParam ?? null,
     consumoWarn,
     extraWarn,

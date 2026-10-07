@@ -23,6 +23,8 @@ interface Row {
   ingresado?: number;
   remitos?: { nro: string; fecha: string; cant: number }[];
   ultimoIngreso?: string | null;
+  // OC emitidas en el período (ver /compras/faltantes). Opcional por compatibilidad.
+  ocMes?: { pedida: number; recibida: number; nros: string[] } | null;
 }
 
 // Porción extraordinaria de un bucket, por CLIENTE (2026-09-16) — ver
@@ -39,6 +41,11 @@ interface RowExtra {
   importe: number;
   comprar: boolean | null;
 }
+
+// "OC recibida" = sin OC viva pero con OC del período ya recibida (misma regla
+// que estadoVista en app/compras/faltantes/page.tsx).
+const estadoLabel = (r: Row): string =>
+  r.estado === "sin_orden" && r.ocMes ? "OC recibida" : ESTADO_LABEL[r.estado];
 
 const ESTADO_LABEL: Record<Estado, string> = {
   completo: "Cubierto",
@@ -76,7 +83,10 @@ function filaFaltante(r: Row) {
     "N° de remitos": (r.remitos ?? []).map((m) => m.nro).join(", "),
     "Último ingreso": r.ultimoIngreso || "",
     Arribo: r.fechaArribo || "",
-    Estado: ESTADO_LABEL[r.estado],
+    "OC del período": r.ocMes ? r.ocMes.pedida : "",
+    "OC recibida": r.ocMes ? r.ocMes.recibida : "",
+    "N° de OC del período": (r.ocMes?.nros ?? []).join(", "),
+    Estado: estadoLabel(r),
   };
 }
 
