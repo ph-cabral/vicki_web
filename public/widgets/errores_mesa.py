@@ -9,15 +9,14 @@ el .ps1: cuadro flotante sin bordes, esquina inferior derecha, 2 pantallas.
 Pantalla 1 ("operario"): pide el N de operario 1 sola vez por sesion
   (GET /api/deposito/errores-mesa/operario?nro=N).
 
-Pantalla 2 ("main"): cuadro grande con cliente/pedido/ubicacion + icono
-  "reasignar" (POST /api/deposito/errores-mesa/asignar - SIEMPRE se puede
-  apretar: si el pedido que ya tenia el operario sigue Abierto en Magnus, el
-  server devuelve ESE MISMO, ver control_asignacion.py "UN PEDIDO POR
-  OPERARIO A LA VEZ" 2026-07-31 - no es un reclamo nuevo) + pildora
-  "Articulos" y pildora "Finalizar".
+Pantalla 2 ("main"): cuadro grande con cliente/pedido/ubicacion + pildora
+  "Articulos" y pildora "Finalizar". El pedido se pide solo (POST
+  /api/deposito/errores-mesa/asignar; si el que ya tenia el operario sigue
+  Abierto en Magnus el server devuelve ESE MISMO, ver control_asignacion.py
+  "UN PEDIDO POR OPERARIO A LA VEZ" 2026-07-31 - no es un reclamo nuevo).
+  Ya NO hay boton/icono de reasignar (2026-10-07), ver "ASIGNACION SIN BOTON".
 
   - Clic izquierdo (franja superior) : arrastrar el widget
-  - Clic izquierdo (icono reasignar) : pedir/reconfirmar el pedido asignado
   - Clic izquierdo (Articulos)       : abre el selector de articulos (lista
                                         con scroll, 10 visibles por vez)
   - Clic en un articulo del selector : abre el menu de Detalle Error PARA
@@ -94,7 +93,7 @@ se le puede elegir a un operario el proximo pedido a controlar. El polling de
 /grupo trae "preasignadoListo" = ese pedido esta listo en la cola y lo que el
 operario estaba controlando ya cerro en Magnus; el widget pide Asignar solo
 (con un bell), salvo que tenga errores elegidos sin Finalizar o el menu de
-articulos abierto. Un widget viejo igual lo recibe, pero al apretar el icono.
+articulos abierto.
 
 CAMBIO AUTOMATICO AL CERRAR (2026-10-05): /grupo trae "actual" = la unidad
 asignada al operario y si ya cerro en Magnus. Cuando la unidad que el widget
@@ -102,7 +101,21 @@ estaba controlando (self._vigilado) aparece cerrada, el widget pide la
 siguiente solo (bell + Asignar), aunque ya se haya hecho Finalizar. Si no hay
 errores sin Finalizar ni el menu abierto lo hace al toque; si los hay, espera a
 que se finalice. Si la cola esta vacia reintenta en cada polling durante
-AUTO_SIGUIENTE_S (no se queda tomando pedidos un widget abandonado).
+AUTO_SIGUIENTE_S.
+
+ASIGNACION SIN BOTON (2026-10-07): se saco el icono de reasignar. Si el widget
+esta libre (sin pedido en pantalla, sin errores sin Finalizar ni menu abierto)
+pide pedido en cada polling de /grupo: al ingresar el operario, cuando la cola
+estaba vacia, y cuando el "actual" del server aparece cerrado en Magnus. Tras
+Finalizar NO vuelve a pedir mientras el actual siga abierto (self._fin): espera
+a que cierre y recien ahi toma el siguiente (bell).
+
+ESPERAR SIN VUELTA (2026-10-07): al apretar Esperar, si el pedido de ese
+cliente volvio a la cola, el widget pide otro pedido al toque (otro cliente).
+Con la reserva en "espera" la banda ya no muestra Esperar: solo Tomar (aunque
+el server re-ofrezca porque se sumo otra lista). Cuando el cliente queda
+completo (N/N listos) el server pasa la reserva a "tomado" y esas unidades le
+salen primero a este operario en el proximo pedido (al cerrar el actual).
 """
 
 import os
@@ -156,7 +169,6 @@ UBIC_BOX_MAIN = (10, 6, 240, 86)     # stage "main" (hasta 3 lineas)
 PILL1 = (10, 50, 240, 92)            # input N Operario (solo stage "operario")
 PILL_ARTICULOS = (10, 94, 240, 136)
 PILL_ERROR = (10, 144, 240, 186)
-REASIGNAR_ICON = (200, 10, 230, 40)  # esq. sup. derecha del cuadro grande
 UBIC_DRAG = (0, 0, FORM_W, 50)       # franja de arrastre
 
 C_MAGENTA = "#ff00ff"   # clave de transparencia
@@ -176,7 +188,7 @@ GRUPO_BOX = (10, 6, 240, 76)
 GRUPO_BTN_TOMAR = (16, 48, 121, 72)
 GRUPO_BTN_ESPERAR = (129, 48, 234, 72)
 GRUPO_BTN_TOMAR_ESPERA = (170, 50, 234, 72)   # "Tomar" chico estando en espera
-POLL_GRUPO_MS = 20000
+POLL_GRUPO_MS = 10000
 AUTO_SIGUIENTE_S = 600   # ventana de reintento del cambio automatico al cerrar
 UPDATE_CHECK_MS = 120000  # cada cuanto se fija si hay codigo nuevo (solo con lanzador)
 REINICIO_VALIDO_S = 120   # el estado guardado para el reinicio vence a los 2 min
@@ -438,6 +450,7 @@ class ErroresMesaWidget:
         self._vigilado = None         # (nroPedido, nroRemito) que se esta controlando
         self._auto_hasta = 0.0        # time.time() hasta el que se pide la siguiente sola
         self._auto_bell = False
+        self._fin = None              # (nroPedido, nroRemito) ya finalizado, aun abierto en Magnus
 
         self._press = None
         self._dragging = False
@@ -594,27 +607,6 @@ class ErroresMesaWidget:
             kw["outline"] = fill
         self.canvas.create_polygon(*pts, **kw)
 
-    def _draw_reasignar_icon(self, rect):
-        x0, y0, x1, y1 = rect
-        pad = 5
-        bx0, by0, bx1, by1 = x0 + pad, y0 + pad, x1 - pad, y1 - pad
-        self.canvas.create_arc(bx0, by0, bx1, by1, start=20, extent=140,
-                                style="arc", outline=C_TXT, width=2)
-        self.canvas.create_arc(bx0, by0, bx1, by1, start=200, extent=140,
-                                style="arc", outline=C_TXT, width=2)
-        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
-        r = (bx1 - bx0) / 2
-        for ang in (160, 340):
-            rad = math.radians(ang)
-            px, py = cx + r * math.cos(rad), cy - r * math.sin(rad)
-            tx, ty = math.sin(rad), math.cos(rad)
-            nx, ny = -ty, tx
-            tip = (px + tx * 6, py - ty * 6)
-            base_a = (px - nx * 4, py + ny * 4)
-            base_b = (px + nx * 4, py - ny * 4)
-            self.canvas.create_polygon(tip[0], tip[1], base_a[0], base_a[1],
-                                        base_b[0], base_b[1], fill=C_TXT, outline=C_TXT)
-
     # ---- banda de grupo (RESERVA POR CLIENTE) ----
     def _banda_visible(self):
         return self.stage == "main" and self.grupo is not None
@@ -629,7 +621,7 @@ class ErroresMesaWidget:
 
     def _draw_banda(self):
         g = self.grupo
-        oferta = bool(g.get("oferta"))
+        oferta = bool(g.get("oferta")) and g.get("estado") != "espera"
         self._round_pill(*GRUPO_BOX, radius=14, fill=C_FILL,
                          outline=(C_AMBER if oferta else C_GRAY))
         cx = (GRUPO_BOX[0] + GRUPO_BOX[2]) / 2
@@ -651,7 +643,7 @@ class ErroresMesaWidget:
         self.canvas.create_text(cx, GRUPO_BOX[1] + 30, text=linea2,
                                 fill=(C_AMBER if oferta else C_GREEN),
                                 font=("Segoe UI", 9, "bold"))
-        if oferta and not self.decidiendo:
+        if self._oferta_activa():
             for rect, txt, col in ((GRUPO_BTN_TOMAR, "Tomar", C_GREEN),
                                    (GRUPO_BTN_ESPERAR, "Esperar", C_AMBER)):
                 self._round_pill(*rect, radius=(rect[3] - rect[1]) / 2, fill=C_FILL, outline=col)
@@ -680,9 +672,16 @@ class ErroresMesaWidget:
             self.canvas.create_text(cx, GRUPO_BOX[1] + 52, text=msg, fill=C_GRAY,
                                     font=("Segoe UI", 8))
 
-    def _espera_con_tomar(self):
+    def _oferta_activa(self):
+        """Tomar / Esperar grandes: hay que decidir y NO esta ya en espera."""
         g = self.grupo or {}
-        return (self._banda_visible() and not g.get("oferta") and not self.decidiendo
+        return (self._banda_visible() and bool(g.get("oferta")) and not self.decidiendo
+                and g.get("estado") != "espera")
+
+    def _espera_con_tomar(self):
+        """En espera: solo Tomar (chico), nunca de nuevo Esperar."""
+        g = self.grupo or {}
+        return (self._banda_visible() and not self.decidiendo
                 and g.get("estado") == "espera" and int(g.get("listos") or 0) > 0)
 
     def redraw(self):
@@ -708,13 +707,12 @@ class ErroresMesaWidget:
                 (pe[0] + pe[2]) / 2, (pe[1] + pe[3]) / 2,
                 text=self.error_label_text, fill=C_TXT,
                 font=("Segoe UI", 10, "bold"), width=pe[2] - pe[0] - 16)
-            self._draw_reasignar_icon(self._o(REASIGNAR_ICON))
         else:
             cx, cy = PILL1[0] + 20, (PILL1[1] + PILL1[3]) / 2
             self.canvas.create_oval(cx - 6, cy - 6, cx + 4, cy + 4, outline=C_GRAY, width=2)
             self.canvas.create_line(cx + 3, cy + 3, cx + 8, cy + 8, fill=C_GRAY, width=2)
 
-        right_margin = (REASIGNAR_ICON[2] - REASIGNAR_ICON[0]) + 6 if self.stage == "main" else 0
+        right_margin = 0
         self.canvas.create_text(
             (ubic_rect[0] + ubic_rect[2] - right_margin) / 2 + 2,
             (ubic_rect[1] + ubic_rect[3]) / 2,
@@ -820,6 +818,7 @@ class ErroresMesaWidget:
         self.asignando = False
         self._vigilado = None
         self._auto_hasta = 0.0
+        self._fin = None
         self.reset_articulos()
         self.txt_nro.delete(0, "end")
         self.txt_nro.insert(0, PLACEHOLDER_OPERARIO)
@@ -944,7 +943,8 @@ class ErroresMesaWidget:
     def _do_reset(self):
         self._guardando = False
         self.pedido_valido = False
-        self.pedido_asignado = None   # libera el icono de reasignar para un nuevo reclamo
+        self._fin = (self.pedido_asignado, self.remito_asignado)   # finalizado: no re-pedir hasta que cierre
+        self.pedido_asignado = None
         self.remito_asignado = None
         self.cod_cliente_asignado = None
         self.reset_articulos()
@@ -1007,6 +1007,7 @@ class ErroresMesaWidget:
                     self.fetch_asignar()
                 else:
                     self._auto_siguiente((r or {}).get("actual"))
+                    self._auto_libre((r or {}).get("actual"))
         except queue.Empty:
             pass
         except Exception:
@@ -1041,6 +1042,24 @@ class ErroresMesaWidget:
         if self.pedido_asignado:
             self._do_reset()
         self.fetch_asignar()
+
+    def _auto_libre(self, actual):
+        """ASIGNACION SIN BOTON (2026-10-07) - ver docstring del modulo. Widget
+        libre -> pide pedido en cada polling, salvo que el actual sea el que ya
+        se finalizo y siga abierto en Magnus (espera a que cierre)."""
+        if (self.stage != "main" or self.pedido_asignado or self.asignando
+                or self.decidiendo or self._guardando or self.articulos_errores
+                or self.articulos_popup is not None or self._auto_hasta > time.time()):
+            return
+        if actual and not actual.get("cerrado") and self._fin == (
+                int(actual.get("nroPedido") or 0), int(actual.get("nroRemito") or 0)):
+            return
+        self.fetch_asignar()
+        if self.pedido_asignado:
+            try:
+                self.root.bell()
+            except Exception:
+                pass
 
     def _set_grupos(self, grupos):
         """Filtra lo que vale la pena mostrar y elige el de la banda: primero
@@ -1083,10 +1102,11 @@ class ErroresMesaWidget:
             if accion == "esperar":
                 self.grupo_msg = None   # la banda muestra "En espera ..." por estado
                 if resp.get("liberado"):
-                    # El pedido volvio a la cola reservado para el: queda libre
-                    # para tomar otro cliente.
+                    # El pedido volvio a la cola reservado para el: pide otro
+                    # cliente al toque (ESPERAR SIN VUELTA 2026-10-07).
                     self._do_reset()
-                    self.set_ubic("En espera. Asigná otro pedido", C_GRAY)
+                    self._fin = None
+                    self.fetch_asignar()
             else:
                 self.grupo_msg = ("Tomado · sigue despues del actual"
                                   if resp.get("despues") else None)
@@ -1321,7 +1341,7 @@ class ErroresMesaWidget:
     def on_release(self, e):
         # Solo se cancela el click si HUBO un arrastre real (franja de
         # arriba + moviste el mouse). Un click directo sobre Artículos/
-        # Finalizar/el ícono de reasignar nunca pasó por la franja de
+        # Finalizar nunca pasó por la franja de
         # arrastre, así que
         # _dragging es False y el hit-test de abajo se evalúa igual - antes
         # este método cortaba con "return" en ese caso y las píldoras nunca
@@ -1332,15 +1352,13 @@ class ErroresMesaWidget:
         self._moved = False
         if was_drag:
             return
-        oferta = self._banda_visible() and bool(self.grupo.get("oferta")) and not self.decidiendo
+        oferta = self._oferta_activa()
         if oferta and rect_contains(GRUPO_BTN_TOMAR, e.x, e.y):
             self._decidir("tomar")
         elif oferta and rect_contains(GRUPO_BTN_ESPERAR, e.x, e.y):
             self._decidir("esperar")
         elif self._espera_con_tomar() and rect_contains(GRUPO_BTN_TOMAR_ESPERA, e.x, e.y):
             self._decidir("tomar")
-        elif self.stage == "main" and rect_contains(self._o(REASIGNAR_ICON), e.x, e.y):
-            self.fetch_asignar()
         elif self.stage == "main" and rect_contains(self._o(PILL_ARTICULOS), e.x, e.y):
             pa = self._o(PILL_ARTICULOS)
             pt_x = self.canvas.winfo_rootx() + pa[0]
