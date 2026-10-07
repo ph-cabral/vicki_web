@@ -7,7 +7,7 @@
  * pedido → cada ítem con la hora en que se anotó su cantidad → Cierre. La
  * duración de cada ítem corre desde el nodo anterior (el primero, desde la
  * toma). Datos: indicadores-api/calidad.py. La hora por ítem depende de la
- * captura en Magnus (sql/magnus_control_item_log.sql); sin ella se muestra el
+ * captura en Postgres (deposito.control_item_log, sql/deposito_control_item_log.sql); sin ella se muestra el
  * resto de la línea de tiempo y un aviso.
  */
 

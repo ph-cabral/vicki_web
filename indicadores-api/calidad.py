@@ -6,9 +6,9 @@ deposito.control_asignacion, UTC → local), un nodo por ítem y nodo "Cierre"
 (Ven_PedImpresoCP.FechaControl/HoraControl). Duración de cada ítem = su hora −
 hora del nodo anterior (el primero cuenta desde la toma).
 
-Hora por ítem: Magnus NO la guarda. La fuente es dbo.VICKI_ControlItemLog (una
-fila por cada cambio de cantidad de control, cargada por un trigger — ver
-sql/magnus_control_item_log.sql). Mientras esa tabla no exista o no tenga filas
+Hora por ítem: Magnus NO la guarda. La fuente es deposito.control_item_log
+(Postgres; una fila por cada cambio de cantidad de control — ver
+sql/deposito_control_item_log.sql). Mientras esa tabla no exista o no tenga filas
 del pedido, los ítems salen en el orden del renglón, sin hora ni duración, y el
 resto de la línea de tiempo (toma → cierre, tiempo total) sigue funcionando.
 
@@ -125,23 +125,30 @@ ORDER BY CodCentroPrep
 """
 
 _SQL_LOG = """
-SELECT NroRenglon, Registrado, Cantidad
-FROM dbo.VICKI_ControlItemLog
-WHERE NroMovVenta = ?
-ORDER BY Registrado
+SELECT "nroRenglon", (registrado AT TIME ZONE 'UTC' AT TIME ZONE %(tz)s)
+FROM deposito.control_item_log
+WHERE "nroPedido" = %(p)s
+ORDER BY registrado
 """
 
 
-def _eventos_por_item(cur, nro_pedido: int) -> dict[int, dict]:
-    """{nroRenglon: {hora, cambios}} desde dbo.VICKI_ControlItemLog. {} si la
-    tabla todavía no existe (trigger sin instalar)."""
+def _eventos_por_item(nro_pedido: int) -> dict[int, dict]:
+    """{nroRenglon: {hora, cambios}} desde deposito.control_item_log (Postgres).
+    {} si la tabla todavía no existe o no hay filas del pedido."""
     try:
-        cur.execute(_SQL_LOG, (nro_pedido,))
+        conn = get_pg_connection()
+    except Exception:
+        return {}
+    try:
+        cur = conn.cursor()
+        cur.execute(_SQL_LOG, {"tz": _TZ_LOCAL, "p": nro_pedido})
         filas = cur.fetchall()
     except Exception:
         return {}
+    finally:
+        conn.close()
     out: dict[int, dict] = {}
-    for reng, reg, _cant in filas:
+    for reng, reg in filas:
         e = out.setdefault(int(reng), {"hora": None, "cambios": 0})
         e["hora"] = reg          # última carga del renglón = hora de control final
         e["cambios"] += 1
@@ -178,9 +185,9 @@ def fetch_control_pedido(nro_pedido: int) -> dict:
         renglones = cur.fetchall()
         cur.execute(_SQL_CONTROL, (nro_pedido,))
         ctrl = cur.fetchone()
-        eventos = _eventos_por_item(cur, nro_pedido)
     finally:
         mc.close()
+    eventos = _eventos_por_item(nro_pedido)
 
     cierre = _magnus_dt(ctrl[2], ctrl[3]) if ctrl else None
     cierre = cierre or cerrado_pg
@@ -222,5 +229,5 @@ def fetch_control_pedido(nro_pedido: int) -> dict:
         "items": items,
         "horaPorItem": con_hora,
         "aviso": None if con_hora else
-                 "Sin hora por ítem: Magnus no la guarda; se completa al instalar la captura (sql/magnus_control_item_log.sql).",
+                 "Sin hora por ítem: Magnus no la guarda; se completa al instalar la captura (deposito.control_item_log).",
     }
