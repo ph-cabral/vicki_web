@@ -2263,7 +2263,10 @@ export default function VentasVendedorPage() {
                               <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
                                 <button
                                   type="button"
-                                  onClick={() => setDosMeses(false)}
+                                  onClick={() => {
+ setDosMeses(false);
+ setTopGrupoAbierto(0);
+ }}
                                   title={`Volver al acumulado ${rangoAcumLabel}`}
                                   className="mb-1 block ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
                                 >
@@ -2290,7 +2293,10 @@ export default function VentasVendedorPage() {
                               <div className="inline-flex items-center justify-end gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => setDosMeses(true)}
+                                  onClick={() => {
+ setDosMeses(true);
+ setTopGrupoAbierto(0);
+ }}
                                   title={`Ver ${mesM2Label} y ${mesM1Label} en lugar del acumulado`}
                                   className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
                                 >

@@ -74,10 +74,12 @@ from ventas import (
     COMPROBANTES_VENTA,
     _anio_vacio,
     _case_anio_mes,
+    _dos_meses_previos,
     _rango_ytd_y_mes,
     _round_anio,
     _safe,
     _ventana,
+    _ym_str,
 )
 
 # Qué comprobantes son VENTA. La lista blanca se define una sola vez en
@@ -306,6 +308,23 @@ def _mes_cuenta(desde: str | None, hasta: str | None) -> bool:
     columnas se muestran juntas y el que compró sólo este mes tiene que
     estar. Con rango explícito manda el acumulado y nada más."""
     return desde is None and hasta is None
+
+
+def _previas(mes_ym, dias_total, desde, hasta):
+    """Mes pasado y el anterior (botón "2 meses" de /ventas/lineas), como dos
+    ventanas más del MISMO scan. Sólo en la vista por defecto (`_mes_cuenta`):
+    con rango explícito (/ventas/presupuestos) las dos ventanas quedan
+    imposibles (BETWEEN 0 AND -1, nada entra) y el WHERE NO se amplía, así
+    esa pantalla no paga ni un día de más.
+
+    -> (m1_ym|None, m2_ym|None, dias_m1, dias_m2, dias_total_ext)"""
+    if not _mes_cuenta(desde, hasta):
+        vacia = (0, -1)
+        return None, None, vacia, vacia, dias_total
+    m1_ym, m2_ym, dias_m1, dias_m2, _prev, ext = _dos_meses_previos(mes_ym, dias_total)
+    return m1_ym, m2_ym, dias_m1, dias_m2, ext
+
+
 def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
                        desde: str | None = None, hasta: str | None = None,
                        forzar: bool = False, linea: int | None = None,
@@ -315,6 +334,9 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
     acumulado del año y `montoMes` el mes en curso, en columnas aparte."""
     desde_ym, hasta_ym, mes_ym, dias_acum, dias_mes, dias_total = _rango_ytd_y_mes(
         desde, hasta
+    )
+    m1_ym, m2_ym, dias_m1, dias_m2, dias_total = _previas(
+        mes_ym, dias_total, desde, hasta
     )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
@@ -330,11 +352,13 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
     joins = _JOIN_CLIENTE
     where = (f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?\n"
              + MARCA_VENDEDOR)
-    params: tuple = dias_acum + dias_mes + dias_total
+    params: tuple = dias_acum + dias_mes + dias_m1 + dias_m2 + dias_total
     sql = f"""
 SELECT c.CodCliente, MAX(LTRIM(RTRIM(c.Cliente_Nombre))) AS Nombre,
        {_ventana(_MONTO)} AS MontoNeto,
-       {_ventana(_MONTO)} AS MontoMes
+       {_ventana(_MONTO)} AS MontoMes,
+       {_ventana(_MONTO)} AS MontoM1,
+       {_ventana(_MONTO)} AS MontoM2
 {joins}{where}
   AND {COND_LINEA}
 GROUP BY c.CodCliente
@@ -351,10 +375,12 @@ GROUP BY c.CodCliente
                 "nombre": (str(nom).strip() if nom else None),
                 "monto": round(float(_safe(monto) or 0), 2),
                 "montoMes": round(float(_safe(monto_mes) or 0), 2),
+                "montoM1": round(float(_safe(monto_m1) or 0), 2),
+                "montoM2": round(float(_safe(monto_m2) or 0), 2),
             }
-            for cod, nom, monto, monto_mes in unir(
+            for cod, nom, monto, monto_mes, monto_m1, monto_m2 in unir(
                 _filas_linea(cur, sql, params, lin, *dias_total),
-                (0,), (2, 3))
+                (0,), (2, 3, 4, 5))
             if cod is not None
         ]
         # Entra el que tuvo movimiento en CUALQUIERA de las dos ventanas: un
@@ -363,7 +389,8 @@ GROUP BY c.CodCliente
         mes_cuenta = _mes_cuenta(desde, hasta)
         clientes = [
             c for c in clientes
-            if c["monto"] > 0 or (mes_cuenta and c["montoMes"] > 0)
+            if c["monto"] > 0
+            or (mes_cuenta and (c["montoMes"] > 0 or c["montoM1"] > 0 or c["montoM2"] > 0))
         ]
         clientes.sort(key=lambda c: (c["monto"], c["montoMes"]), reverse=True)
         return _guardar(key, {
@@ -372,6 +399,9 @@ GROUP BY c.CodCliente
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            # Mes pasado y el anterior (null con rango explícito).
+            "mesM1": _ym_str(m1_ym) if m1_ym else None,
+            "mesM2": _ym_str(m2_ym) if m2_ym else None,
             "linea": _linea_payload(lin),
             "totalClientes": len(clientes),
             "porMonto": clientes[:limit_i],
@@ -396,6 +426,9 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
     desde_ym, hasta_ym, mes_ym, dias_acum, dias_mes, dias_total = _rango_ytd_y_mes(
         desde, hasta
     )
+    m1_ym, m2_ym, dias_m1, dias_m2, dias_total = _previas(
+        mes_ym, dias_total, desde, hasta
+    )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
     key = ("pat", _clave_linea(lin), clave_vendedor(vendedor), limit_i, desde_ym, hasta_ym, mes_ym)
@@ -411,8 +444,10 @@ JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
     where = (f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?\n"
              + MARCA_VENDEDOR)
     # Orden = orden de los `?` en el texto: unidades acum, unidades mes,
-    # monto acum, monto mes, y al final el BETWEEN del WHERE.
-    params = dias_acum + dias_mes + dias_acum + dias_mes + dias_total
+    # monto acum, monto mes, unidades M1, unidades M2, monto M1, monto M2
+    # (mes pasado y anterior), y al final el BETWEEN del WHERE.
+    params = (dias_acum + dias_mes + dias_acum + dias_mes
+              + dias_m1 + dias_m2 + dias_m1 + dias_m2 + dias_total)
 
     sql = f"""
 SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
@@ -420,7 +455,11 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
        {_ventana(_CANT)} AS Unidades,
        {_ventana(_CANT)} AS UnidadesMes,
        {_ventana(_MONTO)} AS MontoNeto,
-       {_ventana(_MONTO)} AS MontoMes
+       {_ventana(_MONTO)} AS MontoMes,
+       {_ventana(_CANT)} AS UnidadesM1,
+       {_ventana(_CANT)} AS UnidadesM2,
+       {_ventana(_MONTO)} AS MontoM1,
+       {_ventana(_MONTO)} AS MontoM2
 {joins}{_JOIN_ART}{where}
   AND {COND_LINEA}
 GROUP BY s.ArticuloPatron
@@ -429,17 +468,23 @@ GROUP BY s.ArticuloPatron
     conn, cur = _conn()
     try:
         acum: dict[str, list] = {}
-        for patron, detalle, unid, unid_mes, monto, monto_mes in _filas_linea(
+        for (patron, detalle, unid, unid_mes, monto, monto_mes,
+             unid_m1, unid_m2, monto_m1, monto_m2) in _filas_linea(
             cur, sql, params, lin, *dias_total
         ):
             codigo = (str(patron or "").strip()) or SIN_PATRON
-            a = acum.setdefault(codigo, [0.0, 0.0, 0.0, 0.0, None])
+            # [u, uMes, m, mMes, u1, u2, m1, m2, detalle]
+            a = acum.setdefault(codigo, [0.0] * 8 + [None])
             a[0] += float(_safe(unid) or 0)
             a[1] += float(_safe(unid_mes) or 0)
             a[2] += float(_safe(monto) or 0)
             a[3] += float(_safe(monto_mes) or 0)
-            if a[4] is None:
-                a[4] = (str(detalle).strip() or None) if detalle else None
+            a[4] += float(_safe(unid_m1) or 0)
+            a[5] += float(_safe(unid_m2) or 0)
+            a[6] += float(_safe(monto_m1) or 0)
+            a[7] += float(_safe(monto_m2) or 0)
+            if a[8] is None:
+                a[8] = (str(detalle).strip() or None) if detalle else None
         items = {
             p: {
                 "patron": p,
@@ -448,8 +493,12 @@ GROUP BY s.ArticuloPatron
                 "unidadesMes": round(um, 2),
                 "monto": round(m, 2),
                 "montoMes": round(mm, 2),
+                "unidadesM1": round(u1, 2),
+                "unidadesM2": round(u2, 2),
+                "montoM1": round(m1, 2),
+                "montoM2": round(m2, 2),
             }
-            for p, (u, um, m, mm, d) in acum.items()
+            for p, (u, um, m, mm, u1, u2, m1, m2, d) in acum.items()
         }
         # Una nota de crédito puede dejar unidades > 0 con monto <= 0 (o al
         # revés), así que cada lista filtra por SU métrica — igual que
@@ -459,16 +508,22 @@ GROUP BY s.ArticuloPatron
         mes_cuenta = _mes_cuenta(desde, hasta)
         por_u = sorted(
             (i for i in items.values()
-             if i["unidades"] > 0 or (mes_cuenta and i["unidadesMes"] > 0)),
+             if i["unidades"] > 0
+             or (mes_cuenta and (i["unidadesMes"] > 0 or i["unidadesM1"] > 0
+                                 or i["unidadesM2"] > 0))),
             key=lambda x: (x["unidades"], x["unidadesMes"]), reverse=True)
         por_m = sorted(
             (i for i in items.values()
-             if i["monto"] > 0 or (mes_cuenta and i["montoMes"] > 0)),
+             if i["monto"] > 0
+             or (mes_cuenta and (i["montoMes"] > 0 or i["montoM1"] > 0
+                                 or i["montoM2"] > 0))),
             key=lambda x: (x["monto"], x["montoMes"]), reverse=True)
         return _guardar(key, {
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "mesM1": _ym_str(m1_ym) if m1_ym else None,
+            "mesM2": _ym_str(m2_ym) if m2_ym else None,
             "linea": _linea_payload(lin),
             "totalPatrones": len(por_u),
             "totalPatronesMonto": len(por_m),
@@ -509,6 +564,9 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
     desde_ym, hasta_ym, mes_ym, dias_acum, dias_mes, dias_total = _rango_ytd_y_mes(
         desde, hasta
     )
+    m1_ym, m2_ym, dias_m1, dias_m2, dias_total = _previas(
+        mes_ym, dias_total, desde, hasta
+    )
     limit_i = int(limit)
     lin = resolver_linea(linea, lineas)
     # El ranking colapsa las filas de los antecesores con `dueno_de`, así que
@@ -525,8 +583,10 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
              "AND vc.FecMovim BETWEEN ? AND ?\n"
              + MARCA_VENDEDOR)
     # Orden = orden de los `?` en el texto: unidades acum, unidades mes,
-    # monto acum, monto mes, y al final el BETWEEN del WHERE.
-    params: tuple = dias_acum + dias_mes + dias_acum + dias_mes + dias_total
+    # monto acum, monto mes, unidades M1, unidades M2, monto M1, monto M2
+    # (mes pasado y anterior), y al final el BETWEEN del WHERE.
+    params: tuple = (dias_acum + dias_mes + dias_acum + dias_mes
+                     + dias_m1 + dias_m2 + dias_m1 + dias_m2 + dias_total)
     # Se agrupa por vc.vendedor (la columna del comprobante, entera y ya
     # indexada) y el nombre se trae con MAX: un código sin fila en el maestro
     # devuelve NULL y no parte el grupo, y sumar el texto al GROUP BY sería
@@ -537,7 +597,11 @@ SELECT vc.vendedor AS Codigo,
        {_ventana(_CANT)} AS Unidades,
        {_ventana(_CANT)} AS UnidadesMes,
        {_ventana(_MONTO)} AS MontoNeto,
-       {_ventana(_MONTO)} AS MontoMes
+       {_ventana(_MONTO)} AS MontoMes,
+       {_ventana(_CANT)} AS UnidadesM1,
+       {_ventana(_CANT)} AS UnidadesM2,
+       {_ventana(_MONTO)} AS MontoM1,
+       {_ventana(_MONTO)} AS MontoM2
 {_JOIN_VENTA_VENDEDOR}{where}
   AND {COND_LINEA}
 GROUP BY vc.vendedor
@@ -552,9 +616,10 @@ GROUP BY vc.vendedor
         # El nombre se toma del CÓDIGO DUEÑO (el del sucesor); el del
         # antecesor no se usa aunque llegue primero.
         acum: dict[int, list] = {}
-        for cod, nom, unid, unid_mes, monto, monto_mes in unir(
+        for (cod, nom, unid, unid_mes, monto, monto_mes,
+             unid_m1, unid_m2, monto_m1, monto_m2) in unir(
             _filas_linea(cur, sql, params, lin, *dias_total),
-            (0,), (2, 3, 4, 5)
+            (0,), (2, 3, 4, 5, 6, 7, 8, 9)
         ):
             if cod is None:
                 continue
@@ -562,18 +627,23 @@ GROUP BY vc.vendedor
             # NO se descartan: son ventas de la línea y tienen que estar.
             crudo = int(cod)
             dueno = dueno_de(crudo)
-            a = acum.setdefault(dueno, [0.0, 0.0, 0.0, 0.0, None])
+            # [u, uMes, m, mMes, u1, u2, m1, m2, nombre]
+            a = acum.setdefault(dueno, [0.0] * 8 + [None])
             a[0] += float(_safe(unid) or 0)
             a[1] += float(_safe(unid_mes) or 0)
             a[2] += float(_safe(monto) or 0)
             a[3] += float(_safe(monto_mes) or 0)
+            a[4] += float(_safe(unid_m1) or 0)
+            a[5] += float(_safe(unid_m2) or 0)
+            a[6] += float(_safe(monto_m1) or 0)
+            a[7] += float(_safe(monto_m2) or 0)
             if crudo == dueno and nom:
-                a[4] = nom
+                a[8] = nom
         # Un sucesor puede no tener venta propia en el período y quedarse sin
         # nombre (el LEFT JOIN sólo trae el de los códigos que facturaron).
         # Se resuelven TODOS de una, en la misma conexión: nada de un SELECT
         # por fila adentro del armado.
-        faltantes = [c for c, (_u, _um, _m, _mm, nom) in acum.items() if not nom]
+        faltantes = [c for c, v in acum.items() if not v[8]]
         if faltantes:
             cur.execute(
                 "SELECT VendedorCodigo, LTRIM(RTRIM(VendedorNombre)) "
@@ -582,7 +652,7 @@ GROUP BY vc.vendedor
             )
             for cod_v, nom_v in cur.fetchall():
                 if cod_v is not None and int(cod_v) in acum:
-                    acum[int(cod_v)][4] = nom_v
+                    acum[int(cod_v)][8] = nom_v
 
         items = [
             {
@@ -592,8 +662,13 @@ GROUP BY vc.vendedor
                 "unidadesMes": round(unid_mes, 2),
                 "monto": round(monto, 2),
                 "montoMes": round(monto_mes, 2),
+                "unidadesM1": round(u1, 2),
+                "unidadesM2": round(u2, 2),
+                "montoM1": round(m1, 2),
+                "montoM2": round(m2, 2),
             }
-            for codigo, (unid, unid_mes, monto, monto_mes, nom) in acum.items()
+            for codigo, (unid, unid_mes, monto, monto_mes,
+                         u1, u2, m1, m2, nom) in acum.items()
         ]
         # PADRÓN ÚNICO para las dos listas (2026-08-31). A diferencia de
         # patrones/clientes, acá las filas son PERSONAS y el que las mira sabe
@@ -619,7 +694,9 @@ GROUP BY vc.vendedor
         con_actividad = [
             i for i in items
             if i["unidades"] or i["monto"]
-            or (mes_cuenta and (i["unidadesMes"] or i["montoMes"]))
+            or (mes_cuenta and (i["unidadesMes"] or i["montoMes"]
+                                or i["unidadesM1"] or i["montoM1"]
+                                or i["unidadesM2"] or i["montoM2"]))
         ]
         por_u = sorted(con_actividad,
                        key=lambda x: (x["unidades"], x["unidadesMes"]), reverse=True)
@@ -629,6 +706,8 @@ GROUP BY vc.vendedor
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "mesM1": _ym_str(m1_ym) if m1_ym else None,
+            "mesM2": _ym_str(m2_ym) if m2_ym else None,
             "linea": _linea_payload(lin),
             "totalVendedores": len(por_u),
             "totalVendedoresMonto": len(por_m),

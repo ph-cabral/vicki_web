@@ -177,6 +177,10 @@ interface TopCliente {
   nombre: string | null;
   monto: number;
   montoMes: number;
+  // Mes pasado y el anterior (botón "2 meses": reemplazan al acumulado).
+  // Opcionales por si el back todavía no se reinició con el campo nuevo.
+  montoM1?: number;
+  montoM2?: number;
 }
 
 interface TopPatron {
@@ -186,6 +190,10 @@ interface TopPatron {
   unidadesMes: number;
   monto: number;
   montoMes: number;
+  unidadesM1?: number;
+  unidadesM2?: number;
+  montoM1?: number;
+  montoM2?: number;
 }
 
 interface TopVendedor {
@@ -195,6 +203,10 @@ interface TopVendedor {
   unidadesMes: number;
   monto: number;
   montoMes: number;
+  unidadesM1?: number;
+  unidadesM2?: number;
+  montoM1?: number;
+  montoM2?: number;
 }
 
 // `desde`/`hasta` son NULL en enero: todavía no hay ningún mes cerrado del
@@ -203,6 +215,8 @@ interface RespTopClientes {
   desde: string | null;
   hasta: string | null;
   mesActual: string;
+  mesM1?: string | null; // "YYYY-MM" — mes pasado
+  mesM2?: string | null; // "YYYY-MM" — el anterior al pasado
   totalClientes: number;
   porMonto: TopCliente[];
 }
@@ -211,6 +225,8 @@ interface RespTopPatrones {
   desde: string | null;
   hasta: string | null;
   mesActual: string;
+  mesM1?: string | null;
+  mesM2?: string | null;
   totalPatrones: number;
   totalPatronesMonto: number;
   porUnidades: TopPatron[];
@@ -221,6 +237,8 @@ interface RespTopVendedores {
   desde: string | null;
   hasta: string | null;
   mesActual: string;
+  mesM1?: string | null;
+  mesM2?: string | null;
   totalVendedores: number;
   totalVendedoresMonto: number;
   porUnidades: TopVendedor[];
@@ -293,6 +311,16 @@ function IconoEstimativo() {
       </span>
     </span>
   );
+}
+
+// Valor de una fila del ranking en uno de los cuatro períodos: "" =
+// acumulado, "Mes" = mes en curso, "M1" = mes pasado, "M2" = el anterior.
+// `unidades` sólo aplica si la fila tiene esa métrica (clientes son $).
+type CampoPeriodo = "" | "Mes" | "M1" | "M2";
+function valorCampo(o: object, campo: CampoPeriodo, unidades: boolean): number {
+  const r = o as Record<string, number | undefined>;
+  const k = unidades && `unidades${campo}` in r ? `unidades${campo}` : `monto${campo}`;
+  return r[k] ?? 0;
 }
 
 function FilaGrupo({
@@ -449,6 +477,10 @@ export default function VentasBulonesPage() {
   const [modoModal, setModoModal] = useState<Modo>("pesos");
   const [filasGrupoAbierto, setFilasGrupoAbierto] = useState(0);
   const [topGrupoAbierto, setTopGrupoAbierto] = useState(0);
+  // Botón "2 meses" del encabezado del ranking: la columna del acumulado
+  // (Ene–mes anterior) se reemplaza por el mes pasado y el anterior. No
+  // refetchea: el back ya manda los dos meses en la misma respuesta.
+  const [dosMeses, setDosMeses] = useState(false);
 
   // Las TRES respuestas viven en estados separados; `nivel.mode` decide
   // cuál se muestra. Cada fetch limpia las otras dos para que no quede una
@@ -770,12 +802,31 @@ export default function VentasBulonesPage() {
   const totalColsTabla = 2 + 2 * colSpanAnio;
 
   // Cada vista/métrica usa la lista que YA viene ordenada del back.
-  const topItems: (TopCliente | TopPatron | TopVendedor)[] =
+  const topItemsBase: (TopCliente | TopPatron | TopVendedor)[] =
     topVista === "clientes"
       ? topClientes?.porMonto ?? []
       : topVista === "patrones"
         ? (topMetrica === "pesos" ? topPatrones?.porMonto : topPatrones?.porUnidades) ?? []
         : (topMetrica === "pesos" ? topVendedores?.porMonto : topVendedores?.porUnidades) ?? [];
+  // Con "2 meses" activo el ranking se reordena por el mes pasado (y el
+  // anterior de desempate) y se esconde lo que no se movió en ninguno de los
+  // períodos visibles. Los totales se siguen sumando sobre `topItemsBase`.
+  const topEnUnidades = topVista !== "clientes" && topMetrica !== "pesos";
+  const topItems = useMemo<(TopCliente | TopPatron | TopVendedor)[]>(() => {
+    if (!dosMeses) return topItemsBase;
+    return topItemsBase
+      .filter(
+        (it) =>
+          valorCampo(it, "M1", topEnUnidades) ||
+          valorCampo(it, "M2", topEnUnidades) ||
+          valorCampo(it, "Mes", topEnUnidades),
+      )
+      .sort(
+        (a, b) =>
+          valorCampo(b, "M1", topEnUnidades) - valorCampo(a, "M1", topEnUnidades) ||
+          valorCampo(b, "M2", topEnUnidades) - valorCampo(a, "M2", topEnUnidades),
+      );
+  }, [dosMeses, topItemsBase, topEnUnidades]);
   const topGrupos = agrupar(topItems);
   const topGrupoSeguro = Math.min(topGrupoAbierto, Math.max(0, topGrupos.length - 1));
   const colTop =
@@ -788,7 +839,9 @@ export default function VentasBulonesPage() {
   const topSumas = useMemo(() => {
     let acum = 0;
     let mes = 0;
-    for (const it of topItems) {
+    let m1 = 0;
+    let m2 = 0;
+    for (const it of topItemsBase) {
       if (topVista === "clientes") {
         const c = it as TopCliente;
         acum += c.monto;
@@ -798,9 +851,11 @@ export default function VentasBulonesPage() {
         acum += topMetrica === "pesos" ? x.monto : x.unidades;
         mes += topMetrica === "pesos" ? x.montoMes : x.unidadesMes;
       }
+      m1 += valorCampo(it, "M1", topEnUnidades);
+      m2 += valorCampo(it, "M2", topEnUnidades);
     }
-    return { acum, mes };
-  }, [topItems, topVista, topMetrica]);
+    return { acum, mes, m1, m2 };
+  }, [topItemsBase, topVista, topMetrica, topEnUnidades]);
   const nombreFilasTop =
     topVista === "clientes" ? "clientes" : topVista === "patrones" ? "patrones" : "vendedores";
 
@@ -808,7 +863,13 @@ export default function VentasBulonesPage() {
   // `mesActual`) para que el título no pueda contradecir a los datos: las
   // tres respuestas traen el mismo rango, así que alcanza con la de la vista
   // activa. En enero desde/hasta vienen en null y el acumulado queda vacío.
-  const topResp: { desde: string | null; hasta: string | null; mesActual: string } | null =
+  const topResp: {
+    desde: string | null;
+    hasta: string | null;
+    mesActual: string;
+    mesM1?: string | null;
+    mesM2?: string | null;
+  } | null =
     topVista === "clientes"
       ? topClientes
       : topVista === "patrones"
@@ -826,6 +887,15 @@ export default function VentasBulonesPage() {
   const mesActualLabel = topResp?.mesActual
     ? MESES_ES[Number(topResp.mesActual.slice(5, 7)) - 1] ?? "Mes en curso"
     : "Mes en curso";
+  // Mes pasado y el anterior (botón "2 meses"). Salen del back; si todavía no
+  // los manda se calculan del calendario para no dejar el título vacío.
+  const mesActualNumTop = new Date().getMonth() + 1;
+  const nombreMesFull = (ym: string | null | undefined, atras: number) =>
+    ym
+      ? MESES_ES[Number(ym.slice(5, 7)) - 1] ?? ""
+      : MESES_ES[(((mesActualNumTop - 1 - atras) % 12) + 12) % 12] ?? "";
+  const mesM1Label = nombreMesFull(topResp?.mesM1, 1);
+  const mesM2Label = nombreMesFull(topResp?.mesM2, 2);
 
   return (
     <div className="min-h-screen bg-[#111111] text-white">
@@ -1647,12 +1717,55 @@ export default function VentasBulonesPage() {
                       <th className="px-3 py-2 font-medium text-left whitespace-nowrap">
                         {colTop}
                       </th>
-                      <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
-                        {modo === "pesos" ? "Pesos" : "Unidades"}
-                        <span className="block text-[11px] font-normal text-zinc-500">
-                          {rangoAcumLabel}
-                        </span>
-                      </th>
+                      {dosMeses ? (
+                        <>
+                          <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                            <button
+                              type="button"
+                              onClick={() => {
+ setDosMeses(false);
+ setTopGrupoAbierto(0);
+ }}
+                              title={`Volver al acumulado ${rangoAcumLabel}`}
+                              className="mb-1 block ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+                            >
+                              ← Acumulado
+                            </button>
+                            <span className="tabular-nums text-zinc-200">{fmtTop(topSumas.m2)}</span>
+                            <span className="block text-[11px] font-normal text-zinc-500">
+                              {mesM2Label}
+                            </span>
+                          </th>
+                          <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                            <span className="tabular-nums text-zinc-200">{fmtTop(topSumas.m1)}</span>
+                            <span className="block text-[11px] font-normal text-zinc-500">
+                              {mesM1Label}
+                            </span>
+                          </th>
+                        </>
+                      ) : (
+                        <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                          <div className="inline-flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+ setDosMeses(true);
+ setTopGrupoAbierto(0);
+ }}
+                              title={`Ver ${mesM2Label} y ${mesM1Label} en lugar del acumulado`}
+                              className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+                            >
+                              2 meses
+                            </button>
+                            <span>
+                              {modo === "pesos" ? "Pesos" : "Unidades"}
+                              <span className="block text-[11px] font-normal text-zinc-500">
+                                {rangoAcumLabel}
+                              </span>
+                            </span>
+                          </div>
+                        </th>
+                      )}
                       {/* Mes en curso: va aparte del acumulado justamente
                           porque está incompleto — sumarlo adentro haría que
                           el año se compare contra un mes a medio facturar.
@@ -1695,7 +1808,7 @@ export default function VentasBulonesPage() {
                           total={topItems.length}
                           abierto={topGrupoSeguro === gIdx}
                           onClick={() => setTopGrupoAbierto(topGrupoSeguro === gIdx ? -1 : gIdx)}
-                          colSpan={4}
+                          colSpan={dosMeses ? 5 : 4}
                         />
                       )}
                       {(topGrupos.length <= 1 || topGrupoSeguro === gIdx) &&
@@ -1730,6 +1843,8 @@ export default function VentasBulonesPage() {
                             : topMetrica === "pesos"
                               ? (pat ?? ven!).montoMes
                               : (pat ?? ven!).unidadesMes;
+                          const valorTopM1 = valorCampo(item, "M1", topEnUnidades);
+                          const valorTopM2 = valorCampo(item, "M2", topEnUnidades);
                           const abrir = () =>
                             cli
                               ? abrirCliente({ numero: cli.numero, nombre: cli.nombre })
@@ -1762,9 +1877,20 @@ export default function VentasBulonesPage() {
                                   {etiqueta}
                                 </button>
                               </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(valorTop)}
-                              </td>
+                              {dosMeses ? (
+                                <>
+                                  <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                    {fmtTop(valorTopM2)}
+                                  </td>
+                                  <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                    {fmtTop(valorTopM1)}
+                                  </td>
+                                </>
+                              ) : (
+                                <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                  {fmtTop(valorTop)}
+                                </td>
+                              )}
                               <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
                                 {fmtTop(valorTopMes)}
                               </td>
@@ -1782,9 +1908,20 @@ export default function VentasBulonesPage() {
                           ({fmtNum(topItems.length)} {nombreFilasTop})
                         </span>
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                        {fmtTop(topSumas.acum)}
-                      </td>
+                      {dosMeses ? (
+                        <>
+                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                            {fmtTop(topSumas.m2)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                            {fmtTop(topSumas.m1)}
+                          </td>
+                        </>
+                      ) : (
+                        <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                          {fmtTop(topSumas.acum)}
+                        </td>
+                      )}
                       <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
                         {fmtTop(topSumas.mes)}
                       </td>
