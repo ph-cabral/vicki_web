@@ -15,6 +15,12 @@ import type { OrigenArticulo } from "@/lib/compras/origenArticulo";
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
 
+// 2026-10-07 — "Con OC" cuenta SOLO lo que emite el sector compras: comprobante
+// 70 (ORDEN DE COMPRA) y comprador 1 (Ana Laura). Quedan afuera OC IMPO (75),
+// los presupuestos por área y las OC de otros compradores. Aplica tanto a las
+// OC emitidas en el mes como a la OC viva.
+const OC_COMPRADOR = "&comp=70&comprador=1";
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
@@ -106,7 +112,17 @@ export const maxDuration = 60;
 //   roundtrips uno atrás del otro) y son best-effort: si alguno no responde, la
 //   columna correspondiente se informa en `warn` pero no rompe la vista.
 //
-// 2026-10-05 — UNIVERSO UNIFICADO con /compras/faltantes: la columna 1 ya NO es
+// 2026-10-07 — NÚMEROS REALES (medición de septiembre vs. sector compras):
+//   · Columna 1 "Faltantes": lo marcado "sin existencia" por la mesa en el mes
+//     que HOY sigue sin cumplirse en Magnus (sin restar extraordinarios,
+//     descartados ni cubiertos por stock). Ver lib/compras/faltantesMesConsumo.ts.
+//     Sept 2026 nacionales: 312 items / 11.257,53 u.
+//   · Columna 2 "Con OC": solo OC comp. 70 de Ana Laura (CodComprador 1), del
+//     mes ∪ viva. Antes: 70 y 75 de cualquier comprador.
+//   · Columna 3 "Ingresados": sin cambios (cualquier remito de ingreso del mes).
+//   /compras ya NO comparte universo con /compras/faltantes.
+//
+// 2026-10-05 — (reemplazado el 2026-10-07) UNIVERSO UNIFICADO con /compras/faltantes: la columna 1 ya NO es
 // "todo renglón pendiente del mes" sino exactamente los artículos de
 // /compras/faltantes (marca "sin existencia" de la mesa, menos extraordinarios
 // por cliente, descartados y cubiertos por stock; incluye los que ya tienen
@@ -278,8 +294,8 @@ export async function GET(req: NextRequest) {
   //    · deposito/faltantes → origen, estado, unidades e importe por artículo
   const q = encodeURIComponent;
   const [ocRes, ocVivaRes, ingRes, faltRes] = await Promise.allSettled([
-    getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}`),
-    getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}`),
+    getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}${OC_COMPRADOR}`),
+    getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}${OC_COMPRADOR}`),
     getJson(`${API_URL}/compras/ingresos?desde=${q(desde)}&hasta=${q(hasta)}`),
     // Universo = el de /compras/faltantes (ver lib/compras/faltantesMesConsumo.ts).
     cargarFaltantesMesCompras(desde, hasta),

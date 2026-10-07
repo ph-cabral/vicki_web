@@ -36,7 +36,7 @@ from ot_reposicion import (
 # OT de reposición vivas y no cumplidas — marca en /picking (sólo lectura).
 from repo_en_curso import fetch_repo_en_curso
 from compras import (
-    fetch_ordenes_pendientes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
+    fetch_ordenes_pendientes, fetch_faltantes_marcados_mes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
     fetch_compras_valorizado,
     fetch_consumo_articulo, fetch_consumo_articulos, fetch_consumo_lineas,
     fetch_lineas, fetch_lineas_por_articulos,
@@ -106,6 +106,11 @@ from errores_mesa import (
     insert_error_calidad, update_observacion, fetch_controlador_diag,
     fetch_articulos_pedido, insert_error_mesa_items,
     opciones_calidad as errores_mesa_opciones_calidad, insert_error_calidad_items,
+)
+from calidad import (
+    buscar_clientes as calidad_buscar_clientes,
+    fetch_controles_cliente as calidad_fetch_controles_cliente,
+    fetch_control_pedido as calidad_fetch_control_pedido,
 )
 from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
@@ -738,13 +743,15 @@ def deposito_repo_en_curso(dias: int = Query(default=30, ge=1, le=120)):
 def compras_ordenes_pendientes(
     desde: str | None = Query(default=None),
     fabril: int = Query(default=0),
+    comp: int | None = Query(default=None),
+    comprador: int | None = Query(default=None),
 ):
     """OC abiertas, pendiente de recibir (Pedida - Recibida) agregado por artículo.
     Solo lectura sobre Magnus; se cruza con faltantes en /compras/faltantes.
     `desde`='YYYY-MM-DD' (default OC_DESDE_DEFAULT): solo OC con FecMovim >= desde,
     para que las OC viejas no cubran faltantes actuales."""
     try:
-        return fetch_ordenes_pendientes(desde, incluir_fabril=bool(fabril))
+        return fetch_ordenes_pendientes(desde, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
@@ -776,13 +783,29 @@ def compras_ordenes_mes(
     desde: str = Query(...),
     hasta: str = Query(...),
     fabril: int = Query(default=0),
+    comp: int | None = Query(default=None),
+    comprador: int | None = Query(default=None),
 ):
     """Artículos (CodArticulo distintos) con al menos un renglón de OC hecho
     en [desde, hasta] por FecMovim de la cabecera — sin importar si ya se
     recibió o sigue pendiente (a diferencia de /compras/ordenes-pendientes).
     Para /compras/metricas: funnel faltantes del mes → con OC ese mes."""
     try:
-        return fetch_ordenes_articulos_rango(desde, hasta, incluir_fabril=bool(fabril))
+        return fetch_ordenes_articulos_rango(desde, hasta, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Compras: faltantes marcados "sin existencia" del mes (universo de /compras) ──
+@app.get("/compras/faltantes-marcados-mes")
+def compras_faltantes_marcados_mes(
+    desde: str = Query(...),
+    hasta: str = Query(...),
+):
+    """Por artículo, lo marcado "sin existencia" en la mesa dentro del rango que
+    HOY sigue sin cumplirse en Magnus (pedido Cerrado/Facturado, Cumplida <
+    Pedida). Para /compras/metricas."""
+    try:
+        return fetch_faltantes_marcados_mes(desde, hasta)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
@@ -2132,6 +2155,30 @@ def deposito_control_asignacion_por_operario(dia: str | None = Query(default=Non
         return fetch_mesa_por_operario(dia)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/calidad/clientes")
+def calidad_clientes(q: str = Query(default="")):
+    """Buscador de clientes con controles de mesa (módulo Calidad)."""
+    try:
+        return {"clientes": calidad_buscar_clientes(q)}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/calidad/controles")
+def calidad_controles(cod_cliente: int = Query(...), dias: int = Query(default=90)):
+    """Pedidos tomados en mesa por un cliente (módulo Calidad)."""
+    try:
+        return calidad_fetch_controles_cliente(cod_cliente, dias)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/calidad/control/{nro_pedido}")
+def calidad_control(nro_pedido: int):
+    """Línea de tiempo vertical del control de un pedido (módulo Calidad)."""
+    try:
+        return calidad_fetch_control_pedido(nro_pedido)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

@@ -74,6 +74,20 @@ _COMP = (
     if COMP_CODIGOS_OC_COMPRA else ""
 )
 
+def _cond_comp_comprador(comp=None, comprador=None) -> str | None:
+    """Filtro opcional de comprobante y/o comprador de la OC (2026-10-07).
+    /compras cuenta como "Con OC" solo lo que emite el sector compras:
+    CompCodigo 70 + CodComprador 1 (Ana Laura). Devuelve None si no se pidió
+    ninguno (queda el filtro general _COMP). Los valores se fuerzan a int: van
+    como literales al SQL."""
+    partes = []
+    if comp is not None:
+        partes.append(f"AND cab.CompCodigo = {int(comp)}")
+    if comprador is not None:
+        partes.append(f"AND cab.CodComprador = {int(comprador)}")
+    return "\n  ".join(partes) if partes else None
+
+
 # Origen del artículo: StkFer_Articulos.NacionalImportado → Stk_TiposArticulos.
 # Descripcion ∈ {Nacional, Importado, Fabril, Generico, Original}.
 #   · Generico  = presupuestos de servicio (P.INDUSTRIA, P.MKT) — NUNCA son
@@ -202,7 +216,7 @@ def _nro_oc(centro, numero):
     return f"{c:04d}-{n:08d}"
 
 
-def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
+def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False, comp=None, comprador=None):
     """Agrega por artículo lo pendiente de recibir de las OC.
 
     desde = 'YYYY-MM-DD' (o None → OC_DESDE_DEFAULT): solo se toman las OC cuyo
@@ -241,7 +255,7 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False):
         # (74/76/77/78) y el pase 80, que no cubren ningún faltante de venta.
         # Con incluir_fabril (/fabrica/faltantes) NO se filtra: la OC de
         # producción interna cuelga de otros comprobantes.
-        _comp="" if incluir_fabril else _COMP,
+        _comp=_cond_comp_comprador(comp, comprador) or ("" if incluir_fabril else _COMP),
         _tipo=_cond_tipo(incluir_fabril),
         _fecha=f"AND cab.FecMovim >= {_dias(corte)}" if corte else "",
     )
@@ -380,7 +394,7 @@ WHERE cab.FecMovim BETWEEN {_d1} AND {_d2}
 """
 
 
-def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool = False):
+def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool = False, comp=None, comprador=None):
     """Artículos con al menos un renglón de Orden de Compra HECHA en el rango
     [desde, hasta] (por FecMovim de la cabecera) — a diferencia de
     fetch_ordenes_pendientes, ACÁ NO importa si ya se recibió o sigue
@@ -398,7 +412,8 @@ def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool =
     d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
 
     sql = SQL_OC_RANGO.format(
-        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _comp=_COMP,
+        _join_tipo=_JOIN_TIPO, _excl=_EXCL,
+        _comp=_cond_comp_comprador(comp, comprador) or _COMP,
         _tipo=_cond_tipo(incluir_fabril),
         _d1=_dias(d1), _d2=_dias(d2),
     )
@@ -1867,3 +1882,121 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
         conn.close()
     return {"desde": d1.isoformat(), "hasta": d2.isoformat(), "ocDesde": OC_DESDE_DEFAULT,
             "total": len(rows), "rows": rows}
+
+
+# ── Faltantes "marcados" del mes (universo de /compras, 2026-10-07) ──────────
+# Universo de la medición de faltantes: renglones que la mesa de control marcó
+# "sin existencia" (preparado.faltante_existencia, existencia = false, última
+# marca del renglón dentro del rango) que HOY siguen sin cumplirse en Magnus:
+# pedido Cerrado/Facturado (EstadoPedido 3/4) y CantidadCumplida < CantidadPedida.
+# Unidades = Σ(Pedida − Cumplida) actual; importe = unidades × PrecioVenta.
+# NO resta extraordinarios, descartados ni cubiertos por stock (eso es el
+# universo de /compras/faltantes). Septiembre 2026 nacionales: 312 items /
+# 11.257,53 u.
+#
+# Rendimiento: las marcas salen de Postgres con UNA consulta (DISTINCT ON) y
+# Magnus se consulta por NroMovVenta IN (...) en tandas de 500 (sargable por la
+# PK del renglón); el par (pedido, renglón) se filtra en Python.
+_CHUNK_PEDIDOS = 500
+
+
+def fetch_faltantes_marcados_mes(desde: str, hasta: str):
+    from db_pg import get_pg_connection
+    from deposito import _info_articulos_faltante
+
+    d1 = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
+    d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
+
+    # 1) Última marca de cada renglón dentro del rango; nos quedamos con las
+    #    "sin existencia".
+    pg = get_pg_connection()
+    try:
+        cur = pg.cursor()
+        cur.execute(
+            """
+            SELECT nro_ped_origen, nro_reng_origen
+            FROM (
+              SELECT DISTINCT ON (nro_ped_origen, nro_reng_origen)
+                     nro_ped_origen, nro_reng_origen, existencia
+              FROM preparado.faltante_existencia
+              WHERE fecha BETWEEN %s AND %s
+                AND nro_ped_origen IS NOT NULL AND nro_reng_origen IS NOT NULL
+              ORDER BY nro_ped_origen, nro_reng_origen,
+                       actualizado_en DESC NULLS LAST, id DESC
+            ) m
+            WHERE existencia = false
+            """,
+            (d1, d2),
+        )
+        marcas = {(int(a), int(b)) for a, b in cur.fetchall()}
+    finally:
+        pg.close()
+
+    if not marcas:
+        return {"desde": d1.isoformat(), "hasta": d2.isoformat(), "renglonesMarcados": 0,
+                "total": 0, "rows": []}
+
+    # 2) Estado actual en Magnus de esos renglones.
+    pedidos = sorted({p for p, _ in marcas})
+    agg: dict[str, dict] = {}
+    vivos = 0
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        for i in range(0, len(pedidos), _CHUNK_PEDIDOS):
+            chunk = pedidos[i:i + _CHUNK_PEDIDOS]
+            ph = ",".join("?" for _ in chunk)
+            cur.execute(
+                f"""
+                SELECT r.NroMovVenta, r.NroRenglon,
+                       LTRIM(RTRIM(r.CodArticu)) AS Cod,
+                       r.CantidadPedida, r.CantidadCumplida, r.PrecioVenta
+                FROM EVERWEAR.dbo.VenFer_PedidoReng r
+                INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab
+                        ON cab.NroMovVenta = r.NroMovVenta
+                WHERE r.NroMovVenta IN ({ph})
+                  AND cab.EstadoPedido IN (3, 4)
+                  AND r.CantidadCumplida < r.CantidadPedida
+                """,
+                chunk,
+            )
+            for nro, reng, cod, ped, cum, precio in cur.fetchall():
+                if (int(nro), int(reng)) not in marcas:
+                    continue
+                cod = (str(cod or "")).strip()
+                if not cod:
+                    continue
+                dif = float(_safe(ped) or 0) - float(_safe(cum) or 0)
+                if dif <= 0:
+                    continue
+                a = agg.setdefault(cod, {"unidades": 0.0, "importe": 0.0, "renglones": 0})
+                a["unidades"] += dif
+                a["importe"] += dif * float(_safe(precio) or 0)
+                a["renglones"] += 1
+                vivos += 1
+    finally:
+        conn.close()
+
+    # 3) Origen / proveedor / línea por artículo (una vez por código).
+    info = _info_articulos_faltante(list(agg.keys()))
+    rows = []
+    for cod, a in sorted(agg.items()):
+        meta = info.get(cod, {})
+        rows.append({
+            "CodArticulo": cod,
+            "Proveedor": meta.get("Proveedor"),
+            "tipoArticulo": meta.get("TipoArticulo"),
+            "Linea": meta.get("Linea"),
+            "unidades": round(a["unidades"], 3),
+            "importe": round(a["importe"], 2),
+            "renglones": a["renglones"],
+        })
+    return {
+        "desde": d1.isoformat(),
+        "hasta": d2.isoformat(),
+        "renglonesMarcados": len(marcas),
+        "renglonesVivos": vivos,
+        "total": len(rows),
+        "rows": rows,
+    }

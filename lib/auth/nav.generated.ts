@@ -4,6 +4,7 @@ import type { NavNode } from "./modules";
 
 export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
   "buscador": [],
+  "calidad": [],
   "compras": [
     {
       "label": "Consumo",
@@ -16,6 +17,10 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
     {
       "label": "Pases",
       "href": "/compras/pases"
+    },
+    {
+      "label": "Planificación",
+      "href": "/compras/planificacion"
     },
     {
       "label": "Tarea",
@@ -163,6 +168,12 @@ export const GENERATED_MODULES: { key: string; label: string; href: string; hasI
     "key": "buscador",
     "label": "Buscador",
     "href": "/buscador",
+    "hasIndex": true
+  },
+  {
+    "key": "calidad",
+    "label": "Calidad",
+    "href": "/calidad",
     "hasIndex": true
   },
   {

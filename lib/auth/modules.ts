@@ -96,6 +96,12 @@ const RAW_MODULES: Omit<ModuleDef, "children" | "hasIndex">[] = [
     color: "bg-cyan-700 hover:bg-cyan-600",
   },
   {
+    key: "calidad",
+    label: "Calidad",
+    href: "/calidad",
+    color: "bg-lime-700 hover:bg-lime-600",
+  },
+  {
     key: "sistema",
     label: "Sistema",
     href: "/sistema",
@@ -253,6 +259,8 @@ const ROUTE_MODULE: { prefix: string; mod: ModuleKey }[] = [
   { prefix: "/api/vicki", mod: "vicki" },
   { prefix: "/buscador", mod: "buscador" },
   { prefix: "/api/buscador", mod: "buscador" },
+  { prefix: "/calidad", mod: "calidad" },
+  { prefix: "/api/calidad", mod: "calidad" },
   { prefix: "/sistema", mod: "sistema" },
   { prefix: "/api/sistema", mod: "sistema" },
 ];
