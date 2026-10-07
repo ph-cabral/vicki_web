@@ -131,6 +131,10 @@ interface TopCliente {
   // Solo el mes en curso, aparte del acumulado (2026-09-04) — es la
   // columna de la derecha, NO está sumado en `monto`.
   montoMes: number;
+  // Mes pasado y el anterior (botón "2 meses": reemplazan al acumulado).
+  // Opcionales por si el back todavía no se reinició con el campo nuevo.
+  montoM1?: number;
+  montoM2?: number;
   bruto?: number;
   brutoMes?: number;
   ajuste?: number;
@@ -141,6 +145,12 @@ interface RespTopClientes {
   desde: string | null; // "YYYY-MM" — null en enero (no hay mes cerrado)
   hasta: string | null; // "YYYY-MM"
   mesActual: string; // "YYYY-MM"
+  mesM1?: string; // "YYYY-MM" — mes pasado
+  mesM2?: string; // "YYYY-MM" — el mes anterior al pasado
+  totalM1?: number;
+  totalM2?: number;
+  ajusteM1?: number;
+  ajusteM2?: number;
   totalClientes: number;
   porMonto: TopCliente[];
   // Netos del ranking completo (no sólo de las filas listadas).
@@ -169,6 +179,10 @@ interface TopSubLinea {
   monto: number;
   unidadesMes: number;
   montoMes: number;
+  unidadesM1?: number;
+  montoM1?: number;
+  unidadesM2?: number;
+  montoM2?: number;
 }
 
 interface TopLinea {
@@ -178,6 +192,10 @@ interface TopLinea {
   // Mes en curso, en las dos métricas (2026-09-04) — columna aparte.
   unidadesMes: number;
   montoMes: number;
+  unidadesM1?: number;
+  montoM1?: number;
+  unidadesM2?: number;
+  montoM2?: number;
   subLineas: TopSubLinea[];
   // Sólo las líneas con algún patrón "Apertura Comercial" = SI en el DePara
   // se pueden desplegar (ver catalogo_pg.lineas_con_apertura_comercial /
@@ -191,6 +209,12 @@ interface RespTopLineas {
   desde: string | null; // "YYYY-MM" — null en enero
   hasta: string | null; // "YYYY-MM"
   mesActual: string; // "YYYY-MM"
+  mesM1?: string; // "YYYY-MM" — mes pasado
+  mesM2?: string; // "YYYY-MM" — el mes anterior al pasado
+  totalM1?: number;
+  totalM2?: number;
+  ajusteM1?: number;
+  ajusteM2?: number;
   totalLineas: number;
   totalLineasMonto: number;
   porUnidades: TopLinea[];
@@ -294,6 +318,17 @@ function agrupar<T>(items: T[]): T[][] {
 // grupo. `colSpan` tiene que cubrir todas las columnas de la tabla en la que
 // se usa (varía: 3 en las tablas simples, 2 + 2*colSpanAnio en la de
 // línea×año con el desglose mensual).
+// Valor de una fila del ranking (cliente, línea o sub_línea) en uno de los
+// cuatro períodos: "" = acumulado, "Mes" = mes en curso, "M1" = mes pasado,
+// "M2" = el anterior. `unidades` sólo aplica si la fila tiene esa métrica
+// (los clientes son siempre $).
+type CampoPeriodo = "" | "Mes" | "M1" | "M2";
+function valorCampo(o: object, campo: CampoPeriodo, unidades: boolean): number {
+  const r = o as Record<string, number | undefined>;
+  const k = unidades && `unidades${campo}` in r ? `unidades${campo}` : `monto${campo}`;
+  return r[k] ?? 0;
+}
+
 function FilaGrupo({
   idx,
   desde,
@@ -757,6 +792,10 @@ export default function VentasVendedorPage() {
   // topGrupoAbierto cada vez que cambia la vista/vendedor (ver los otros
   // setTopGrupoAbierto(0) más abajo) para no quedar con una línea "abierta"
   // que ya no está en pantalla.
+  // Botón "2 meses" del encabezado del ranking: la columna del acumulado
+  // (Ene–mes anterior) se reemplaza por el mes pasado y el anterior. No
+  // refetchea: el back ya manda los dos meses en la misma respuesta.
+  const [dosMeses, setDosMeses] = useState(false);
   const [lineasAbiertas, setLineasAbiertas] = useState<Set<string>>(new Set());
   const toggleLinea = useCallback((linea: string) => {
     setLineasAbiertas((prev) => {
@@ -807,8 +846,12 @@ export default function VentasVendedorPage() {
     desde: string | null;
     hasta: string | null;
     mesActual: string;
+    mesM1?: string;
+    mesM2?: string;
     ajuste?: number;
     ajusteMes?: number;
+    ajusteM1?: number;
+    ajusteM2?: number;
   } | null = topVista === "clientes" ? topClientes : topLineas;
   const topTotal: number | null =
     topVista === "clientes"
@@ -1058,8 +1101,43 @@ export default function VentasVendedorPage() {
   // Cada vista/métrica usa la lista que YA viene ordenada del back.
   const topLineasItems: TopLinea[] =
     (topMetricaLineas === "pesos" ? topLineas?.porMonto : topLineas?.porUnidades) ?? [];
-  const topItems: (TopCliente | TopLinea)[] =
+  const topItemsBase: (TopCliente | TopLinea)[] =
     topVista === "clientes" ? topClientes?.porMonto ?? [] : topLineasItems;
+  // Con "2 meses" activo el ranking se reordena por el mes pasado (y el
+  // anterior de desempate) y se esconde lo que no se movió en ninguno de los
+  // períodos que se ven. Los totales se siguen sumando sobre `topItemsBase`.
+  const topEnUnidades = topVista === "lineas" && topMetricaLineas !== "pesos";
+  const topItems = useMemo<(TopCliente | TopLinea)[]>(() => {
+    if (!dosMeses) return topItemsBase;
+    return topItemsBase
+      .filter(
+        (it) =>
+          valorCampo(it, "M1", topEnUnidades) ||
+          valorCampo(it, "M2", topEnUnidades) ||
+          valorCampo(it, "Mes", topEnUnidades),
+      )
+      .sort(
+        (a, b) =>
+          valorCampo(b, "M1", topEnUnidades) - valorCampo(a, "M1", topEnUnidades) ||
+          valorCampo(b, "M2", topEnUnidades) - valorCampo(a, "M2", topEnUnidades),
+      );
+  }, [dosMeses, topItemsBase, topEnUnidades]);
+  // Sub_líneas de una línea, en el orden/filtro del modo activo.
+  const subsDe = (l: TopLinea): TopSubLinea[] =>
+    !dosMeses
+      ? l.subLineas
+      : l.subLineas
+          .filter(
+            (sl) =>
+              valorCampo(sl, "M1", topEnUnidades) ||
+              valorCampo(sl, "M2", topEnUnidades) ||
+              valorCampo(sl, "Mes", topEnUnidades),
+          )
+          .sort(
+            (a, b) =>
+              valorCampo(b, "M1", topEnUnidades) - valorCampo(a, "M1", topEnUnidades) ||
+              valorCampo(b, "M2", topEnUnidades) - valorCampo(a, "M2", topEnUnidades),
+          );
   const topGrupos = agrupar(topItems);
   const topGrupoSeguro = Math.min(topGrupoAbierto, Math.max(0, topGrupos.length - 1));
 
@@ -1076,17 +1154,19 @@ export default function VentasVendedorPage() {
   // acordeón abierto — son el total del período, no el de lo que se ve.
   const topSumas = useMemo(
     () =>
-      topItems.reduce(
+      topItemsBase.reduce(
         (acc, it) => {
           acc.acum += valorTop(it) || 0;
           acc.mes += valorTopMes(it) || 0;
+          acc.m1 += valorCampo(it, "M1", modo === "unidades") || 0;
+          acc.m2 += valorCampo(it, "M2", modo === "unidades") || 0;
           return acc;
         },
-        { acum: 0, mes: 0 },
+        { acum: 0, mes: 0, m1: 0, m2: 0 },
       ),
     // valorTop/valorTopMes solo dependen de `modo`, que ya está acá.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [topItems, modo],
+    [topItemsBase, modo],
   );
 
   // Ajuste de la venta: bonificaciones y ajustes de saldo del mismo rango y
@@ -1105,8 +1185,10 @@ export default function VentasVendedorPage() {
     if (topVista === "clientes" && topResp?.ajusteIncluido) return null;
     const acum = topResp?.ajuste ?? 0;
     const mes = topResp?.ajusteMes ?? 0;
-    if (!acum && !mes) return null;
-    return { acum, mes };
+    const m1 = topResp?.ajusteM1 ?? 0;
+    const m2 = topResp?.ajusteM2 ?? 0;
+    if (!acum && !mes && !m1 && !m2) return null;
+    return { acum, mes, m1, m2 };
   }, [topResp, modo, topVista]);
 
   // Total NETO que se muestra en el encabezado y en el pie. Tres casos:
@@ -1120,11 +1202,18 @@ export default function VentasVendedorPage() {
   const topNeto = useMemo(() => {
     if (modo === "unidades") return topSumas;
     if (topVista === "lineas" && topLineas?.total != null) {
-      return { acum: topLineas.total, mes: topLineas.totalMes ?? 0 };
+      return {
+        acum: topLineas.total,
+        mes: topLineas.totalMes ?? 0,
+        m1: topLineas.totalM1 ?? 0,
+        m2: topLineas.totalM2 ?? 0,
+      };
     }
     return {
       acum: topSumas.acum + (topAjuste?.acum ?? 0),
       mes: topSumas.mes + (topAjuste?.mes ?? 0),
+      m1: topSumas.m1 + (topAjuste?.m1 ?? 0),
+      m2: topSumas.m2 + (topAjuste?.m2 ?? 0),
     };
   }, [modo, topVista, topLineas, topSumas, topAjuste]);
 
@@ -1134,8 +1223,10 @@ export default function VentasVendedorPage() {
     if (topVista !== "clientes" || !topResp?.ajusteIncluido) return null;
     const acum = topResp?.ajuste ?? 0;
     const mes = topResp?.ajusteMes ?? 0;
-    if (!acum && !mes) return null;
-    return { acum, mes };
+    const m1 = topResp?.ajusteM1 ?? 0;
+    const m2 = topResp?.ajusteM2 ?? 0;
+    if (!acum && !mes && !m1 && !m2) return null;
+    return { acum, mes, m1, m2 };
   }, [topResp, topVista]);
 
   // Etiquetas de encabezado. Salen del BACK (`desde`/`hasta`/`mesActual`)
@@ -1153,6 +1244,37 @@ export default function VentasVendedorPage() {
   const mesActualLabel = topResp?.mesActual
     ? MESES_ES[Number(topResp.mesActual.slice(5, 7)) - 1] ?? "Mes en curso"
     : "Mes en curso";
+  // Mes pasado y el anterior (botón "2 meses"). Salen del back; si todavía
+  // no los manda se calculan del calendario para no dejar el título vacío.
+  const nombreMesFull = (ym: string | undefined, atras: number) =>
+    ym
+      ? MESES_ES[Number(ym.slice(5, 7)) - 1] ?? ""
+      : MESES_ES[(((mesActualNum - 1 - atras) % 12) + 12) % 12] ?? "";
+  const mesM1Label = nombreMesFull(topResp?.mesM1, 1);
+  const mesM2Label = nombreMesFull(topResp?.mesM2, 2);
+
+  // Celdas numéricas de una fila del pie, según el modo: acumulado | (mes
+  // anterior, mes pasado), y siempre el mes en curso a la derecha.
+  const pieCeldas = (
+    v: { acum: number; mes: number; m1: number; m2: number },
+    cls: string,
+    py = "py-2",
+  ) => {
+    const base = `px-3 ${py} text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${cls}`;
+    return (
+      <>
+        {dosMeses ? (
+          <>
+            <td className={base}>{fmtTop(v.m2)}</td>
+            <td className={base}>{fmtTop(v.m1)}</td>
+          </>
+        ) : (
+          <td className={base}>{fmtTop(v.acum)}</td>
+        )}
+        <td className={base}>{fmtTop(v.mes)}</td>
+      </>
+    );
+  };
 
 
   return (
@@ -2136,12 +2258,53 @@ export default function VentasVendedorPage() {
                           <th className="px-3 py-2 font-medium text-left whitespace-nowrap">
                             {topVista === "clientes" ? "Cliente" : "Línea"}
                           </th>
-                          <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
-                            {modo === "pesos" ? "Pesos" : "Unidades"}
-                            <span className="block text-[11px] font-normal text-zinc-500">
-                              {rangoAcumLabel}
-                            </span>
-                          </th>
+                          {dosMeses ? (
+                            <>
+                              <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                                <button
+                                  type="button"
+                                  onClick={() => setDosMeses(false)}
+                                  title={`Volver al acumulado ${rangoAcumLabel}`}
+                                  className="mb-1 block ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+                                >
+                                  ← Acumulado
+                                </button>
+                                <span className="tabular-nums text-zinc-200">
+                                  {fmtTop(topNeto.m2)}
+                                </span>
+                                <span className="block text-[11px] font-normal text-zinc-500">
+                                  {mesM2Label}
+                                </span>
+                              </th>
+                              <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                                <span className="tabular-nums text-zinc-200">
+                                  {fmtTop(topNeto.m1)}
+                                </span>
+                                <span className="block text-[11px] font-normal text-zinc-500">
+                                  {mesM1Label}
+                                </span>
+                              </th>
+                            </>
+                          ) : (
+                            <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                              <div className="inline-flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setDosMeses(true)}
+                                  title={`Ver ${mesM2Label} y ${mesM1Label} en lugar del acumulado`}
+                                  className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-normal text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+                                >
+                                  2 meses
+                                </button>
+                                <span>
+                                  {modo === "pesos" ? "Pesos" : "Unidades"}
+                                  <span className="block text-[11px] font-normal text-zinc-500">
+                                    {rangoAcumLabel}
+                                  </span>
+                                </span>
+                              </div>
+                            </th>
+                          )}
                           {/* Mes en curso (2026-09-04) — va aparte
                               del acumulado justamente porque está
                               incompleto: sumarlo adentro haría que el año
@@ -2197,7 +2360,7 @@ export default function VentasVendedorPage() {
                                   topGrupoSeguro === gIdx ? -1 : gIdx,
                                 )
                               }
-                              colSpan={4}
+                              colSpan={dosMeses ? 5 : 4}
                             />
                           )}
                           {(topGrupos.length <= 1 || topGrupoSeguro === gIdx) &&
@@ -2231,9 +2394,20 @@ export default function VentasVendedorPage() {
                                         ({c.numero})
                                       </span> */}
                                     </td>
-                                    <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
-                                      {fmtTop(c.monto)}
-                                    </td>
+                                    {dosMeses ? (
+                                      <>
+                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                          {fmtTop(c.montoM2 ?? 0)}
+                                        </td>
+                                        <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                          {fmtTop(c.montoM1 ?? 0)}
+                                        </td>
+                                      </>
+                                    ) : (
+                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                        {fmtTop(c.monto)}
+                                      </td>
+                                    )}
                                     <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
                                       {fmtTop(c.montoMes)}
                                     </td>
@@ -2306,13 +2480,24 @@ export default function VentasVendedorPage() {
                                           </span>
                                         </span>
                                       </td>
-                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                                        {fmtTop(
-                                          topMetricaLineas === "pesos"
-                                            ? l.monto
-                                            : l.unidades,
-                                        )}
-                                      </td>
+                                      {dosMeses ? (
+                                        <>
+                                          <td className="px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                            {fmtTop(valorCampo(l, "M2", topEnUnidades))}
+                                          </td>
+                                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                            {fmtTop(valorCampo(l, "M1", topEnUnidades))}
+                                          </td>
+                                        </>
+                                      ) : (
+                                        <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                          {fmtTop(
+                                            topMetricaLineas === "pesos"
+                                              ? l.monto
+                                              : l.unidades,
+                                          )}
+                                        </td>
+                                      )}
                                       <td className="px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap">
                                         {fmtTop(
                                           topMetricaLineas === "pesos"
@@ -2321,7 +2506,7 @@ export default function VentasVendedorPage() {
                                         )}
                                       </td>
                                     </tr>
-                                    {lineaAbierta && l.subLineas.map((sl) => (
+                                    {lineaAbierta && subsDe(l).map((sl) => (
                                       <tr
                                         key={`${l.linea}::${sl.subLinea}`}
                                         className="border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors"
@@ -2340,13 +2525,24 @@ export default function VentasVendedorPage() {
                                             {sl.subLinea}
                                           </button>
                                         </td>
-                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
-                                          {fmtTop(
-                                            topMetricaLineas === "pesos"
-                                              ? sl.monto
-                                              : sl.unidades,
-                                          )}
-                                        </td>
+                                        {dosMeses ? (
+                                          <>
+                                            <td className="px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap">
+                                              {fmtTop(valorCampo(sl, "M2", topEnUnidades))}
+                                            </td>
+                                            <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
+                                              {fmtTop(valorCampo(sl, "M1", topEnUnidades))}
+                                            </td>
+                                          </>
+                                        ) : (
+                                          <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
+                                            {fmtTop(
+                                              topMetricaLineas === "pesos"
+                                                ? sl.monto
+                                                : sl.unidades,
+                                            )}
+                                          </td>
+                                        )}
                                         <td className="px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap">
                                           {fmtTop(
                                             topMetricaLineas === "pesos"
@@ -2385,24 +2581,10 @@ export default function VentasVendedorPage() {
                               {topVista === "clientes" ? "clientes" : "líneas"})
                             </span>
                           </td>
-                          <td
-                            className={`px-3 py-2 text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${
-                              topAjuste
-                                ? "text-zinc-300"
-                                : "text-yellow-400 font-bold"
-                            }`}
-                          >
-                            {fmtTop(topAjuste ? topSumas.acum : topNeto.acum)}
-                          </td>
-                          <td
-                            className={`px-3 py-2 text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${
-                              topAjuste
-                                ? "text-zinc-300"
-                                : "text-yellow-400 font-bold"
-                            }`}
-                          >
-                            {fmtTop(topAjuste ? topSumas.mes : topNeto.mes)}
-                          </td>
+                          {pieCeldas(
+                            topAjuste ? topSumas : topNeto,
+                            topAjuste ? "text-zinc-300" : "text-yellow-400 font-bold",
+                          )}
                         </tr>
                         {topAjusteIncluido && (
                           <tr className="text-[11px]">
@@ -2413,12 +2595,7 @@ export default function VentasVendedorPage() {
                             >
                               Incluye bonificaciones y ajustes
                             </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-red-400/80 border-l border-zinc-800 whitespace-nowrap">
-                              {fmtTop(topAjusteIncluido.acum)}
-                            </td>
-                            <td className="px-3 py-1.5 text-right tabular-nums text-red-400/80 border-l border-zinc-800 whitespace-nowrap">
-                              {fmtTop(topAjusteIncluido.mes)}
-                            </td>
+                            {pieCeldas(topAjusteIncluido, "text-red-400/80", "py-1.5")}
                           </tr>
                         )}
                         {topAjuste && (
@@ -2431,24 +2608,14 @@ export default function VentasVendedorPage() {
                               >
                                 Bonificaciones y ajustes
                               </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-red-400 border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topAjuste.acum)}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-red-400 border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topAjuste.mes)}
-                              </td>
+                              {pieCeldas(topAjuste, "text-red-400")}
                             </tr>
                             <tr className="border-t border-zinc-700">
                               <td className="px-3 py-2" />
                               <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap">
                                 Venta neta
                               </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topNeto.acum)}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
-                                {fmtTop(topNeto.mes)}
-                              </td>
+                              {pieCeldas(topNeto, "text-yellow-400 font-bold")}
                             </tr>
                           </>
                         )}

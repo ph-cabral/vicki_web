@@ -75,6 +75,8 @@ export async function GET(req: NextRequest) {
     if (!acceso.isAdmin) {
       delete (data as Record<string, unknown>).ajuste;
       delete (data as Record<string, unknown>).ajusteMes;
+      delete (data as Record<string, unknown>).ajusteM1;
+      delete (data as Record<string, unknown>).ajusteM2;
     }
     return NextResponse.json(data);
   } catch (error) {

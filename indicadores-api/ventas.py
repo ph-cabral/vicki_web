@@ -549,6 +549,36 @@ def _rango_ytd_y_mes(desde: str | None = None, hasta: str | None = None):
     return desde_ym, hasta_ym, mes_ym, dias_acum, dias_mes, dias_total
 
 
+# ── Dos meses previos al actual (mes pasado y el anterior) ────────────────
+# Botón "2 meses" de los rankings de /ventas/vendedor: reemplaza la columna
+# del acumulado por el mes pasado y el anterior. Salen del MISMO scan que el
+# acumulado y el mes en curso (dos CASE más sobre `vc.FecMovim`, ver
+# _ventana), no de una consulta aparte. Siempre son meses del calendario,
+# aunque `desde`/`hasta` muevan el acumulado.
+#
+# `dias_total_ext` amplía el WHERE para que cubra también estos dos meses:
+# en marzo en adelante ya están adentro del acumulado y no cambia nada; en
+# enero/febrero caen en diciembre/noviembre del año anterior.
+def _dos_meses_previos(mes_ym: tuple[int, int], dias_total: tuple[int, int]):
+    """(m1_ym, m2_ym, dias_m1, dias_m2, dias_prev, dias_total_ext)."""
+    m1_ym = _mes_atras(mes_ym, 1)
+    m2_ym = _mes_atras(mes_ym, 2)
+
+    def _dias(ym):
+        pri = date(ym[0], ym[1], 1)
+        ult = date(ym[0], ym[1], calendar.monthrange(ym[0], ym[1])[1])
+        return ((pri - BASE_DATE).days, (ult - BASE_DATE).days)
+
+    dias_m1, dias_m2 = _dias(m1_ym), _dias(m2_ym)
+    dias_prev = (dias_m2[0], dias_m1[1])  # contiguos: m2 + m1
+    dias_total_ext = (min(dias_total[0], dias_prev[0]), max(dias_total[1], dias_prev[1]))
+    return m1_ym, m2_ym, dias_m1, dias_m2, dias_prev, dias_total_ext
+
+
+def _ym_str(ym: tuple[int, int]) -> str:
+    return f"{ym[0]:04d}-{ym[1]:02d}"
+
+
 # Monto neto de un renglón, con el signo de la nota de crédito. Se repite
 # dentro de cada CASE de ventana, así que va como constante para que las dos
 # métricas (acumulado y mes en curso) no se puedan desincronizar.
@@ -580,7 +610,9 @@ SELECT
     c.CodCliente AS CodCliente,
     MAX(LTRIM(RTRIM(c.Cliente_Nombre))) AS Nombre,
     {_ventana(_MONTO_NETO)} AS MontoNeto,
-    {_ventana(_MONTO_NETO)} AS MontoMes
+    {_ventana(_MONTO_NETO)} AS MontoMes,
+    {_ventana(_MONTO_NETO)} AS MontoM1,
+    {_ventana(_MONTO_NETO)} AS MontoM2
 FROM MAGNUS_SITD.dbo.Clientes c
 JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
 JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
@@ -706,7 +738,11 @@ def fetch_top_clientes(
     # Orden de los parámetros = orden en que aparecen los "?" en el texto de
     # la query: primero los dos CASE del SELECT (acumulado, mes en curso) y
     # al final el WHERE. El recorte por vendedor no consume parámetros.
-    params_ventanas = dias_acum + dias_mes
+    # Mes pasado y anterior (botón "2 meses"): dos CASE más, mismo scan.
+    m1_ym, m2_ym, dias_m1, dias_m2, dias_prev, dias_total = _dos_meses_previos(
+        mes_ym, dias_total
+    )
+    params_ventanas = dias_acum + dias_mes + dias_m1 + dias_m2
 
     conn = get_connection("EVERWEAR")
     try:
@@ -718,7 +754,7 @@ def fetch_top_clientes(
 
         # Las dos sub-empresas se suman por CodCliente (col. 0) antes de
         # filtrar y ordenar — ver el bloque de subempresas arriba.
-        filas = unir(filas_dos(cur, sql_m, sql_p, params), (0,), (2, 3))
+        filas = unir(filas_dos(cur, sql_m, sql_p, params), (0,), (2, 3, 4, 5))
 
         # Ajuste POR CLIENTE (2026-09-08): las ND/NC por concepto
         # (23/24/25/60/62) no tienen artículo pero sí cliente, así que se
@@ -736,15 +772,37 @@ def fetch_top_clientes(
         except Exception:
             ajustes = {}
 
+        # Ajuste por cliente del mes pasado y el anterior (misma función, con
+        # esas dos ventanas en lugar de acumulado/mes). Si falla, esas dos
+        # columnas quedan en bruto; el resto de la vista no se toca.
+        try:
+            from bonificaciones import ajuste_por_cliente as _aj_cli
+
+            ajustes_prev = dict(
+                _aj_cli(dias_m1, dias_m2, dias_prev, vendedor=vendedor, forzar=forzar)
+            )
+        except Exception:
+            ajustes_prev = {}
+
+        aj_prev_tot = (
+            round(sum(v[0] for v in ajustes_prev.values()), 2),
+            round(sum(v[1] for v in ajustes_prev.values()), 2),
+        )
+
         clientes: list[dict] = []
-        for cod, nombre, monto, monto_mes in filas:
+        for cod, nombre, monto, monto_mes, monto_m1, monto_m2 in filas:
             if cod is None:
                 continue
             bruto = round(float(_safe(monto) or 0), 2)
             bruto_mes = round(float(_safe(monto_mes) or 0), 2)
+            bruto_m1 = round(float(_safe(monto_m1) or 0), 2)
+            bruto_m2 = round(float(_safe(monto_m2) or 0), 2)
             a_acum, a_mes = ajustes.pop(int(cod), (0.0, 0.0))
+            a_m1, a_m2 = ajustes_prev.pop(int(cod), (0.0, 0.0))
             m = round(bruto + a_acum, 2)
             m_mes = round(bruto_mes + a_mes, 2)
+            m_m1 = round(bruto_m1 + a_m1, 2)
+            m_m2 = round(bruto_m2 + a_m2, 2)
             # Equivalente al HAVING que estaba en el SQL, pero SOLO descarta
             # al cliente SIN MOVIMIENTO en el período (todo en cero). Un
             # bruto NEGATIVO — devolución (comp. 22) sin factura en el rango —
@@ -752,7 +810,8 @@ def fetch_top_clientes(
             # esa resta afuera y el total del pie quedaba por ENCIMA del
             # pivot (2026-09-08: BECCARIA GERARDO, ene→ago, +43.251,70 por el
             # cliente 15740).
-            if not (bruto or bruto_mes or a_acum or a_mes):
+            if not (bruto or bruto_mes or a_acum or a_mes
+                    or bruto_m1 or bruto_m2 or a_m1 or a_m2):
                 continue
             clientes.append(
                 {
@@ -760,6 +819,8 @@ def fetch_top_clientes(
                     "nombre": (str(nombre).strip() if nombre else None),
                     "monto": m,
                     "montoMes": m_mes,
+                    "montoM1": m_m1,
+                    "montoM2": m_m2,
                     "bruto": bruto,
                     "brutoMes": bruto_mes,
                     "ajuste": a_acum,
@@ -770,15 +831,20 @@ def fetch_top_clientes(
         # Clientes que en el período SOLO tienen nota de crédito por concepto
         # (ninguna factura con artículo): no vienen en `filas`, y sin esto el
         # pie no cerraría con el pivot. El nombre se busca en el maestro.
-        if ajustes:
-            nombres = _nombres_clientes(cur, list(ajustes.keys()))
-            for cod, (a_acum, a_mes) in ajustes.items():
+        sueltos = set(ajustes) | set(ajustes_prev)
+        if sueltos:
+            nombres = _nombres_clientes(cur, list(sueltos))
+            for cod in sueltos:
+                a_acum, a_mes = ajustes.get(cod, (0.0, 0.0))
+                a_m1, a_m2 = ajustes_prev.get(cod, (0.0, 0.0))
                 clientes.append(
                     {
                         "numero": int(cod),
                         "nombre": nombres.get(int(cod)),
                         "monto": a_acum,
                         "montoMes": a_mes,
+                        "montoM1": a_m1,
+                        "montoM2": a_m2,
                         "bruto": 0.0,
                         "brutoMes": 0.0,
                         "ajuste": a_acum,
@@ -794,12 +860,20 @@ def fetch_top_clientes(
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            # Mes pasado y el anterior (botón "2 meses", reemplaza al
+            # acumulado). Siempre meses del calendario.
+            "mesM1": _ym_str(m1_ym),
+            "mesM2": _ym_str(m2_ym),
             "totalClientes": len(clientes),
             "porMonto": clientes[:limit_i],
             # Netos del ranking COMPLETO (no sólo de las filas mostradas) —
             # ya incluyen el ajuste.
             "total": round(sum(c["monto"] for c in clientes), 2),
             "totalMes": round(sum(c["montoMes"] for c in clientes), 2),
+            "totalM1": round(sum(c["montoM1"] for c in clientes), 2),
+            "totalM2": round(sum(c["montoM2"] for c in clientes), 2),
+            "ajusteM1": aj_prev_tot[0],
+            "ajusteM2": aj_prev_tot[1],
             # Informativo: cuánto de ese total es ajuste. NO se vuelve a
             # sumar en el pie (ver `ajusteIncluido`).
             "ajuste": round(sum(c["ajuste"] for c in clientes), 2),
@@ -839,7 +913,11 @@ SELECT
     {_ventana(_UNIDADES_NETAS)} AS UnidadesNetas,
     {_ventana(_UNIDADES_NETAS)} AS UnidadesMes,
     {_ventana(_MONTO_NETO)} AS MontoNeto,
-    {_ventana(_MONTO_NETO)} AS MontoMes
+    {_ventana(_MONTO_NETO)} AS MontoMes,
+    {_ventana(_UNIDADES_NETAS)} AS UnidadesM1,
+    {_ventana(_UNIDADES_NETAS)} AS UnidadesM2,
+    {_ventana(_MONTO_NETO)} AS MontoM1,
+    {_ventana(_MONTO_NETO)} AS MontoM2
 FROM Ven_CompCabecera vc
 JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
 JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
@@ -889,10 +967,17 @@ def fetch_top_lineas(
         if cacheado is not None and (ahora - cacheado[0]) < _TOP_LINEAS_TTL_SEG:
             return cacheado[1]
 
-    # Cuatro CASE en el SELECT (unidades acum/mes, monto acum/mes) antes del
+    # Ocho CASE en el SELECT (unidades acum/mes, monto acum/mes, y luego
+    # unidades M1/M2 y monto M1/M2 del mes pasado y el anterior) antes del
     # WHERE — el orden de los "?" manda. El recorte por vendedor no consume
     # parámetros, así que la lista es la misma con y sin vendedor.
-    params_ventanas = dias_acum + dias_mes + dias_acum + dias_mes
+    m1_ym, m2_ym, dias_m1, dias_m2, dias_prev, dias_total = _dos_meses_previos(
+        mes_ym, dias_total
+    )
+    params_ventanas = (
+        dias_acum + dias_mes + dias_acum + dias_mes
+        + dias_m1 + dias_m2 + dias_m1 + dias_m2
+    )
 
     conn = get_connection("EVERWEAR")
     try:
@@ -919,18 +1004,23 @@ def fetch_top_lineas(
         # es la clave. Un código sin match en `catalogo.articulo` (o con
         # match pero DePara sin cargar) cae en SIN_CLASIFICAR.
         acumulado_sl: dict[tuple[str, str], list[float]] = {}
-        for codigo, unidades, unidades_mes, monto, monto_mes in filas_dos(
+        for (codigo, unidades, unidades_mes, monto, monto_mes,
+             unidades_m1, unidades_m2, monto_m1, monto_m2) in filas_dos(
             cur, sql_m, sql_p, params
         ):
             cod_norm = str(codigo or "").strip()
             sub_linea, linea = mapa.get(
                 cod_norm, (SUB_LINEA_SIN_CLASIFICAR, LINEA_SIN_CLASIFICAR)
             )
-            acc = acumulado_sl.setdefault((linea, sub_linea), [0.0, 0.0, 0.0, 0.0])
+            acc = acumulado_sl.setdefault((linea, sub_linea), [0.0] * 8)
             acc[0] += float(_safe(unidades) or 0)
             acc[1] += float(_safe(monto) or 0)
             acc[2] += float(_safe(unidades_mes) or 0)
             acc[3] += float(_safe(monto_mes) or 0)
+            acc[4] += float(_safe(unidades_m1) or 0)
+            acc[5] += float(_safe(monto_m1) or 0)
+            acc[6] += float(_safe(unidades_m2) or 0)
+            acc[7] += float(_safe(monto_m2) or 0)
 
         # Una sub_línea puede tener unidades > 0 y monto <= 0 (o al revés) por
         # las notas de crédito, así que cada vista filtra por SU métrica —
@@ -939,32 +1029,45 @@ def fetch_top_lineas(
         # mes en curso: si no, una sub_línea que empezó a venderse este mes
         # no aparecería en ninguna de las dos listas.
         lineas: dict[str, dict] = {}
-        for (linea, sub_linea), (u, m, um, mm) in acumulado_sl.items():
+        for (linea, sub_linea), (u, m, um, mm, u1, m1, u2, m2) in acumulado_sl.items():
             grupo = lineas.setdefault(
                 linea,
                 {"linea": linea, "unidades": 0.0, "monto": 0.0,
-                 "unidadesMes": 0.0, "montoMes": 0.0, "subLineas": []},
+                 "unidadesMes": 0.0, "montoMes": 0.0,
+                 "unidadesM1": 0.0, "montoM1": 0.0,
+                 "unidadesM2": 0.0, "montoM2": 0.0, "subLineas": []},
             )
             grupo["unidades"] += u
             grupo["monto"] += m
             grupo["unidadesMes"] += um
             grupo["montoMes"] += mm
+            grupo["unidadesM1"] += u1
+            grupo["montoM1"] += m1
+            grupo["unidadesM2"] += u2
+            grupo["montoM2"] += m2
             grupo["subLineas"].append({
                 "subLinea": sub_linea,
                 "unidades": round(u, 2),
                 "monto": round(m, 2),
                 "unidadesMes": round(um, 2),
                 "montoMes": round(mm, 2),
+                "unidadesM1": round(u1, 2),
+                "montoM1": round(m1, 2),
+                "unidadesM2": round(u2, 2),
+                "montoM2": round(m2, 2),
             })
 
-        def _armar(orden_key):
+        def _armar(orden_key, prev_key):
             # Cada sub_línea entra en SU métrica sólo si acumulado+mes > 0
             # (mismo criterio que antes por línea) — una línea sin ninguna
-            # sub_línea activa en esta métrica no entra tampoco.
+            # sub_línea activa en esta métrica no entra tampoco. `prev_key`
+            # (mes pasado + anterior) sólo evita perder en enero/febrero una
+            # sub_línea que vendió en el año anterior y no tiene acumulado.
             out = []
             for g in lineas.values():
                 subs = sorted(
-                    (s for s in g["subLineas"] if orden_key(s) > 0),
+                    (s for s in g["subLineas"]
+                     if orden_key(s) > 0 or prev_key(s) > 0),
                     key=orden_key,
                     reverse=True,
                 )
@@ -976,24 +1079,39 @@ def fetch_top_lineas(
                     "monto": round(g["monto"], 2),
                     "unidadesMes": round(g["unidadesMes"], 2),
                     "montoMes": round(g["montoMes"], 2),
+                    "unidadesM1": round(g["unidadesM1"], 2),
+                    "montoM1": round(g["montoM1"], 2),
+                    "unidadesM2": round(g["unidadesM2"], 2),
+                    "montoM2": round(g["montoM2"], 2),
                     "subLineas": subs,
                     "aperturaComercial": g["linea"] in lineas_apertura,
                 })
             out.sort(key=orden_key, reverse=True)
             return out
 
-        por_unidades = _armar(lambda x: x["unidades"] + x["unidadesMes"])
-        por_monto = _armar(lambda x: x["monto"] + x["montoMes"])
+        por_unidades = _armar(
+            lambda x: x["unidades"] + x["unidadesMes"],
+            lambda x: x["unidadesM1"] + x["unidadesM2"],
+        )
+        por_monto = _armar(
+            lambda x: x["monto"] + x["montoMes"],
+            lambda x: x["montoM1"] + x["montoM2"],
+        )
 
         # El ajuste sólo mueve $: el concepto no tiene cantidad (el SP del
         # BI emite 0 AS Cantidad), así que el ranking por unidades no se
         # toca. Ver bonificaciones.py.
         aj = _ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar)
+        # Ajuste del mes pasado y el anterior: misma función con esas dos
+        # ventanas (el primer "acum" es M1, el "mes" es M2).
+        aj_prev = _ajuste_rankings(dias_m1, dias_m2, dias_prev, vendedor, forzar)
 
         resultado = {
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}" if desde_ym else None,
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}" if hasta_ym else None,
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
+            "mesM1": _ym_str(m1_ym),
+            "mesM2": _ym_str(m2_ym),
             "totalLineas": len(por_unidades),
             "totalLineasMonto": len(por_monto),
             "porUnidades": por_unidades[:limit_i],
@@ -1009,6 +1127,14 @@ def fetch_top_lineas(
             "totalMes": round(
                 sum(g["montoMes"] for g in por_monto) + aj["ajusteMes"], 2
             ),
+            "totalM1": round(
+                sum(g["montoM1"] for g in por_monto) + aj_prev["ajuste"], 2
+            ),
+            "totalM2": round(
+                sum(g["montoM2"] for g in por_monto) + aj_prev["ajusteMes"], 2
+            ),
+            "ajusteM1": aj_prev["ajuste"],
+            "ajusteM2": aj_prev["ajusteMes"],
             **aj,
         }
         _TOP_LINEAS_CACHE[cache_key] = (ahora, resultado)
