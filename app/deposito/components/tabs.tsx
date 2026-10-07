@@ -23,7 +23,7 @@ import {
 } from "./ui";
 import {
   useObjetivosDeposito,
-  aMiles,
+  aItemsTxt,
   type ObjetivoMes,
 } from "@/lib/deposito/objetivos";
 import { Target } from "lucide-react";
@@ -597,13 +597,6 @@ export function ProcesoTab({
   );
 }
 
-// Vista previa del número cargado: lo que se escribe está EN MILES, esto
-// muestra a cuántos items equivale para que no queden dudas de la escala.
-const milesAItems = (v: string) => {
-  const n = Number(v.replace(",", "."));
-  return Number.isFinite(n) && n > 0 ? fmtNum(Math.round(n * 1000)) : "—";
-};
-
 // Definido FUERA de ObjetivoModal a propósito: si viviera adentro, React lo
 // trataría como un componente distinto en cada tecleo y el input perdería el
 // foco letra por letra.
@@ -632,21 +625,15 @@ function CampoObjetivo({
       <div className="mt-1.5 flex items-center gap-2">
         <input
           type="number"
-          step="0.1"
+          step="1"
           min="0"
-          inputMode="decimal"
+          inputMode="numeric"
           value={valor}
           onChange={(e) => setValor(e.target.value)}
           placeholder="0"
           className="w-32 rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 tabular-nums"
         />
-        <span className="text-xs text-zinc-500">
-          mil ={" "}
-          <strong className="text-zinc-300 tabular-nums">
-            {milesAItems(valor)}
-          </strong>{" "}
-          items
-        </span>
+        <span className="text-xs text-zinc-500">items</span>
       </div>
       <span className="mt-1 block text-[11px] text-zinc-600">{ayuda}</span>
     </label>
@@ -655,9 +642,9 @@ function CampoObjetivo({
 
 // ─── OBJETIVOS DEL RANKING ────────────────────────────────────────────────────
 // Carga de las 3 líneas que se dibujan sobre el ranking de operarios, por
-// PROCESO y por MES (2026-09-09). Los números se escriben EN MILES — es la
-// escala en la que se piensa el mes (5,3 = 5.300 items) y evita cargar ceros;
-// la API multiplica x1.000 antes de guardar.
+// PROCESO y por MES (2026-09-09). Los números se escriben EN ITEMS, la misma
+// unidad que las barras (2026-10-07: antes eran miles y x1.000, y al escribir
+// 4500 quedaba 4.500.000, fuera de escala).
 //
 // El mes arranca en el que está mirando la pantalla, pero se puede elegir
 // cualquiera del rango: al cambiarlo, los campos se rellenan con lo que ya
@@ -679,7 +666,7 @@ function ObjetivoModal({
   objetivos: Record<string, ObjetivoMes>;
   onGuardar: (
     mes: string,
-    v: { objetivoMiles: string; sobresalienteMiles: string; bajoMiles: string },
+    v: { objetivo: string; sobresaliente: string; bajo: string },
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   onBorrar: (mes: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   onCerrar: () => void;
@@ -694,9 +681,9 @@ function ObjetivoModal({
   // Al abrir y al cambiar de mes: precargar lo que ya esté guardado.
   React.useEffect(() => {
     const o = objetivos[mes];
-    setObjetivo(aMiles(o?.objetivo));
-    setSobresaliente(aMiles(o?.sobresaliente));
-    setBajo(aMiles(o?.bajo));
+    setObjetivo(aItemsTxt(o?.objetivo));
+    setSobresaliente(aItemsTxt(o?.sobresaliente));
+    setBajo(aItemsTxt(o?.bajo));
     setError(null);
   }, [mes, objetivos]);
 
@@ -706,9 +693,9 @@ function ObjetivoModal({
     setGuardando(true);
     setError(null);
     const r = await onGuardar(mes, {
-      objetivoMiles: objetivo.replace(",", "."),
-      sobresalienteMiles: sobresaliente.replace(",", "."),
-      bajoMiles: bajo.replace(",", "."),
+      objetivo: objetivo.replace(",", "."),
+      sobresaliente: sobresaliente.replace(",", "."),
+      bajo: bajo.replace(",", "."),
     });
     setGuardando(false);
     if (r.ok) onCerrar();
@@ -738,7 +725,7 @@ function ObjetivoModal({
             Objetivos del ranking — {proceso}
           </h3>
           <p className="mt-1 text-[11px] text-zinc-500">
-            Se cargan <strong className="text-zinc-400">en miles</strong>: 5,3 = 5.300 items.
+            Se cargan <strong className="text-zinc-400">en items</strong> del mes por operario: 5300 = 5.300 items.
           </p>
         </div>
 
