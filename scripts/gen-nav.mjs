@@ -31,7 +31,6 @@ const LABELS = {
   dashboard: "Dashboard",
   asistencia: "Asistencia",
   legajos: "Legajos",
-  relojes: "Relojes",
   telefono: "Teléfono",
   lineas: "Líneas",
   planificacion: "Planificación",
