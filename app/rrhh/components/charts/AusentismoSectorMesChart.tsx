@@ -244,10 +244,17 @@ export default function AusentismoSectorMesChart() {
                                 >
                                   {p >= 5 && (
                                     <span
-                                      className="text-[11px] font-semibold tabular-nums"
+                                      className="flex flex-col items-center leading-tight text-[11px] font-semibold tabular-nums whitespace-nowrap"
                                       style={{ color: s.texto }}
                                     >
-                                      {pct(p)}
+                                      <span>
+                                        {v.toLocaleString("es-AR")} / {pct(p)}
+                                      </span>
+                                      {p >= 9 && (
+                                        <span className="text-[10px] font-medium opacity-80">
+                                          {v === 1 ? "día" : "días"}
+                                        </span>
+                                      )}
                                     </span>
                                   )}
                                 </div>

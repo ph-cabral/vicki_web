@@ -126,7 +126,13 @@ function ModalCv({
   // sin PDF guardado (histórico que el backfill no pudo matchear): se muestra
   // el texto que ya está en la base
   useEffect(() => {
-    if (c.archivo || !c.documento_id) return;
+    if (c.archivo) return;
+    // sin documento en la base (punto de Qdrant sin match): no hay nada que
+    // pedir; antes quedaba en "Cargando…" para siempre
+    if (!c.documento_id) {
+      setTexto("");
+      return;
+    }
     let vivo = true;
     fetch(`/api/vicki/cv/${c.documento_id}/texto`)
       .then((r) => r.json())

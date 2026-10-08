@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Percent, CalendarX, Users } from "lucide-react";
 import KpiCard from "@/app/rrhh/components/KpiCard";
-import PieChartCard from "@/app/rrhh/components/charts/PieChartCard";
 import BarChartCard from "@/app/rrhh/components/charts/BarChartCard";
 import AusentismoSectorMesChart from "@/app/rrhh/components/charts/AusentismoSectorMesChart";
 import AusentismoHorasSectorChart from "@/app/rrhh/components/charts/AusentismoHorasSectorChart";
@@ -29,6 +28,13 @@ import {
 const fmt = (n: number) =>
   new Intl.NumberFormat("es-AR", { maximumFractionDigits: 1 }).format(n);
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// Colores de las barras de "Ausentismo por motivo": una por motivo, bien
+// diferenciables entre sí sobre el fondo oscuro.
+const COLORES_MOTIVO = [
+  "#FACC15", "#38BDF8", "#F97316", "#4ADE80",
+  "#A78BFA", "#F472B6", "#2DD4BF", "#F87171",
+];
 
 // Pestaña Ausentismo — alimentada por la BD de fichadas (API resumen).
 // Por estado, excluye Normal / Ausente / Revisar (ver ESTADOS_NO_AUSENCIA).
@@ -184,9 +190,14 @@ export default function AusentismoTab() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Panel>
           {ind.ausenciaPorMotivo.length > 0 ? (
-            <PieChartCard
+            <BarChartCard
               title="Ausentismo por motivo"
               data={ind.ausenciaPorMotivo}
+              xKey="name"
+              yKey="value"
+              currency={false}
+              colors={COLORES_MOTIVO}
+              height={340}
             />
           ) : (
             <Empty
