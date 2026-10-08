@@ -787,7 +787,15 @@ class ErroresMesaWidget:
                 self.root.after_cancel(self._welcome_after_id)
             except Exception:
                 pass
-        self._welcome_after_id = self.root.after(1600, lambda: self.set_ubic(IDLE_TEXT, C_GRAY))
+        self._welcome_after_id = self.root.after(1600, self._fin_bienvenida)
+
+    def _fin_bienvenida(self):
+        """Borra el 'Hola' a los 1600 ms, pero SOLO si sigue ahi: si ya se asigno
+        un pedido (o se esta asignando) el texto es del pedido y no se pisa."""
+        self._welcome_after_id = None
+        if self.stage != "main" or self.pedido_asignado or self.asignando:
+            return
+        self.set_ubic(IDLE_TEXT, C_GRAY)
 
     def switch_to_operario(self):
         if self._welcome_after_id:
@@ -861,6 +869,12 @@ class ErroresMesaWidget:
             (nro_nuevo, remito_nuevo) != (self.pedido_asignado, self.remito_asignado)
         )
 
+        if self._welcome_after_id:
+            try:
+                self.root.after_cancel(self._welcome_after_id)
+            except Exception:
+                pass
+            self._welcome_after_id = None
         self.pedido_asignado = nro_nuevo
         self.remito_asignado = remito_nuevo
         self.pedido_valido = True
