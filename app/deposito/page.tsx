@@ -3,14 +3,13 @@ import { useState, useEffect, useMemo } from "react";
 import {
   ResumenTab,
   ProcesoTab,
-  OperariosTab,
   TiempoTab,
 } from "./components/tabs";
 import { MesaControlTab } from "./components/mesaControl";
 import { ErroresMesaTab } from "./components/erroresMesa";
 import { TiemposPickingTab } from "./components/tiemposPicking";
 import {
-  LayoutDashboard, PackageSearch, Repeat, MapPin, Users, Clock, Timer,
+  LayoutDashboard, PackageSearch, Clock, Timer,
   Loader2, RefreshCw, AlertTriangle, FileSpreadsheet, ClipboardList,
   AlertOctagon,
 } from "lucide-react";
@@ -34,9 +33,6 @@ const ultimoDia = (ym: string) => {
 const TABS = [
   // { id: "resumen", label: "Resumen", icon: LayoutDashboard, needs: "prod" },
   { id: "picking", label: "Picking", icon: PackageSearch, needs: "prod" },
-  { id: "librepo", label: "Libre + Reposición", icon: Repeat, needs: "prod" },
-  { id: "reub", label: "Re-Ubicación", icon: MapPin, needs: "prod" },
-  { id: "operarios", label: "Operarios", icon: Users, needs: "prod" },
   { id: "tiempos-picking", label: "Tiempos de Picking", icon: Timer, needs: "picking" },
   { id: "tiempo", label: "Tiempo de Pedidos", icon: Clock, needs: "tiempo" },
   { id: "mesa-control", label: "Mesas de Control", icon: ClipboardList, needs: "mesa" },
@@ -256,13 +252,6 @@ export default function DepositoPage() {
             {tab === "picking" && viewProd && (
               <ProcesoTab d={viewProd} proceso="Picking" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
             )}
-            {tab === "librepo" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Libre + Reposicion" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
-            )}
-            {tab === "reub" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Re-Ubicacion" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
-            )}
-            {tab === "operarios" && viewProd && <OperariosTab d={viewProd} />}
             {tab === "tiempos-picking" && (
               <TiemposPickingTab desde={desde} hasta={hasta} operario={operario} />
             )}

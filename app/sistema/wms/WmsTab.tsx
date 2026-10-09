@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, PackageSearch, Users, Pause, Play, Clock,
 } from "lucide-react";
-import { ChartComboBarLine, C } from "./ui";
+import { ChartComboBarLine, C } from "../../deposito/components/ui";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { DateRangeField } from "@/components/ui/date-range-field";
 
@@ -15,9 +15,9 @@ const REFRESH_MS = 60_000;
 // /api/deposito/wms-estados (→ indicadores-api → WMS). Solo lectura.
 // Por defecto trae el último día con OT ejecutada; el rango es ajustable.
 //
-// Migrado desde app/deposito/wms/page.tsx (2026-07-31) a un componente reusable:
-// ahora vive como una de las 2 opciones del sidebar de /deposito/deposito.
-// La ruta /deposito/wms redirige acá y se sacó del menú (ver gen-nav.mjs IGNORE).
+// Historial: nació en app/deposito/wms (2026-07-31), pasó a /deposito/deposito
+// como pestaña "WMS" y el 2026-10-09 se mudó a /sistema/wms (módulo sistema).
+// /deposito/wms redirige a /sistema/wms (ver gen-nav.mjs IGNORE).
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface EstadoAgg {

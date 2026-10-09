@@ -110,6 +110,10 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
     {
       "label": "Edit",
       "href": "/sistema/edit"
+    },
+    {
+      "label": "WMS",
+      "href": "/sistema/wms"
     }
   ],
   "sorteo": [
