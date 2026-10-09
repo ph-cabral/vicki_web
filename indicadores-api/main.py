@@ -12,8 +12,7 @@ from deposito import (
     fetch_faltante_pedidos, fetch_faltante_mes,
     fetch_wms_estados, fetch_wms_estados_diag,
     fetch_articulo_ubicaciones, fetch_articulos_multi_ubicacion,
-    fetch_stock_deposito1, fetch_stock_por_articulos, fetch_stock_export,
-    fetch_contenedor,
+    fetch_stock_por_articulos,
     guardar_snapshot_abiertos, guardar_snapshot_wms_estados,
     fetch_pick_heatmap, fetch_pick_ots, fetch_pick_ot_items,
     fetch_reposicion_ot_abiertas,
@@ -447,39 +446,6 @@ def deposito_articulos_multi_ubicacion():
     """Artículos con más de una ubicación asignada (rack), para depurar el maestro."""
     try:
         return fetch_articulos_multi_ubicacion()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
-
-@app.get("/deposito/contenedor")
-def deposito_contenedor(tag: str = Query(...)):
-    """Contenedor por TAG (WMS): info general (maestro Contenedor), contenido
-    actual (ContenedorItem) e historial de movimientos (KmovContenedor), con
-    el usuario REAL (Personal) además del usuario de "Registro", que muchas
-    veces es la cuenta genérica del sistema ("User Anonymous")."""
-    try:
-        return fetch_contenedor(tag)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
-
-@app.get("/deposito/stock")
-def deposito_stock(
-    page: int = Query(default=1),
-    page_size: int = Query(default=50),
-    q: str | None = Query(default=None),
-):
-    """Stock paginado por depósito (1/2/3) + total: código, nombre, stock por
-    depósito, proveedor."""
-    try:
-        return fetch_stock_deposito1(page, page_size, q)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
-
-@app.get("/deposito/stock/export")
-def deposito_stock_export():
-    """Stock COMPLETO (sin paginar, todos los artículos) por depósito 1/2/3 +
-    total. Para el botón 'Exportar Excel' de /deposito/stock."""
-    try:
-        return fetch_stock_export()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

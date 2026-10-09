@@ -2936,7 +2936,7 @@ def fetch_wms_estados(desde=None, hasta=None, procesos: tuple[int, ...] = PROCES
 # ── Riesgo de faltante en OT abiertas (alerta de reposición, /deposito/reposicion-ot) ──
 # Para cada artículo con demanda pendiente en OT de Picking VIVAS (abiertas o en
 # proceso, ver WMS_ESTADOS_VIVOS más arriba) se compara esa demanda contra el
-# stock del depósito central (mismo criterio que /deposito/stock y
+# stock del depósito central (mismo criterio que stock-por-articulos y
 # /compras/faltantes: EVERWEAR.Stk_ArticSucursalDeposito, depósito 1, vía
 # fetch_stock_por_articulos). Si el pendiente supera el stock, ese artículo se
 # va a agotar antes de que el operario llegue a recolectarlo -> hay que
@@ -3424,7 +3424,7 @@ def fetch_articulo_ubicaciones(articulo: str):
         conn.close()
 
 
-# ── Stock por depósito (1/2/3) + total, paginado (/deposito/stock) ────────────
+# ── Stock por depósito — constantes de Stk_ArticSucursalDeposito ──────────────
 # Suma UbicacionDetalleCantidad por artículo, pivotado por UbicacionDepositoId.
 # Confirmado por diag /deposito/ubicacion-columnas/diag (2026-07-02): UbicacionDetalle
 # SÍ trae columna de depósito (no estaba entre las 3 UBIC_COL_* originales).
@@ -3434,51 +3434,6 @@ ARSU_COL_ART = "CodArticulo"
 ARSU_COL_DEP = "Deposito"
 ARSU_COL_STK = "StkReal"
 DEPOSITO_CENTRAL = 1
-DEPOSITOS        = (1, 2, 3)
-
-
-def _sql_pivot_stock(filtro_q: str = "") -> str:
-    cols = ",\n               ".join(
-        f"SUM(CASE WHEN a.{ARSU_COL_DEP} = {d} THEN a.{ARSU_COL_STK} ELSE 0 END) AS Stock{d}"
-        for d in DEPOSITOS
-    )
-    deps = ",".join(str(d) for d in DEPOSITOS)
-    # Agrupa y ordena por la columna cruda, no por LTRIM(RTRIM(...)): el índice
-    # agrupado de Stk_ArticSucursalDeposito ya es (CodArticulo, CodSucursal,
-    # Deposito), así que agrupado así SQL Server suma al vuelo en el orden del
-    # índice y se ahorra ordenar 558k filas. El recorte de espacios se hace al
-    # devolver el dato, donde no cuesta nada.
-    return f"""
-        SELECT LTRIM(RTRIM(a.{ARSU_COL_ART})) AS Cod,
-               {cols},
-               SUM(a.{ARSU_COL_STK}) AS StockTotal
-        FROM dbo.{ARSU_TABLA} a
-        WHERE a.{ARSU_COL_DEP} IN ({deps}) {filtro_q}
-        GROUP BY a.{ARSU_COL_ART}
-        HAVING SUM(a.{ARSU_COL_STK}) > 0
-        ORDER BY a.{ARSU_COL_ART}
-    """
-
-
-def _run_pivot_query(sql: str, params: list) -> dict[str, dict]:
-    """Ejecuta el pivot de stock y devuelve {Cod: {Stock1: x, Stock2: y, ..., StockTotal: z}}."""
-    conn = get_connection("EVERWEAR")
-    try:
-        cur = conn.cursor()
-        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
-        stock: dict[str, dict] = {}
-        for row in cur.fetchall():
-            cod = _txt(row[0])
-            vals = {f"Stock{d}": float(_safe(row[1 + i]) or 0) for i, d in enumerate(DEPOSITOS)}
-            vals["StockTotal"] = float(_safe(row[-1]) or 0)
-            stock[cod] = vals
-        return stock
-    finally:
-        conn.close()
 
 
 def _info_articulos(codigos: list[str]) -> dict[str, dict]:
@@ -3516,57 +3471,8 @@ def _info_articulos(codigos: list[str]) -> dict[str, dict]:
     return info
 
 
-def _build_stock_rows(stock: dict[str, dict]) -> list[dict]:
-    """Junta el pivot de WMS con nombre/proveedor de EVERWEAR → filas ordenadas por código."""
-    info = _info_articulos(list(stock.keys()))
-    rows: list[dict] = []
-    for cod, vals in stock.items():
-        meta = info.get(cod, {})
-        row = {"CodArticulo": cod, "Nombre": meta.get("Nombre", "")}
-        row.update(vals)
-        row["Proveedor"] = meta.get("Proveedor", "")
-        rows.append(row)
-    rows.sort(key=lambda r: r["CodArticulo"])
-    return rows
-
-
-def fetch_stock_deposito1(page: int = 1, page_size: int = 50, q: str | None = None):
-    """Stock paginado por depósito (1/2/3) + total: código, nombre, stock de cada
-    depósito, proveedor. No trae los 4mil+ artículos de un tiro:
-    Paso 1 (WMS)      -> agrupa por artículo (pivot por depósito) y pagina con OFFSET/FETCH.
-    Paso 2 (EVERWEAR) -> enriquece SOLO los códigos de esa página (nombre/proveedor)."""
-    page = max(1, page)
-    page_size = max(1, min(page_size, 200))
-    offset = (page - 1) * page_size
-
-    # BUG encontrado 2026-07-20 (mismo commit "fix stock" del 16/07 que dejó
-    # fetch_stock_por_articulos rota, ver [[ever-compras-faltantes-stock-bug]]):
-    # este filtro seguía armado con el alias/columna viejos (u.UBIC_COL_ART, de
-    # WMS.UbicacionDetalle) pero _sql_pivot_stock ya solo tiene alias "a" sobre
-    # EVERWEAR.Stk_ArticSucursalDeposito → con q vacío no se nota (no arma el
-    # filtro), pero al buscar algo el SQL queda inválido (alias "u" no existe
-    # en la query) → 503 "Error en API de stock".
-    filtro_q = f"AND a.{ARSU_COL_ART} LIKE ?" if q else ""
-    sql_stock = _sql_pivot_stock(filtro_q) + " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY"
-    params: list = ([f"%{q}%"] if q else []) + [offset, page_size]
-
-    stock = _run_pivot_query(sql_stock, params)
-    return {"page": page, "page_size": page_size, "rows": _build_stock_rows(stock)}
-
-
-# ── Stock COMPLETO por depósito (1/2/3) + total, sin paginar ──────────────────
-# Usado por /deposito/stock/export (botón "Exportar Excel"): a diferencia de
-# fetch_stock_deposito1 (paginado, para la vista web), trae el 100% del stock
-# de un tiro. Mismo criterio: WMS.UbicacionDetalle, pivot por depósito.
-def fetch_stock_export():
-    stock = _run_pivot_query(_sql_pivot_stock(), [])
-    rows = _build_stock_rows(stock)
-    return {"total": len(rows), "rows": rows}
-
-
 # ── Stock del depósito 1 para una lista puntual de artículos ──────────────────
-# Usado por /compras/faltantes (columna "Stock"): a diferencia de fetch_stock_
-# deposito1 (paginado, para la vista /deposito/stock), acá se pide el stock
+# Usado por /compras/faltantes (columna "Stock"): acá se pide el stock
 # EXACTO de los códigos que ya están en pantalla (los que tienen faltante),
 # sin paginar. Mismo criterio que fetch_stock_deposito1/fetch_stock_export desde
 # el commit "fix stock" (2026-07-16): EVERWEAR.Stk_ArticSucursalDeposito, no
@@ -3651,95 +3557,6 @@ def fetch_articulos_multi_ubicacion():
         for r in rows:
             r["Cantidad"] = len(r["Ubicaciones"])
         return {"total": len(rows), "rows": rows}
-    finally:
-        conn.close()
-
-
-# ── Contenedor por TAG (/deposito/contenedor) ──────────────────────────────
-# Caso NACHO (2026-07-14): un contenedor activo puede no tener NINGUNA fila en
-# KmovContenedor (nunca completó un movimiento con historial), así que buscar
-# solo ahí lo deja invisible. Fuentes reales:
-#   - Contenedor      -> maestro (TAG, estado, ubicación, vencimiento, desarme)
-#   - ContenedorItem  -> contenido actual (artículo + cantidad)
-#   - KmovContenedor  -> historial de movimientos (puede estar vacío)
-# Kmov.KmovUsuarioGUID_Regist suele ser una cuenta generica del sistema
-# ('User Anonymous', GUID 81cccf51-2228-45d0-9ab9-1bc33eacfb84 -> se repite en
-# miles de movimientos de anios distintos). El operario real que ubico/movio el
-# contenedor queda en KmovContenedor.KmovContenedorUsuarioGUID (y en
-# KmovReng.KmovRengUsuarioGUID para el mismo renglon), que si mapea a un
-# Personal real via PersonalUserGUID. Caso resuelto 2026-07-13: Kmov 1811457 /
-# TAG AGUA_08 y AGUA_09 -> Carballo Agustin (login acarballo).
-def fetch_contenedor(tag: str):
-    tag = (tag or "").strip()
-    conn = get_connection("WMS")
-    try:
-        cur = conn.cursor()
-        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-
-        cur.execute("""
-            SELECT TOP 1
-                   LTRIM(RTRIM(c.ContenedorTAG))         AS TAG,
-                   c.ContenedorFechaRegist                AS Registracion,
-                   c.ContenedorFechaVto                   AS Vencimiento,
-                   c.ContenedorEstado                     AS Estado,
-                   LTRIM(RTRIM(c.ContenedorUbicacionCod)) AS Ubicacion,
-                   c.ContenedorUbicacionDep               AS Deposito,
-                   c.ContenedorOrdenRecepcionNro          AS OrdenRecepcion,
-                   c.ContenedorFechaDesarme                AS FechaDesarme,
-                   LTRIM(RTRIM(desUser.PersonalNombre))   AS Desarmo,
-                   c.ContenedorControlCalidad              AS ControlCalidad
-            FROM Contenedor c
-            LEFT JOIN Personal desUser ON desUser.PersonalUserGUID = c.ContenedorUsuarioGUIDDesarme
-            WHERE c.ContenedorTAG = ?
-        """, (tag,))
-        info_rows = _rows(cur)
-        info = info_rows[0] if info_rows else None
-
-        cur.execute("""
-            SELECT LTRIM(RTRIM(i.ContenedorItemArticuloId)) AS Articulo,
-                   i.ContenedorItemCantidad                  AS Cantidad
-            FROM ContenedorItem i
-            WHERE i.ContenedorTAG = ?
-        """, (tag,))
-        items = _rows(cur)
-
-        cur.execute("""
-            SELECT TOP 50
-                   k.KmovId                                       AS KmovId,
-                   k.KmovFechaHora                                 AS Momento,
-                   LTRIM(RTRIM(k.KmovKcodmovCodigo))               AS Codigo,
-                   k.KmovOrdenRecepcion                            AS NroRef,
-                   k.KmovEstado                                    AS Estado,
-                   LTRIM(RTRIM(c.KmovContenedorUbicacionCodigo))   AS Ubicacion,
-                   c.KmovContenedorFechaHoraRegistr                AS MomentoContenedor,
-                   LTRIM(RTRIM(regUser.PersonalNombre))            AS UsuarioRegistroNombre,
-                   LTRIM(RTRIM(regUser.PersonalLoguin))            AS UsuarioRegistroLogin,
-                   LTRIM(RTRIM(realUser.PersonalNombre))           AS UsuarioRealNombre,
-                   LTRIM(RTRIM(realUser.PersonalLoguin))           AS UsuarioRealLogin,
-                   LTRIM(RTRIM(r.KmovRengArticuloId))              AS Articulo,
-                   r.KmovRengCantidad                              AS Cantidad
-            FROM KmovContenedor c
-            JOIN Kmov k               ON k.KmovId = c.KmovId
-            LEFT JOIN Personal regUser  ON regUser.PersonalUserGUID  = k.KmovUsuarioGUID_Regist
-            LEFT JOIN Personal realUser ON realUser.PersonalUserGUID = c.KmovContenedorUsuarioGUID
-            LEFT JOIN KmovReng r
-                   ON r.KmovId = c.KmovId
-                  AND r.KmovRengContenedorAsociado = c.KmovContenedorContenedorTAG
-            WHERE c.KmovContenedorContenedorTAG = ?
-            ORDER BY k.KmovFechaHora DESC
-        """, (tag,))
-        historial = _rows(cur)
-        for row in historial:
-            row["UsuarioRegistroEsAnonimo"] = row.get("UsuarioRegistroNombre") == "User Anonymous"
-
-        encontrado = info is not None or len(items) > 0 or len(historial) > 0
-        return {
-            "tag": tag,
-            "encontrado": encontrado,
-            "info": info,
-            "items": items,
-            "historial": historial,
-        }
     finally:
         conn.close()
 
