@@ -1,17 +1,21 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Loader2, RefreshCw, AlertTriangle, PackageSearch, Users, Pause, Play, Clock,
+  Loader2, RefreshCw, AlertTriangle, Pause, Play, Clock,
 } from "lucide-react";
 import { ChartComboBarLine, C } from "../../deposito/components/ui";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { DateRangeField } from "@/components/ui/date-range-field";
+import {
+  BUCKET_RANK, bucketTone, TONE_TEXT,
+  type EstadoAgg, type OperarioAgg, type Tone,
+} from "../../deposito/components/preparadoresWms";
 
 const REFRESH_MS = 60_000;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Depósito WMS — OT (pedidos de Picking) por estado en un rango + carta por
-// preparador con su desglose por estado. Datos del schema WMS, leídos en vivo vía
+// Depósito WMS — OT (pedidos de Picking) por estado en un rango + gráficos por hora.
+// (Las cartas por preparador volvieron a /deposito/deposito.) Datos del WMS vía
 // /api/deposito/wms-estados (→ indicadores-api → WMS). Solo lectura.
 // Por defecto trae el último día con OT ejecutada; el rango es ajustable.
 //
@@ -20,20 +24,6 @@ const REFRESH_MS = 60_000;
 // /deposito/wms redirige a /sistema/wms (ver gen-nav.mjs IGNORE).
 // ──────────────────────────────────────────────────────────────────────────────
 
-interface EstadoAgg {
-  estado: number | null;
-  label: string;
-  bucket: string;
-  cantidad: number;
-  items: number;
-}
-interface OperarioAgg {
-  operario: string;
-  total: number;
-  total_items: number;
-  por_estado: Record<string, number>;
-  items_por_estado: Record<string, number>;
-}
 interface Resumen {
   total_ot: number;
   total_items: number;
@@ -43,15 +33,6 @@ interface Resumen {
   terminadas: number;
 }
 
-// Orden de visualización pedido: Pendiente → En proceso → Cumplido → Despacho → Tránsito.
-const BUCKET_RANK: Record<string, number> = {
-  espera: 0,
-  proceso: 1,
-  fin: 2,
-  despacho: 3,
-  transito: 4,
-  otro: 5,
-};
 interface WmsData {
   fecha: string | null;
   desde: string | null;
@@ -88,37 +69,6 @@ interface PedidosHoraData {
   fecha: string;
   rows: HoraRow[];
 }
-
-type Tone = "amber" | "yellow" | "green" | "orange" | "sky" | "neutral";
-const bucketTone = (b: string): Tone =>
-  b === "espera"
-    ? "amber"
-    : b === "proceso"
-      ? "yellow"
-      : b === "fin"
-        ? "green"
-        : b === "despacho"
-          ? "orange"
-          : b === "transito"
-            ? "sky"
-            : "neutral";
-
-const TONE_TEXT: Record<Tone, string> = {
-  amber: "text-amber-400",
-  yellow: "text-yellow-400",
-  green: "text-green-400",
-  orange: "text-orange-400",
-  sky: "text-sky-400",
-  neutral: "text-zinc-300",
-};
-const TONE_BG: Record<Tone, string> = {
-  amber: "bg-amber-400/10 border-amber-400/30",
-  yellow: "bg-yellow-400/10 border-yellow-400/30",
-  green: "bg-green-400/10 border-green-400/30",
-  orange: "bg-orange-400/10 border-orange-400/30",
-  sky: "bg-sky-400/10 border-sky-400/30",
-  neutral: "bg-zinc-700/20 border-zinc-700",
-};
 
 const fmtNum = (n: number) =>
   new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(n || 0);
@@ -251,8 +201,6 @@ export function WmsTab() {
       ),
     [data],
   );
-  const hayOps = (data?.por_operario?.length ?? 0) > 0;
-  const primeraCarga = data === null && loading;
   const rangoLabel =
     desde && hasta && desde !== hasta
       ? `${fmtAr(desde)} → ${fmtAr(hasta)}`
@@ -505,92 +453,11 @@ export function WmsTab() {
           </p>
         </div>
 
-        {primeraCarga ? (
-          <div className="flex flex-col items-center justify-center py-28 gap-3 text-center">
-            <Loader2 size={40} className="text-yellow-400 animate-spin" />
-            <p className="text-zinc-400 font-medium">Consultando el WMS…</p>
-          </div>
-        ) : !hayOps ? (
-          <div className="flex flex-col items-center justify-center py-28 gap-3 text-center">
-            <PackageSearch size={44} className="text-zinc-700" />
-            <p className="text-zinc-400 font-medium">
-              {error
-                ? "No se pudo leer el WMS."
-                : "No hay OT para este rango."}
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center gap-3 mb-4">
-              <Users size={16} className="text-yellow-400" />
-              <span className="text-[13px] font-semibold text-zinc-100">
-                Preparadores con actividad
-              </span>
-              <span className="text-zinc-600 text-[12px]">
-                {data!.por_operario.length} con al menos 1 OT
-              </span>
-              <span className="flex-1 h-px bg-zinc-800" />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {data!.por_operario.map((op) => (
-                <div
-                  key={op.operario}
-                  className="rounded-xl border border-zinc-800 bg-[#171717] p-4"
-                >
-                  <div className="flex items-start justify-between gap-2 mb-3">
-                    <div className="font-semibold text-zinc-100 leading-tight">
-                      {op.operario}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-2xl font-bold text-yellow-400 leading-none tabular-nums">
-                        {fmtNum(op.total)}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wide text-zinc-600">
-                        OT
-                      </div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {ordenEstados
-                      .filter((e) => (op.por_estado[String(e.estado)] ?? 0) > 0)
-                      .map((e) => {
-                        const tone = bucketTone(e.bucket);
-                        const k = String(e.estado);
-                        return (
-                          <div
-                            key={k}
-                            className={`rounded-md border px-2.5 py-1.5 ${TONE_BG[tone]}`}
-                          >
-                            <div className="flex items-baseline gap-1">
-                              <span
-                                className={`text-lg font-bold tabular-nums ${TONE_TEXT[tone]}`}
-                              >
-                                {fmtNum(op.por_estado[k] ?? 0)}
-                              </span>
-                              <span className="text-[11px] text-zinc-500 tabular-nums">
-                                / {fmtNum(op.items_por_estado[k] ?? 0)} items
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-zinc-500 leading-tight">
-                              {e.label}
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
         <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
           Pedidos = OT de Picking del WMS, contadas por su estado (OTEstado) según la
-          fecha de ejecución del rango. Cada carta es un preparador (repositor asignado)
-          con al menos una OT en el período, desglosado por estado. Lectura no bloqueante
-          (READ UNCOMMITTED); no se escribe en el WMS. Por defecto se muestra el último
-          día con OT ejecutada.
+          fecha de ejecución del rango. Las cartas por preparador están en
+          /deposito/deposito. Lectura no bloqueante (READ UNCOMMITTED); no se escribe en
+          el WMS. Por defecto se muestra el último día con OT ejecutada.
         </p>
       </main>
     </div>

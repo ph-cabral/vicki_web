@@ -127,7 +127,8 @@ function TarjetaOperario({ o }: { o: Operario }) {
   );
 }
 
-export function PorOperarioTab() {
+// sticky=false: cuando se apila con otras secciones en una misma vista (no pegar el header arriba).
+export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
   const [dia, setDia] = useState("");
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(false);
@@ -171,7 +172,7 @@ export function PorOperarioTab() {
 
   return (
     <div>
-      <div className="sticky top-16 z-40 -mx-8 px-8 py-3 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap">
+      <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap`}>
         <PageTitle
           title="Control por operario"
           sub="Lo asignado vs. lo controlado en Magnus. En rojo: controlado sin estar asignado"

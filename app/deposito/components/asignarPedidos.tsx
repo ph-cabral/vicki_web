@@ -276,7 +276,8 @@ function ControladorSelect({
 }
 
 // ─── Vista ────────────────────────────────────────────────────────────────────
-export function AsignarPedidosTab() {
+// sticky=false: cuando se apila con otras secciones en una misma vista (no pegar el header arriba).
+export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) {
   const [unidades, setUnidades] = useState<Unidad[]>([]);
   const [controladores, setControladores] = useState<Controlador[]>([]);
   const [magnusOk, setMagnusOk] = useState(true);
@@ -429,7 +430,7 @@ export function AsignarPedidosTab() {
 
   return (
     <div>
-      <div className="sticky top-16 z-40 -mx-8 px-8 py-3 bg-[#111111]/95 backdrop-blur border-b border-zinc-800">
+      <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800`}>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <PageTitle
             title="Asignar pedidos"
