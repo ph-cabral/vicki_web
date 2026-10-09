@@ -195,6 +195,7 @@ export function isModuleKey(v: unknown): v is ModuleKey {
  */
 export const LEGACY_VIEW_HREFS: Record<string, string> = {
   "/ventas/bulones": "/ventas/lineas", // 2026-09-23
+  "/deposito/deposito": "/deposito/streaming", // 2026-10-09
 };
 
 export function normalizarHref(h: string): string {

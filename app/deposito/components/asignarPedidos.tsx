@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, RefreshCw, Search, X, Zap, ListChecks } from "lucide-react";
-import { PageTitle, fmtNum } from "./ui";
+import { fmtNum } from "./ui";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Asignar pedidos — /deposito/deposito → Mesas → "Asignar pedidos".
@@ -280,7 +280,6 @@ function ControladorSelect({
 export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) {
   const [unidades, setUnidades] = useState<Unidad[]>([]);
   const [controladores, setControladores] = useState<Controlador[]>([]);
-  const [magnusOk, setMagnusOk] = useState(true);
   const [loading, setLoading] = useState(false);
   const [cargado, setCargado] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -300,7 +299,6 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
       const jt = await rt.json().catch(() => ({}));
       if (!rt.ok) throw new Error(jt.error || `HTTP ${rt.status}`);
       setUnidades(jt.pedidos ?? []);
-      setMagnusOk(jt.magnusOk !== false);
       const jc = await rc.json().catch(() => ({}));
       if (rc.ok) setControladores(jc.controladores ?? []);
       setError(null);
@@ -431,11 +429,7 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
   return (
     <div>
       <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800`}>
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <PageTitle
-            title="Asignar pedidos"
-            sub="Elegí quién controla cada pedido: le sale apenas termine el que está controlando"
-          />
+        <div className="flex items-start justify-end gap-4 flex-wrap mb-2">
           <button
             onClick={() => cargar()}
             disabled={loading}
@@ -512,12 +506,6 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
           <AlertTriangle size={16} className="text-red-400" /> {error}
         </div>
       )}
-      {!magnusOk && !error && (
-        <div className="flex items-center gap-3 bg-[#1A1A1A] border border-amber-400/40 rounded-xl px-5 py-3 text-sm text-amber-300 mt-4">
-          <AlertTriangle size={16} className="text-amber-400" /> Magnus no respondió: se muestran solo los
-          pedidos listos.
-        </div>
-      )}
       {aviso && (
         <div className="fixed bottom-6 right-6 z-[70] flex items-center gap-3 bg-[#1f1f1f] border border-red-400/50 rounded-lg px-4 py-2.5 text-sm text-red-300 shadow-lg">
           <AlertTriangle size={15} className="text-red-400" /> {aviso}
@@ -525,9 +513,9 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
       )}
 
       {/* Controladores: quién está con qué */}
-      {controladores.length > 0 && (
+      {controladores.some((c) => c.activo) && (
         <div className="flex gap-2 flex-wrap mt-4">
-          {controladores.map((c) => (
+          {controladores.filter((c) => c.activo).map((c) => (
             <div
               key={c.nroOperario}
               className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-[#171717] px-3 py-1.5 text-[12px]"

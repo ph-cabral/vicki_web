@@ -74,7 +74,8 @@ const rangoMes = (offset: number): [string, string] => {
   return [isoLocal(ini), isoLocal(fin)];
 };
 
-export function PedidosAsignadosTab() {
+// sticky=false: cuando se apila con otras secciones en una misma vista (no pegar el header arriba).
+export function PedidosAsignadosTab({ sticky = true }: { sticky?: boolean } = {}) {
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const [data, setData] = useState<PedidosAsignadosData | null>(null);
@@ -219,7 +220,7 @@ export function PedidosAsignadosTab() {
 
   return (
     <div>
-      <div className="sticky top-16 z-40 -mx-8 px-8 py-3 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap">
+      <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap`}>
         <PageTitle
           title="Pedidos asignados"
           sub="Pedidos, líneas, unidades y tiempos que controló cada operario"

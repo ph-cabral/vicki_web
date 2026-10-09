@@ -12,7 +12,8 @@ const APP = join(ROOT, "app");
 // queda solo como redirect para links viejos — no se lista en el menú.
 // /ventas/bulones: la vista de Líneas se mudó a /ventas/lineas 2026-09-23,
 // queda sólo como redirect para links viejos.
-const IGNORE = new Set(["/deposito/faltantes/control", "/deposito/wms", "/ventas/bulones"]);
+// /deposito/deposito: renombrada a /deposito/streaming 2026-10-09, queda como redirect.
+const IGNORE = new Set(["/deposito/faltantes/control", "/deposito/wms", "/deposito/deposito", "/ventas/bulones"]);
 
 // Etiquetas lindas por segmento (acentos, siglas). Lo que no esté acá va Capitalizado.
 const LABELS = {

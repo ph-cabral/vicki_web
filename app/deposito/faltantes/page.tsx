@@ -731,9 +731,7 @@ export default function FaltantesPage() {
                     {/* <th className="px-3 py-2.5 font-medium text-right">Importe</th> */}
                     {/* <th className="px-3 py-2.5 font-medium">Tipo</th> */}
                     {/* <th className="px-3 py-2.5 font-medium">Línea</th> */}
-                    <th className="px-3 py-2.5 font-medium">Preparador</th>
                     {/* <th className="px-3 py-2.5 font-medium">Proveedor</th> */}
-                    <th className="px-3 py-2.5 font-medium">Novedad</th>
                     <th className="px-3 py-2.5 font-medium text-center">
                       Acción
                     </th>
@@ -765,16 +763,9 @@ export default function FaltantesPage() {
                     const ubicaciones = Array.from(
                       new Set(group.map((it) => String(it.Ubicacion ?? "—"))),
                     );
-                    const preparadores = Array.from(
-                      new Set(group.map((it) => it.Preparador || "—")),
-                    );
                     const cantidadGrupo =
                       group
                         .map((it) => cantidades[keyOf(it)])
-                        .find((v) => v !== null && v !== undefined) ?? null;
-                    const novedadGrupo =
-                      group
-                        .map((it) => novedades[keyOf(it)])
                         .find((v) => v !== null && v !== undefined) ?? null;
                     return (
                       <tr
@@ -861,23 +852,7 @@ export default function FaltantesPage() {
                         </td> */}
                         {/* <td className="px-3 py-2 text-zinc-400">{it.TipoArticulo || "—"}</td> */}
                         {/* <td className="px-3 py-2 text-zinc-400">{it.Linea ?? "—"}</td> */}
-                        <td className="px-3 py-2 text-zinc-400">
-                          <div className="flex flex-col gap-0.5">
-                            {preparadores.map((p, i) => (
-                              <span key={i} className="text-xs">
-                                {p}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
                         {/* <td className="px-3 py-2 text-zinc-400">{it.Proveedor || "—"}</td> */}
-                        <td className="px-3 py-2">
-                          <NovedadSelect
-                            tipos={tipos}
-                            value={novedadGrupo}
-                            onChange={(id) => saveNovedadGroup(group, id)}
-                          />
-                        </td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-center gap-1.5">
                             <button
