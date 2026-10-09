@@ -49,6 +49,7 @@ interface Row {
   oc: number;
   faltante: number;
   proveedor: string | null;
+  precio: number;
 }
 interface Datos {
   reporte: Reporte;
@@ -356,8 +357,11 @@ export default function PlanificacionPage() {
       conRec: visibles.filter((r) => r.recomendado > 0).length,
       rec: visibles.reduce((s, r) => s + r.recomendado, 0),
       cant: visibles.reduce((s, r) => s + cantidadDe(r), 0),
+      // Total en vivo = Σ cantidad × precio de venta s/IVA de TODOS los artículos
+      // del reporte (no depende del buscador ni de "Solo a reponer").
+      monto: (datos?.rows ?? []).reduce((s, r) => s + cantidadDe(r) * (r.precio || 0), 0),
     }),
-    [visibles, cantidadDe],
+    [visibles, datos, cantidadDe],
   );
 
   const celda = (r: Row, k: SortKey) => {
@@ -527,7 +531,16 @@ export default function PlanificacionPage() {
                 </span>
               </>
             )}
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex flex-col items-end gap-2">
+             {datos && (
+              <div className="text-right leading-none" title="Σ cantidad × precio de venta (sin IVA) de todos los artículos del reporte">
+                <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">Total a pedir</div>
+                <div className="text-3xl font-bold tabular-nums text-yellow-400">
+                  {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(tot.monto)}
+                </div>
+              </div>
+             )}
+             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                 <Search size={13} className="text-zinc-500" />
                 <input
@@ -568,6 +581,7 @@ export default function PlanificacionPage() {
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                 Actualizar
               </button>
+             </div>
             </div>
           </div>
 

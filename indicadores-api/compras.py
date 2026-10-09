@@ -1830,10 +1830,28 @@ def fetch_planificacion_niveles():
 
 
 SQL_PLANIFICACION = """
-WITH art AS (
-    SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida, s.CodProveedHabitual
+WITH cot AS (
+    -- Última cotización de venta por moneda.
+    SELECT CodMoneda, CotizVenta
+    FROM (
+        SELECT CodMoneda, CotizVenta,
+               ROW_NUMBER() OVER (PARTITION BY CodMoneda ORDER BY Fecha DESC, Hora DESC) AS rn
+        FROM EVERWEAR.dbo.Gen_CotizacionMoneda
+    ) x
+    WHERE rn = 1
+),
+art AS (
+    -- Precio = precio de venta s/IVA (costo venta x (1 + margen)), ver pantalla
+    -- Administración Precios de Magnus, EN PESOS: PrecioBase está en la moneda
+    -- del artículo (2 = dólar EverWear, etc.) y se convierte con la última
+    -- CotizVenta de esa moneda (Moneda 0/1 = pesos).
+    SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida, s.CodProveedHabitual,
+           ISNULL(s.PrecioBase, 0) * (1 + ISNULL(s.PorMargenUtilidad, 0) / 100.0)
+             * CASE WHEN ISNULL(s.Moneda, 1) IN (0, 1) THEN 1
+                    ELSE ISNULL(cot.CotizVenta, 0) END AS Precio
     FROM EVERWEAR.dbo.StkFer_Articulos s
     INNER JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+    LEFT JOIN cot ON cot.CodMoneda = s.Moneda
     WHERE 1 = 1 {niveles}
 ),
 ven_m AS (
@@ -1881,7 +1899,8 @@ SELECT LTRIM(RTRIM(art.CodArticulo)) AS Cod,
        ven.Maximo, ven.Minimo,
        ISNULL(stk.Stock, 0)   AS Stock,
        ISNULL(oc.Pend, 0)     AS OC,
-       ISNULL(prh.RazonSocial, ult.RazonSocial) AS Proveedor
+       ISNULL(prh.RazonSocial, ult.RazonSocial) AS Proveedor,
+       art.Precio
 FROM art
 LEFT JOIN ven ON ven.Cod = art.CodArticulo
 LEFT JOIN stk ON stk.Cod = art.CodArticulo
@@ -1951,7 +1970,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
         else:
             cur.execute(sql)
         rows = []
-        for cod, det, med, vend, vmax, vmin, stk, oc, prov in cur.fetchall():
+        for cod, det, med, vend, vmax, vmin, stk, oc, prov, precio in cur.fetchall():
             cod = (str(cod or "")).strip()
             if not cod:
                 continue
@@ -1968,6 +1987,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
                 "stock": round(float(_safe(stk) or 0), 2),
                 "oc": round(float(_safe(oc) or 0), 2),
                 "proveedor": " ".join((str(prov or "")).split()) or None,
+                "precio": round(float(_safe(precio) or 0), 4),
             })
     finally:
         conn.close()
