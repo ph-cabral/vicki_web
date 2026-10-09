@@ -462,8 +462,10 @@ export default function PlanificacionPage() {
         </div>
       )}
 
-      {/* Botones del usuario */}
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      {/* Barra fija: reportes + total a pedir, y debajo detalle + buscador/acciones */}
+      <div className="sticky top-0 z-30 bg-zinc-950 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 mb-3 border-b border-zinc-800/60">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
         {reportes.map((r) => {
           const activo = r.id === selId;
           return (
@@ -499,22 +501,18 @@ export default function PlanificacionPage() {
           <Plus size={14} /> Nuevo reporte
         </button>
       </div>
-
-      {!reportes.length && !tablaWarn && (
-        <div className="text-zinc-500 text-sm py-10 text-center">
-          Todavía no armaste ningún reporte. Tocá <b>Nuevo reporte</b> para elegir líneas / rubros y la cantidad de meses.
+             {datos && selId != null && (
+              <div className="ml-auto text-right leading-none" title="Σ cantidad × precio de venta (sin IVA) de todos los artículos del reporte">
+                <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">Total a pedir</div>
+                <div className="text-2xl font-bold tabular-nums text-yellow-400">
+                  {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(tot.monto)}
+                </div>
+              </div>
+             )}
         </div>
-      )}
 
-      {error && (
-        <div className="mb-3 flex items-center gap-2 text-red-400 text-sm">
-          <AlertTriangle size={15} /> {error}
-        </div>
-      )}
-
-      {selId != null && (datos || loading) && (
-        <>
-          <div className="flex flex-wrap items-center gap-3 mb-3 text-xs text-zinc-400">
+        {selId != null && (datos || loading) && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3 text-xs text-zinc-400">
             {datos && (
               <>
                 <span className="flex items-center gap-1.5">
@@ -531,15 +529,7 @@ export default function PlanificacionPage() {
                 </span>
               </>
             )}
-            <div className="ml-auto flex flex-col items-end gap-2">
-             {datos && (
-              <div className="text-right leading-none" title="Σ cantidad × precio de venta (sin IVA) de todos los artículos del reporte">
-                <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">Total a pedir</div>
-                <div className="text-3xl font-bold tabular-nums text-yellow-400">
-                  {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(tot.monto)}
-                </div>
-              </div>
-             )}
+            <div className="ml-auto">
              <div className="flex items-center gap-2">
               <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                 <Search size={13} className="text-zinc-500" />
@@ -584,7 +574,23 @@ export default function PlanificacionPage() {
              </div>
             </div>
           </div>
+        )}
+      </div>
 
+      {!reportes.length && !tablaWarn && (
+        <div className="text-zinc-500 text-sm py-10 text-center">
+          Todavía no armaste ningún reporte. Tocá <b>Nuevo reporte</b> para elegir líneas / rubros y la cantidad de meses.
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-3 flex items-center gap-2 text-red-400 text-sm">
+          <AlertTriangle size={15} /> {error}
+        </div>
+      )}
+
+      {selId != null && (datos || loading) && (
+        <>
           {datos?.faltanteWarn && (
             <div className="mb-3 flex items-center gap-2 text-amber-400 text-xs">
               <AlertTriangle size={14} /> No se pudo calcular el faltante en pedidos — la columna Faltante queda en 0.

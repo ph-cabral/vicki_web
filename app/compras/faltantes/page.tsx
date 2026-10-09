@@ -3,16 +3,14 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
   Loader2, RefreshCw, AlertTriangle, PackageCheck, CalendarRange, Check,
-  ChevronDown, ChevronRight, Flag, RotateCw, ShoppingCart, Undo2, CalendarCheck,
+  ChevronDown, ChevronRight, Flag, RotateCw, ShoppingCart, Undo2,
   Download, Trash2, X, Globe, Search, ArrowRight,
 } from "lucide-react";
 import { exportarFaltantesCompras } from "@/lib/compras/exportFaltantes";
 import { origenArticulo, type OrigenArticulo } from "@/lib/compras/origenArticulo";
-import { exportarFaltantesExistencia } from "@/lib/deposito/exportFaltantesExistencia";
 import { InicioButton } from "@/components/ui/InicioButton";
-import { DateRangeField } from "@/components/ui/date-range-field";
+import { MonthRangePickerField } from "@/components/ui/date-range-field";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
-import { abrirPicker } from "@/components/ui/abrirPicker";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // /compras/faltantes — faltantes "sin existencia" por (artículo, día).
@@ -206,11 +204,6 @@ const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
-// Mes actual ("YYYY-MM") — default del selector de exportación histórico
-// (con/sin existencia), mismo reporte y mismo endpoint que /deposito/faltantes.
-function mesActual(): string {
-  return new Date().toISOString().slice(0, 7);
-}
 // Default de "desde": ancla del cruce con OC (OC_DESDE_DEFAULT del backend).
 // Con default hoy–hoy la vista quedaba vacía cada mañana: solo miraba la foto
 // de ayer y perdía los buckets/acumulado de los días anteriores.
@@ -455,7 +448,9 @@ function Tabla({
             <th className="px-3 py-2 font-medium"></th>
             <th className="px-3 py-2 font-medium whitespace-nowrap">Cód.</th>
             <th className="px-3 py-2 font-medium whitespace-nowrap">Artículo</th>
-            <th className="px-3 py-2 font-medium whitespace-nowrap">Línea</th>
+            {!ocultarProveedor && (
+              <th className="px-3 py-2 font-medium whitespace-nowrap">Línea</th>
+            )}
             <th className="px-3 py-2 font-medium whitespace-nowrap">Día</th>
             <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Falta/Stock/En OC</th>
             <th className="px-3 py-2 font-medium text-right whitespace-nowrap">Falta OC</th>
@@ -511,7 +506,9 @@ function Tabla({
                 <td className="px-3 py-2 text-zinc-100 whitespace-nowrap">
                   <span>{r.Nombre}</span>
                 </td>
-                <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">{r.Linea ?? "—"}</td>
+                {!ocultarProveedor && (
+                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">{r.Linea ?? "—"}</td>
+                )}
                 <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums">
                   {fmtAr(r.fecha)}
                   {r.pedidos > 1 && (
@@ -780,20 +777,16 @@ export default function ComprasFaltantesPage() {
   const [hastaResp, setHastaResp] = useState<string | null>(null);
   const [desde, setDesde] = useState(DESDE_DEFAULT); // rango de búsqueda, default = ancla OC
   const [hasta, setHasta] = useState(todayISO);
-  const [conArribo, setConArribo] = useState(false); // ver también los que ya tienen fecha de arribo
-  const [filtro, setFiltro] = useState<Filtro>("todos");
+  const [filtro, setFiltro] = useState<Filtro>("sin_orden");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ocWarn, setOcWarn] = useState(false);
   const [ingresoWarn, setIngresoWarn] = useState(false); // no se pudo leer /compras/ingresos
   const [comprobanteWarn, setComprobanteWarn] = useState(false); // no se detectó la columna de código de comprobante (ver ingresos.py)
-  const [ocDesde, setOcDesde] = useState<string | null>(null);
   const [origen, setOrigen] = useState<Origen>("nacionales"); // filtro por origen del artículo (tipoArticulo) — default Nacionales, cicla con el botón
   const [flipped, setFlipped] = useState(false); // girar la tarjeta → ver extraordinarios
   const [leaving, setLeaving] = useState<Record<string, "left" | "right">>({}); // filas saliendo (animación)
   const [provAbierto, setProvAbierto] = useState<string | null>(null); // acordeón: solo un proveedor abierto a la vez; todos cerrados al entrar
-  const [mesExport, setMesExport] = useState(mesActual); // mes del export histórico (existencia)
-  const [exportHistLoading, setExportHistLoading] = useState(false);
   const [buscarCod, setBuscarCod] = useState(""); // filtro "buscar por código" (barra de búsqueda)
   const [matches, setMatches] = useState<{ prov: string; rs: Row[] }[]>([]); // proveedores donde aparece el código buscado
   const [matchIdx, setMatchIdx] = useState(0);
@@ -813,7 +806,6 @@ export default function ComprasFaltantesPage() {
       const p = new URLSearchParams();
       p.set("desde", desde);
       p.set("hasta", hasta);
-      if (conArribo) p.set("conArribo", "1");
       const res = await fetch(`/api/compras/faltantes-consumo?${p}`, { cache: "no-store" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
@@ -823,7 +815,6 @@ export default function ComprasFaltantesPage() {
       setFecha(j.fecha ?? null);
       setDesdeResp(j.desde ?? null);
       setHastaResp(j.hasta ?? null);
-      setOcDesde(j.ocDesde ?? null);
       setOcWarn(!!j.ocWarn);
       setIngresoWarn(!!j.ingresoWarn);
       setComprobanteWarn(!!j.comprobanteWarn);
@@ -835,7 +826,7 @@ export default function ComprasFaltantesPage() {
     } finally {
       setLoading(false);
     }
-  }, [desde, hasta, conArribo]);
+  }, [desde, hasta]);
 
   useEffect(() => {
     load();
@@ -1127,33 +1118,6 @@ export default function ComprasFaltantesPage() {
     });
   }, [flipped, backRows, visibles, desdeResp, hastaResp]);
 
-  // Excel histórico "con/sin existencia" (mismo reporte de /deposito/faltantes,
-  // mismo endpoint GET /api/deposito/faltantes/historico?mes=YYYY-MM) — acá
-  // solo se agrega el botón + selector de mes, la lógica de armado del Excel
-  // es la misma (lib/deposito/exportFaltantesExistencia). Excluye comprobantes
-  // 70/75 (ver comentario en el endpoint).
-  const exportarHistorico = useCallback(async () => {
-    setExportHistLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/deposito/faltantes/historico?mes=${mesExport}`,
-        { cache: "no-store" },
-      );
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      if (!j.rows?.length) {
-        setError(`Sin marcas registradas en ${mesExport}`);
-        return;
-      }
-      exportarFaltantesExistencia(j.rows, mesExport);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al exportar");
-    } finally {
-      setExportHistLoading(false);
-    }
-  }, [mesExport]);
-
   // Grupos por proveedor, cada grupo ordenado por importe y los grupos por importe total.
   const grupos = useMemo(() => {
     const m = new Map<string, Row[]>();
@@ -1298,14 +1262,16 @@ export default function ComprasFaltantesPage() {
         <div className="sticky top-16 z-40 -mx-3 md:-mx-8 px-3 md:px-8 py-3 mb-4 bg-[#111111]/95 backdrop-blur border-b border-zinc-800 flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 mr-2">
             <CalendarRange size={15} className="text-zinc-500" />
-            <DateRangeField
+            <MonthRangePickerField
               desde={desde}
               hasta={hasta}
               onChange={(d, h) => {
                 setDesde(d);
                 setHasta(h);
               }}
-              className="text-xs h-7"
+              min={DESDE_DEFAULT}
+              max={todayISO()}
+              placeholder="Elegir meses"
             />
             {(desde !== DESDE_DEFAULT || hasta !== todayISO()) && (
               <button
@@ -1379,20 +1345,6 @@ export default function ComprasFaltantesPage() {
           <div className="w-px h-5 bg-zinc-800 hidden sm:block" />
 
           <button
-            onClick={() => setConArribo((v) => !v)}
-            title="Mostrar también los artículos que ya tienen fecha de arribo cargada (para corroborar los que se pasaron)"
-            className={`chip-anim flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs font-medium ${
-              conArribo
-                ? "bg-emerald-500/15 border-emerald-400 text-emerald-300"
-                : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
-            }`}
-          >
-            <CalendarCheck size={14} />
-            Ver con arribo
-            {conArribo && <Check size={13} />}
-          </button>
-
-          <button
             onClick={() => setVerRetirados((v) => !v)}
             disabled={cubiertos.length === 0}
             title="Ver los artículos que salieron de la tabla porque el stock cubrió el faltante"
@@ -1461,39 +1413,6 @@ export default function ComprasFaltantesPage() {
           >
             <Download size={14} /> Excel
           </button>
-
-          <div className="w-px h-5 bg-zinc-800 hidden sm:block" />
-
-          <input
-            type="month"
-            onClick={abrirPicker}
-            value={mesExport}
-            onChange={(e) => setMesExport(e.target.value)}
-            title="Mes del histórico con/sin existencia a exportar"
-            className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-100 outline-none focus:border-yellow-400 cursor-pointer"
-          />
-          <button
-            onClick={exportarHistorico}
-            disabled={exportHistLoading}
-            title="Exportar Excel histórico con/sin existencia del mes (mismo reporte que /deposito/faltantes)"
-            className="chip-anim flex items-center gap-2 px-3 py-1.5 rounded-md border border-zinc-700 text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 text-xs font-medium disabled:opacity-40 disabled:hover:scale-100 disabled:hover:translate-y-0"
-          >
-            {exportHistLoading ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Download size={14} />
-            )}
-            Excel (existencia)
-          </button>
-
-          {ocDesde && (
-            <span
-              title="El cruce con OC arranca en esta fecha: solo se cuentan las órdenes de compra y los faltantes desde acá."
-              className="text-[11px] text-zinc-500 whitespace-nowrap"
-            >
-              OC desde {fmtAr(ocDesde)}
-            </span>
-          )}
 
           <div className="w-px h-5 bg-zinc-800 hidden sm:block" />
 
