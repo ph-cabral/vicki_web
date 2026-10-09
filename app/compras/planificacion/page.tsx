@@ -357,7 +357,7 @@ export default function PlanificacionPage() {
       conRec: visibles.filter((r) => r.recomendado > 0).length,
       rec: visibles.reduce((s, r) => s + r.recomendado, 0),
       cant: visibles.reduce((s, r) => s + cantidadDe(r), 0),
-      // Total en vivo = Σ cantidad × precio de venta s/IVA de TODOS los artículos
+      // Total en vivo = Σ cantidad × costo unitario de venta (PrecioBase) de TODOS los artículos
       // del reporte (no depende del buscador ni de "Solo a reponer").
       monto: (datos?.rows ?? []).reduce((s, r) => s + cantidadDe(r) * (r.precio || 0), 0),
     }),
@@ -502,7 +502,7 @@ export default function PlanificacionPage() {
         </button>
       </div>
              {datos && selId != null && (
-              <div className="ml-auto text-right leading-none" title="Σ cantidad × precio de venta (sin IVA) de todos los artículos del reporte">
+              <div className="ml-auto text-right leading-none" title="Σ cantidad × costo unitario de venta de todos los artículos del reporte">
                 <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">Total a pedir</div>
                 <div className="text-2xl font-bold tabular-nums text-yellow-400">
                   {new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(tot.monto)}

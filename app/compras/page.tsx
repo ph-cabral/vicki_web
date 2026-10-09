@@ -2,10 +2,11 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, PackageX, ShoppingCart, PackageCheck, BarChart3,
-  Package, Wallet, Download, Globe,
+  Package, Wallet, Download, Globe, Truck,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { InicioButton } from "@/components/ui/InicioButton";
+import type { LucideIcon } from "lucide-react";
 import KpiCard from "@/app/rrhh/components/KpiCard";
 import LineChartCard from "@/app/rrhh/components/charts/LineChartCard";
 import PieChartCard from "@/app/rrhh/components/charts/PieChartCard";
@@ -158,16 +159,44 @@ const COBERTURA_COLOR = {
   sinCubrir: "#52525B",
 } as const;
 
-// Valor de KpiCard apilado en 3 líneas (items / unidades / $) — las cards del
-// funnel muestran las 3 magnitudes de la misma etapa una debajo de la otra, en
-// lugar de repartirlas en una segunda fila de cards.
-function StackedKpi({ items, unidades, importe }: { items: string; unidades: string; importe: string }) {
+// Card angosta del funnel (mitad del ancho de una KpiCard): items arriba y
+// debajo unidades y $, todo contra el faltante. El detalle va en el tooltip.
+function KpiMini({
+  label, items, unidades, importe, hint, icon: Icon, accent,
+}: {
+  label: string;
+  items: number;
+  unidades: number;
+  importe: number;
+  hint: string;
+  icon: LucideIcon;
+  accent: "yellow" | "green" | "blue" | "orange";
+}) {
+  const color = {
+    yellow: "text-yellow-400",
+    green: "text-green-400",
+    blue: "text-blue-400",
+    orange: "text-orange-400",
+  }[accent];
   return (
-    <span className="block leading-tight tabular-nums">
-      <span className="block">{items}</span>
-      <span className="block text-lg font-semibold opacity-90">{unidades}</span>
-      <span className="block text-lg font-semibold opacity-90">{importe}</span>
-    </span>
+    <div
+      className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-3 hover:border-zinc-700 transition-colors min-w-0"
+      title={hint}
+    >
+      <div className="flex items-start justify-between gap-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 leading-tight">
+          {label}
+        </span>
+        <Icon size={14} className="text-zinc-600 shrink-0" />
+      </div>
+      <div className={`mt-2 font-bold tabular-nums leading-tight ${color}`}>
+        <div className="text-xl">
+          {fmtNum(items)} <span className="text-xs font-semibold opacity-70">items</span>
+        </div>
+        <div className="text-sm font-semibold opacity-90">{fmtNum(unidades)} u.</div>
+        <div className="text-sm font-semibold opacity-90 truncate">{fmtMoney(importe)}</div>
+      </div>
+    </div>
   );
 }
 
@@ -424,7 +453,7 @@ export default function ComprasMetricasPage() {
   // Fabril), así que sumarla sólo inflaba el "sin cubrir" del total.
   // Ya viene calculado en la respuesta: no cuesta ninguna consulta.
   const funnelTodos = useMemo(
-    () => data?.funnels?.compras ?? data?.funnels?.todos,
+    () => data?.funnels?.general ?? data?.funnels?.compras ?? data?.funnels?.todos,
     [data],
   );
   const colT = useCallback(
@@ -671,65 +700,124 @@ export default function ComprasMetricasPage() {
         )}
 
 
-        {/* Total del mes = Nacionales + Importados (+ Otros). Mismo funnel,
-            clave "compras": no dispara ninguna consulta extra. Fábrica y
-            Original quedan afuera — no se compran. */}
-        <div>
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
-            <Globe size={12} /> Total del mes · Nacionales + Importados
-            {!!data?.excluidosItems && (
-              <span className="normal-case tracking-normal text-zinc-600">
-                · {fmtNum(data.excluidosItems)} items de Fábrica/Original quedan afuera (no se compran)
-              </span>
+        {/* Izquierda (2/3): fila "general" (todos los orígenes) y fila del origen
+            elegido, con cards angostas. Derecha (1/3): torta de faltantes por
+            origen, ocupando el alto de las dos filas. */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+          <div className="lg:col-span-2 space-y-6 min-w-0">
+            <div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
+                <Globe size={12} /> Total del mes · Todos los orígenes
+                <span className="normal-case tracking-normal text-zinc-600">
+                  · Nacionales + Importados + Original + Fábrica
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <KpiMini
+                  label="Faltantes"
+                  items={colT("faltantes")}
+                  unidades={unidT("faltantes")}
+                  importe={impT("faltantes")}
+                  hint="Faltantes marcados en depósito del mes, de todos los orígenes (Nacional, Importado, Original y Fábrica)"
+                  icon={PackageX}
+                  accent="orange"
+                />
+                <KpiMini
+                  label="Con OC"
+                  items={colT("conOC")}
+                  unidades={unidT("conOC")}
+                  importe={impT("conOC")}
+                  hint="De esos faltantes, los que tienen OC (mes o viva), de cualquier comprador. Sin las OC de RRHH, Marketing y Sistemas IT. Valorizado por lo que faltaba"
+                  icon={ShoppingCart}
+                  accent="blue"
+                />
+                <KpiMini
+                  label="Ingresados"
+                  items={colT("ingresados")}
+                  unidades={unidT("ingresados")}
+                  importe={impT("ingresados")}
+                  hint="De los faltantes con OC, los que ya ingresaron por remito en el mes. Valorizado por lo que faltaba"
+                  icon={PackageCheck}
+                  accent="green"
+                />
+                <KpiMini
+                  label="Falta ingresar"
+                  items={colT("faltaIngresar")}
+                  unidades={unidT("faltaIngresar")}
+                  importe={impT("faltaIngresar")}
+                  hint="Faltantes con OC que todavía no ingresaron. Valorizado por lo que faltaba"
+                  icon={Truck}
+                  accent="yellow"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
+                <Globe size={12} /> {ORIGEN_TITULO[origen] ?? origen}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <KpiMini
+                  label="Faltantes"
+                  items={col("faltantes")}
+                  unidades={unid("faltantes")}
+                  importe={imp("faltantes")}
+                  hint={`Faltantes ${ORIGEN_TITULO[origen] ?? origen}`}
+                  icon={PackageX}
+                  accent="orange"
+                />
+                <KpiMini
+                  label="Con OC"
+                  items={col("conOC")}
+                  unidades={unid("conOC")}
+                  importe={imp("conOC")}
+                  hint="De lo que faltó, lo que ya tiene OC en el mes — valorizado por lo que faltaba"
+                  icon={ShoppingCart}
+                  accent="blue"
+                />
+                <KpiMini
+                  label="Ingresados"
+                  items={col("ingresados")}
+                  unidades={unid("ingresados")}
+                  importe={imp("ingresados")}
+                  hint="De lo que faltó, lo que ya ingresó en el mes — valorizado por lo que faltaba"
+                  icon={PackageCheck}
+                  accent="green"
+                />
+                <KpiMini
+                  label="Falta ingresar"
+                  items={col("faltaIngresar")}
+                  unidades={unid("faltaIngresar")}
+                  importe={imp("faltaIngresar")}
+                  hint="Faltantes con OC que todavía no ingresaron — valorizado por lo que faltaba"
+                  icon={Truck}
+                  accent="yellow"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-1 rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4 flex flex-col justify-center">
+            {pieData.length > 0 ? (
+              <PieChartCard
+                title={`Faltantes por origen — ${fmtMesLabel(mes)}`}
+                data={pieData}
+                height={300}
+                colors={pieColors}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                {loading ? (
+                  <Loader2 size={36} className="text-yellow-400 animate-spin" />
+                ) : (
+                  <PackageCheck size={40} className="text-zinc-700" />
+                )}
+                <p className="text-zinc-500 text-sm">
+                  {loading ? "Consultando la base…" : "Sin datos para este mes."}
+                </p>
+              </div>
             )}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <KpiCard
-              label="Faltantes del mes (total)"
-              value={<StackedKpi items={`${fmtNum(colT("faltantes"))} items`} unidades={`${fmtNum(unidT("faltantes"))} u.`} importe={fmtMoney(impT("faltantes"))} />}
-              hint="Nacionales + Importados. Fábrica y Original no entran: son producción interna, no compra"
-              icon={PackageX}
-              accent="zinc"
-            />
-            <KpiCard
-              label="Con OC ese mes (total)"
-              value={<StackedKpi items={`${fmtNum(colT("conOC"))} items`} unidades={`${fmtNum(unidT("conOC"))} u.`} importe={fmtMoney(impT("conOC"))} />}
-              hint=""
-              icon={ShoppingCart}
-              accent="zinc"
-            />
-            <KpiCard
-              label="Ingresados ese mes (total)"
-              value={<StackedKpi items={`${fmtNum(colT("ingresados"))} items`} unidades={`${fmtNum(unidT("ingresados"))} u.`} importe={fmtMoney(impT("ingresados"))} />}
-              hint="De lo que faltó, lo que ya ingresó en el mes"
-              icon={PackageCheck}
-              accent="zinc"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <KpiCard
-            label="Faltantes del mes"
-            value={<StackedKpi items={`${fmtNum(col("faltantes"))} items`} unidades={`${fmtNum(unid("faltantes"))} u.`} importe={fmtMoney(imp("faltantes"))} />}
-            hint="Faltante Nacionales"
-            icon={PackageX}
-            accent="orange"
-          />
-          <KpiCard
-            label="Con OC ese mes"
-            value={<StackedKpi items={`${fmtNum(col("conOC"))} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
-            hint="De lo que faltó, lo que ya tiene OC en el mes — valorizado por lo que faltaba"
-            icon={ShoppingCart}
-            accent="blue"
-          />
-          <KpiCard
-            label="Ingresados ese mes"
-            value={<StackedKpi items={`${fmtNum(col("ingresados"))} items`} unidades={`${fmtNum(unid("ingresados"))} u.`} importe={fmtMoney(imp("ingresados"))} />}
-            hint="De lo que faltó, lo que ya ingresó en el mes — valorizado por lo que faltaba"
-            icon={PackageCheck}
-            accent="green"
-          />
         </div>
 
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4 space-y-4">
@@ -806,7 +894,7 @@ export default function ComprasMetricasPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
             {serieData.length > 0 ? (
               <>
@@ -839,28 +927,6 @@ export default function ComprasMetricasPage() {
                   {serieLoading
                     ? "Consultando la base…"
                     : (serieError ?? "Sin datos para estos meses.")}
-                </p>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-            {pieData.length > 0 ? (
-              <PieChartCard
-                title={`Faltantes por origen — ${fmtMesLabel(mes)}`}
-                data={pieData}
-                height={340}
-                colors={pieColors}
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-                {loading ? (
-                  <Loader2 size={36} className="text-yellow-400 animate-spin" />
-                ) : (
-                  <PackageCheck size={40} className="text-zinc-700" />
-                )}
-                <p className="text-zinc-500 text-sm">
-                  {loading ? "Consultando la base…" : "Sin datos para este mes."}
                 </p>
               </div>
             )}

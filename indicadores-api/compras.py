@@ -74,6 +74,15 @@ _COMP = (
     if COMP_CODIGOS_OC_COMPRA else ""
 )
 
+# 2026-10-09 — modo "todos" (card general de /compras): OC de TODOS los orígenes
+# (Nacional, Importado, Original y Fabril; las de fábrica cuelgan del comprobante
+# 80) y de cualquier comprador. Se sacan SOLO las OC que no son de mercadería:
+# áreas 74 OC RRHH · 77 OC MARKETING · 78 OC SISTEMAS IT. Los presupuestos de
+# servicio (tipo Generico) siguen afuera por _cond_tipo.
+COMP_CODIGOS_AREAS_EXCLUIR: tuple[int, ...] = (74, 77, 78)
+_COMP_TODOS = f"AND cab.CompCodigo NOT IN ({','.join(str(c) for c in COMP_CODIGOS_AREAS_EXCLUIR)})"
+
+
 def _cond_comp_comprador(comp=None, comprador=None) -> str | None:
     """Filtro opcional de comprobante y/o comprador de la OC (2026-10-07).
     /compras cuenta como "Con OC" solo lo que emite el sector compras:
@@ -216,7 +225,7 @@ def _nro_oc(centro, numero):
     return f"{c:04d}-{n:08d}"
 
 
-def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False, comp=None, comprador=None):
+def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False, comp=None, comprador=None, todos: bool = False):
     """Agrega por artículo lo pendiente de recibir de las OC.
 
     desde = 'YYYY-MM-DD' (o None → OC_DESDE_DEFAULT): solo se toman las OC cuyo
@@ -247,6 +256,8 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False, comp=None
         except ValueError:
             corte = None
 
+    if todos:
+        incluir_fabril = True
     sql = SQL_OC_PENDIENTES.format(
         _join_tipo=_JOIN_TIPO,
         _excl=_EXCL,
@@ -255,7 +266,7 @@ def fetch_ordenes_pendientes(desde=None, incluir_fabril: bool = False, comp=None
         # (74/76/77/78) y el pase 80, que no cubren ningún faltante de venta.
         # Con incluir_fabril (/fabrica/faltantes) NO se filtra: la OC de
         # producción interna cuelga de otros comprobantes.
-        _comp=_cond_comp_comprador(comp, comprador) or ("" if incluir_fabril else _COMP),
+        _comp=(_COMP_TODOS if todos else (_cond_comp_comprador(comp, comprador) or ("" if incluir_fabril else _COMP))),
         _tipo=_cond_tipo(incluir_fabril),
         _fecha=f"AND cab.FecMovim >= {_dias(corte)}" if corte else "",
     )
@@ -394,7 +405,7 @@ WHERE cab.FecMovim BETWEEN {_d1} AND {_d2}
 """
 
 
-def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool = False, comp=None, comprador=None):
+def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool = False, comp=None, comprador=None, todos: bool = False):
     """Artículos con al menos un renglón de Orden de Compra HECHA en el rango
     [desde, hasta] (por FecMovim de la cabecera) — a diferencia de
     fetch_ordenes_pendientes, ACÁ NO importa si ya se recibió o sigue
@@ -411,9 +422,11 @@ def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool =
     d1 = datetime.strptime(str(desde)[:10], "%Y-%m-%d").date()
     d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
 
+    if todos:
+        incluir_fabril = True
     sql = SQL_OC_RANGO.format(
         _join_tipo=_JOIN_TIPO, _excl=_EXCL,
-        _comp=_cond_comp_comprador(comp, comprador) or _COMP,
+        _comp=(_COMP_TODOS if todos else (_cond_comp_comprador(comp, comprador) or _COMP)),
         _tipo=_cond_tipo(incluir_fabril),
         _d1=_dias(d1), _d2=_dias(d2),
     )
@@ -1841,12 +1854,12 @@ WITH cot AS (
     WHERE rn = 1
 ),
 art AS (
-    -- Precio = precio de venta s/IVA (costo venta x (1 + margen)), ver pantalla
+    -- Precio = Costo Unitario de VENTA (PrecioBase, sin margen), ver pantalla
     -- Administración Precios de Magnus, EN PESOS: PrecioBase está en la moneda
     -- del artículo (2 = dólar EverWear, etc.) y se convierte con la última
     -- CotizVenta de esa moneda (Moneda 0/1 = pesos).
     SELECT s.CodArticulo, ap.Detalle, s.DetalleMedida, s.CodProveedHabitual,
-           ISNULL(s.PrecioBase, 0) * (1 + ISNULL(s.PorMargenUtilidad, 0) / 100.0)
+           ISNULL(s.PrecioBase, 0)
              * CASE WHEN ISNULL(s.Moneda, 1) IN (0, 1) THEN 1
                     ELSE ISNULL(cot.CotizVenta, 0) END AS Precio
     FROM EVERWEAR.dbo.StkFer_Articulos s

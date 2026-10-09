@@ -711,13 +711,14 @@ def compras_ordenes_pendientes(
     fabril: int = Query(default=0),
     comp: int | None = Query(default=None),
     comprador: int | None = Query(default=None),
+    todos: int = Query(default=0),
 ):
     """OC abiertas, pendiente de recibir (Pedida - Recibida) agregado por artículo.
     Solo lectura sobre Magnus; se cruza con faltantes en /compras/faltantes.
     `desde`='YYYY-MM-DD' (default OC_DESDE_DEFAULT): solo OC con FecMovim >= desde,
     para que las OC viejas no cubran faltantes actuales."""
     try:
-        return fetch_ordenes_pendientes(desde, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
+        return fetch_ordenes_pendientes(desde, incluir_fabril=bool(fabril), comp=comp, comprador=comprador, todos=bool(todos))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
@@ -755,13 +756,14 @@ def compras_ordenes_mes(
     fabril: int = Query(default=0),
     comp: int | None = Query(default=None),
     comprador: int | None = Query(default=None),
+    todos: int = Query(default=0),
 ):
     """Artículos (CodArticulo distintos) con al menos un renglón de OC hecho
     en [desde, hasta] por FecMovim de la cabecera — sin importar si ya se
     recibió o sigue pendiente (a diferencia de /compras/ordenes-pendientes).
     Para /compras/metricas: funnel faltantes del mes → con OC ese mes."""
     try:
-        return fetch_ordenes_articulos_rango(desde, hasta, incluir_fabril=bool(fabril), comp=comp, comprador=comprador)
+        return fetch_ordenes_articulos_rango(desde, hasta, incluir_fabril=bool(fabril), comp=comp, comprador=comprador, todos=bool(todos))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

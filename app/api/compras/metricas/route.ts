@@ -21,6 +21,15 @@ const API_URL =
 // OC emitidas en el mes como a la OC viva.
 const OC_COMPRADOR = "&comp=70&comprador=1";
 
+// 2026-10-09 — funnel "general" (las 3+1 cards de arriba de /compras): faltantes
+// marcados en depósito de TODOS los orígenes (Nacional, Importado, Original,
+// Fabril, sin tipo), OC de todos los compradores y comprobantes (incluye OC IMPO
+// 75 y las de fábrica 80) SALVO las que no son de mercadería (74 RRHH, 77
+// Marketing, 78 Sistemas IT) — indicadores-api `todos=1`. Ingresados = remitos
+// de cualquier tipo. Todo atado al universo de faltantes: solo cuentan los
+// artículos que figuran en la columna 1.
+const OC_TODOS = "&todos=1";
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
@@ -234,6 +243,10 @@ function armarFunnel(
   const fFalt = magnitudFaltante(faltantes);
   const fOC = magnitudFaltante(conOC);
   const fIng = magnitudFaltante(ingresados);
+  // Con OC que todavía no ingresó (col2 \ col3). Se valoriza contra el faltante,
+  // igual que el resto. Como col3 ⊆ col2 es la resta exacta de las dos columnas.
+  const faltaIng = conOC.filter((c) => !setC.has(c));
+  const fFaltaIng = magnitudFaltante(faltaIng);
 
   return {
     faltantesUnidades: fFalt.unidades,
@@ -278,6 +291,15 @@ function armarFunnel(
         faltanteUnidades: fIng.unidades,
         faltanteImporte: fIng.importe,
       },
+      {
+        key: "faltaIngresar",
+        label: "Falta ingresar",
+        total: faltaIng.length,
+        unidades: fFaltaIng.unidades,
+        importe: fFaltaIng.importe,
+        faltanteUnidades: fFaltaIng.unidades,
+        faltanteImporte: fFaltaIng.importe,
+      },
     ],
   };
 }
@@ -293,18 +315,25 @@ export async function GET(req: NextRequest) {
   //    · ingresos         → set C (remito x OC concretado ese mes)
   //    · deposito/faltantes → origen, estado, unidades e importe por artículo
   const q = encodeURIComponent;
-  const [ocRes, ocVivaRes, ingRes, faltRes] = await Promise.allSettled([
+  const [ocRes, ocVivaRes, ingRes, faltRes, ocTodosRes, ocVivaTodosRes] = await Promise.allSettled([
     getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}${OC_COMPRADOR}`),
     getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}${OC_COMPRADOR}`),
     getJson(`${API_URL}/compras/ingresos?desde=${q(desde)}&hasta=${q(hasta)}`),
     // Universo = el de /compras/faltantes (ver lib/compras/faltantesMesConsumo.ts).
     cargarFaltantesMesCompras(desde, hasta),
+    // Mismas dos consultas de OC pero de todos los orígenes/compradores (card general).
+    getJson(`${API_URL}/compras/ordenes-mes?desde=${q(desde)}&hasta=${q(hasta)}${OC_TODOS}`),
+    getJson(`${API_URL}/compras/ordenes-pendientes?desde=${q(OC_DESDE_DEFAULT)}${OC_TODOS}`),
   ]);
 
   // Set B: artículos con OC hecha en el mes.
   const setB = new Set<string>();
   const ocUnidMap = new Map<string, number>();
-  const ocWarn = ocRes.status !== "fulfilled" || ocVivaRes.status !== "fulfilled";
+  const ocWarn =
+    ocRes.status !== "fulfilled" ||
+    ocVivaRes.status !== "fulfilled" ||
+    ocTodosRes.status !== "fulfilled" ||
+    ocVivaTodosRes.status !== "fulfilled";
   if (ocRes.status === "fulfilled") {
     const ocJson = ocRes.value;
     for (const cod of (ocJson.articulos ?? []) as string[]) setB.add(cod);
@@ -332,6 +361,28 @@ export async function GET(req: NextRequest) {
     }
   } else {
     console.error("GET /api/compras/metricas — ordenes-pendientes", ocVivaRes.reason);
+  }
+
+  // OC "general" (todos los orígenes, ver OC_TODOS): mismo armado que arriba.
+  const setBTodos = new Set<string>();
+  const ocUnidTodosMap = new Map<string, number>();
+  if (ocTodosRes.status === "fulfilled") {
+    for (const cod of (ocTodosRes.value.articulos ?? []) as string[]) setBTodos.add(cod);
+    for (const [cod, u] of Object.entries((ocTodosRes.value.unidades ?? {}) as Record<string, number>)) {
+      ocUnidTodosMap.set(cod, Number(u) || 0);
+    }
+  } else {
+    console.error("GET /api/compras/metricas — ordenes-mes (todos)", ocTodosRes.reason);
+  }
+  if (ocVivaTodosRes.status === "fulfilled") {
+    for (const r of (ocVivaTodosRes.value.rows ?? []) as { CodArticulo: string; PorLlegar?: number }[]) {
+      const cod = String(r.CodArticulo ?? "").trim();
+      if (!cod || !(Number(r.PorLlegar) > 0)) continue;
+      setBTodos.add(cod);
+      if (!ocUnidTodosMap.has(cod)) ocUnidTodosMap.set(cod, Number(r.PorLlegar) || 0);
+    }
+  } else {
+    console.error("GET /api/compras/metricas — ordenes-pendientes (todos)", ocVivaTodosRes.reason);
   }
 
   // Set C: artículos con remito de ingreso concretado en el mes (todos los
@@ -395,6 +446,12 @@ export async function GET(req: NextRequest) {
     label: ORIGEN_LABEL[k],
     total: codigosPorOrigen(faltMes, k).length,
   }));
+
+  // "general" = TODOS los orígenes (incluye Fábrica y Original) con las OC de
+  // todos los compradores (menos áreas RRHH/MKT/IT). Alimenta las cards de arriba.
+  funnels.general = armarFunnel(
+    "todos", faltMes, setBTodos, setC, ocUnidTodosMap, ingUnidMap, precioUnitMap,
+  );
 
   return NextResponse.json({
     mes,
