@@ -1,21 +1,17 @@
 "use client";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Loader2, RefreshCw, AlertTriangle, Pause, Play, Clock,
 } from "lucide-react";
 import { ChartComboBarLine, C } from "../../deposito/components/ui";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { DateRangeField } from "@/components/ui/date-range-field";
-import {
-  BUCKET_RANK, bucketTone, TONE_TEXT,
-  type EstadoAgg, type OperarioAgg, type Tone,
-} from "../../deposito/components/preparadoresWms";
 
 const REFRESH_MS = 60_000;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Depósito WMS — OT (pedidos de Picking) por estado en un rango + gráficos por hora.
-// (Las cartas por preparador volvieron a /deposito/deposito.) Datos del WMS vía
+// (Los KPIs por estado y las cartas por preparador viven en /deposito/streaming.) Datos del WMS vía
 // /api/deposito/wms-estados (→ indicadores-api → WMS). Solo lectura.
 // Por defecto trae el último día con OT ejecutada; el rango es ajustable.
 //
@@ -23,25 +19,6 @@ const REFRESH_MS = 60_000;
 // como pestaña "WMS" y el 2026-10-09 se mudó a /sistema/wms (módulo sistema).
 // /deposito/wms redirige a /sistema/wms (ver gen-nav.mjs IGNORE).
 // ──────────────────────────────────────────────────────────────────────────────
-
-interface Resumen {
-  total_ot: number;
-  total_items: number;
-  operarios: number;
-  en_espera: number;
-  en_proceso: number;
-  terminadas: number;
-}
-
-interface WmsData {
-  fecha: string | null;
-  desde: string | null;
-  hasta: string | null;
-  procesos: number[];
-  estados: EstadoAgg[];
-  por_operario: OperarioAgg[];
-  resumen: Resumen;
-}
 
 // Pedidos por hora (8-18h) — vista en vivo de HOY, fuente Magnus.
 interface HoraRow {
@@ -70,8 +47,6 @@ interface PedidosHoraData {
   rows: HoraRow[];
 }
 
-const fmtNum = (n: number) =>
-  new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(n || 0);
 const fmtAr = (s: string | null) => {
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(s || "");
   return m ? `${m[3]}/${m[2]}/${m[1]}` : s || "—";
@@ -82,11 +57,9 @@ const isoLocal = (d: Date) =>
   ).padStart(2, "0")}`;
 
 export function WmsTab() {
-  const [data, setData] = useState<WmsData | null>(null);
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [auto, setAuto] = useState(true);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [, setTick] = useState(0); // re-render del "hace Xs"
@@ -98,6 +71,7 @@ export function WmsTab() {
 
   // Mismos filtros desde/hasta que el resto de la vista ("" = hoy en vivo).
   const loadHora = useCallback(async (d: string, h: string) => {
+    setLoading(true);
     try {
       const qs = new URLSearchParams();
       if (d) qs.set("desde", d);
@@ -109,8 +83,11 @@ export function WmsTab() {
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       setHoraData(j as PedidosHoraData);
       setHoraError(null);
+      setLastFetch(new Date());
     } catch (e) {
       setHoraError(e instanceof Error ? e.message : "Error al cargar pedidos por hora");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -125,43 +102,6 @@ export function WmsTab() {
     const id = setInterval(() => loadHora(desde, hasta), REFRESH_MS);
     return () => clearInterval(id);
   }, [auto, desde, hasta, loadHora]);
-
-  const load = useCallback(async (d: string, h: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const qs = new URLSearchParams();
-      if (d) qs.set("desde", d);
-      if (h) qs.set("hasta", h || d);
-      const res = await fetch(`/api/deposito/wms-estados?${qs.toString()}`, {
-        cache: "no-store",
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      setData(j as WmsData);
-      setLastFetch(new Date());
-      // Sin rango elegido: fija los inputs al día que devolvió el backend.
-      if (!d && j.desde) setDesde(j.desde as string);
-      if (!h && j.hasta) setHasta(j.hasta as string);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al cargar");
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Primera carga: sin rango → backend devuelve el último día con OT registrada.
-  useEffect(() => {
-    load("", "");
-  }, [load]);
-
-  // Auto-refresh cada minuto (si está activado), con el rango actual.
-  useEffect(() => {
-    if (!auto) return;
-    const id = setInterval(() => load(desde, hasta), REFRESH_MS);
-    return () => clearInterval(id);
-  }, [auto, desde, hasta, load]);
 
   // Ticker de 1 s para el "actualizado hace Xs".
   useEffect(() => {
@@ -181,45 +121,22 @@ export function WmsTab() {
   const setRango = (d: string, h: string) => {
     setDesde(d);
     setHasta(h);
-    load(d, h);
   };
 
-  // Mapa estado→meta para etiquetar el desglose de cada preparador.
-  const estadoMeta = useMemo(() => {
-    const m = new Map<string, EstadoAgg>();
-    (data?.estados ?? []).forEach((e) => m.set(String(e.estado), e));
-    return m;
-  }, [data]);
-
-  const r = data?.resumen;
-  const ordenEstados = useMemo(
-    () =>
-      [...(data?.estados ?? [])].sort(
-        (a, b) =>
-          (BUCKET_RANK[a.bucket] ?? 9) - (BUCKET_RANK[b.bucket] ?? 9) ||
-          (a.estado ?? 99) - (b.estado ?? 99),
-      ),
-    [data],
-  );
   const rangoLabel =
     desde && hasta && desde !== hasta
       ? `${fmtAr(desde)} → ${fmtAr(hasta)}`
-      : fmtAr(desde || data?.fecha || null);
+      : fmtAr(desde || horaData?.fecha || null);
 
   return (
     <div className="min-h-screen bg-[#111111] text-white">
       {/* avisos flotantes */}
-      {(loading || error) && (
+      {loading && (
         <div className="fixed bottom-6 right-6 z-[110] flex flex-col gap-2">
           {loading && (
             <div className="flex items-center gap-3 bg-[#1A1A1A] border border-yellow-400/40 rounded-xl px-5 py-3 text-sm text-zinc-200">
               <Loader2 size={16} className="animate-spin text-yellow-400" />
               Consultando el WMS…
-            </div>
-          )}
-          {error && (
-            <div className="flex items-center gap-3 bg-[#1A1A1A] border border-red-400/40 rounded-xl px-5 py-3 text-sm text-red-300">
-              <AlertTriangle size={16} className="text-red-400" /> {error}
             </div>
           )}
         </div>
@@ -290,7 +207,7 @@ export function WmsTab() {
             {auto ? <Pause size={14} /> : <Play size={14} />}
           </button>
           <button
-            onClick={() => load(desde, hasta)}
+            onClick={() => loadHora(desde, hasta)}
             title="Refrescar ahora"
             disabled={loading}
             className="text-zinc-400 hover:text-yellow-400 transition-colors p-2 disabled:opacity-40"
@@ -299,31 +216,6 @@ export function WmsTab() {
           </button>
         </div>
       </header>
-
-      {/* KPIs por estado */}
-      {r && (
-        <div className="max-w-[1500px] mx-auto px-4 md:px-8 pt-5">
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <Stat
-              label="Total OT"
-              value={fmtNum(r.total_ot)}
-              items={r.total_items}
-              tone="yellow"
-              big
-            />
-            {ordenEstados.map((e) => (
-              <Stat
-                key={String(e.estado)}
-                label={e.label}
-                value={fmtNum(e.cantidad)}
-                items={e.items}
-                tone={bucketTone(e.bucket)}
-              />
-            ))}
-            <Stat label="Preparadores" value={fmtNum(r.operarios)} tone="neutral" />
-          </div>
-        </div>
-      )}
 
       <main className="max-w-[1500px] mx-auto px-4 md:px-8 py-6">
         {/* Gráfico 1: desglose de estados del WMS por hora (en espera / en proceso / cumplido / sin asignar) */}
@@ -455,45 +347,11 @@ export function WmsTab() {
 
         <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
           Pedidos = OT de Picking del WMS, contadas por su estado (OTEstado) según la
-          fecha de ejecución del rango. Las cartas por preparador están en
-          /deposito/deposito. Lectura no bloqueante (READ UNCOMMITTED); no se escribe en
+          fecha de ejecución del rango. Los KPIs por estado y las cartas por
+          preparador están en /deposito/streaming. Lectura no bloqueante (READ UNCOMMITTED); no se escribe en
           el WMS. Por defecto se muestra el último día con OT ejecutada.
         </p>
       </main>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  items,
-  tone = "neutral",
-  big = false,
-}: {
-  label: string;
-  value: string;
-  items?: number;
-  tone?: Tone;
-  big?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-zinc-800 bg-[#1A1A1A] px-4 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-zinc-500 truncate">
-        {label}
-      </div>
-      <div className="flex items-baseline gap-1.5">
-        <span
-          className={`${big ? "text-3xl" : "text-2xl"} font-bold tabular-nums ${TONE_TEXT[tone]}`}
-        >
-          {value}
-        </span>
-        {items !== undefined && (
-          <span className="text-[12px] text-zinc-500 tabular-nums">
-            / {fmtNum(items)} items
-          </span>
-        )}
-      </div>
     </div>
   );
 }

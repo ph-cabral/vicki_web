@@ -83,10 +83,22 @@ const fmtAr = (s: string | null) => {
 };
 
 /** `dia` = "" → último día con OT; "YYYY-MM-DD" → ese día. */
-export function PreparadoresWms({ dia = "", refreshKey = 0 }: { dia?: string; refreshKey?: number }) {
-  const [data, setData] = useState<Data | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function PreparadoresWms({
+  dia = "",
+  refreshKey = 0,
+  externo,
+}: {
+  dia?: string;
+  refreshKey?: number;
+  /** Si viene, usa esos datos (los trae el padre) y no consulta por su cuenta. */
+  externo?: { data: Data | null; loading: boolean; error: string | null };
+}) {
+  const [dataP, setData] = useState<Data | null>(null);
+  const [loadingP, setLoading] = useState(true);
+  const [errorP, setError] = useState<string | null>(null);
+  const data = externo ? externo.data : dataP;
+  const loading = externo ? externo.loading : loadingP;
+  const error = externo ? externo.error : errorP;
   const enVuelo = useRef(false);
 
   const load = useCallback(async (d: string) => {
@@ -112,13 +124,14 @@ export function PreparadoresWms({ dia = "", refreshKey = 0 }: { dia?: string; re
   }, []);
 
   useEffect(() => {
+    if (externo) return;
     setLoading(true);
     load(dia);
     const id = setInterval(() => {
       if (!document.hidden) load(dia);
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [dia, refreshKey, load]);
+  }, [dia, refreshKey, load, externo]);
 
   const ordenEstados = useMemo(
     () =>
