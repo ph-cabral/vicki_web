@@ -7,11 +7,12 @@ import {
 } from "./components/tabs";
 import { MesaControlTab } from "./components/mesaControl";
 import { ErroresMesaTab } from "./components/erroresMesa";
+import { RankingPreparadoresTab } from "./components/rankingPreparadores";
 import { TiemposPickingTab } from "./components/tiemposPicking";
 import {
   LayoutDashboard, PackageSearch, Clock, Timer,
   Loader2, RefreshCw, AlertTriangle, FileSpreadsheet, ClipboardList,
-  AlertOctagon,
+  AlertOctagon, Trophy,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { MonthRangePickerField, lastFullMonthRange } from "@/components/ui/date-range-field";
@@ -37,6 +38,7 @@ const TABS = [
   { id: "tiempo", label: "Tiempo de Pedidos", icon: Clock, needs: "tiempo" },
   { id: "mesa-control", label: "Mesas de Control", icon: ClipboardList, needs: "mesa" },
   { id: "errores-mesa", label: "Errores de Mesa", icon: AlertOctagon, needs: "errores" },
+  { id: "ranking-prep", label: "Ranking preparadores", icon: Trophy, needs: "ranking" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -118,7 +120,7 @@ export default function DepositoPage() {
   const ready =
     needs === "tiempo"
       ? !!tiempo
-      : needs === "mesa" || needs === "errores" || needs === "picking"
+      : needs === "mesa" || needs === "errores" || needs === "picking" || needs === "ranking"
         ? true
         : !!viewProd;
 
@@ -171,7 +173,7 @@ export default function DepositoPage() {
             />
           </div>
           <div
-            className={`flex items-center gap-3 ${tab === "mesa-control" || tab === "errores-mesa" ? "invisible pointer-events-none" : ""}`}
+            className={`flex items-center gap-3 ${tab === "mesa-control" || tab === "errores-mesa" || tab === "ranking-prep" ? "invisible pointer-events-none" : ""}`}
           >
             <label className="flex items-center gap-1.5 text-zinc-400">
               Operario
@@ -258,6 +260,7 @@ export default function DepositoPage() {
             {tab === "tiempo" && tiempo && <TiempoTab d={tiempo} mes="__all__" />}
             {tab === "mesa-control" && <MesaControlTab />}
             {tab === "errores-mesa" && <ErroresMesaTab desde={desde} hasta={hasta} />}
+            {tab === "ranking-prep" && <RankingPreparadoresTab desde={desde} hasta={hasta} />}
           </>
         )}
       </main>
