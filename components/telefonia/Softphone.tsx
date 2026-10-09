@@ -70,7 +70,7 @@ type Reciente = { numero: string; nombre: string; dir: "entrante" | "saliente" |
 
 const LOCK = "vicki-softphone";
 const RECIENTES_KEY = "vicki-softphone-recientes";
-const OCULTO_EN = ["/login", "/picking/picker"];
+const OCULTO_EN = ["/login", "/deposito/picking/picker"];
 const TECLAS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
 function leerRecientes(): Reciente[] {

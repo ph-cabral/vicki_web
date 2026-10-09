@@ -4,6 +4,7 @@ import {
   viewForPath,
   isAdminPath,
   normalizarHrefs,
+  normalizarModulo,
   type SessionPayload,
 } from "@/lib/auth/modules";
 
@@ -54,6 +55,8 @@ async function verifyToken(token: string | undefined): Promise<SessionPayload | 
     if (typeof payload.exp !== "number" || payload.exp * 1000 < Date.now()) return null;
     // Cookies firmadas antes de un cambio de URL de vista (LEGACY_VIEW_HREFS).
     payload.vistas = normalizarHrefs(payload.vistas);
+    // Keys de módulo fusionadas (picking/manguera/sorteo -> deposito/fabrica/sistema).
+    payload.mods = [...new Set((payload.mods ?? []).map(normalizarModulo))];
     return payload;
   } catch {
     return null;
@@ -66,7 +69,7 @@ async function verifyToken(token: string | undefined): Promise<SessionPayload | 
 // /picking/picker/responder y los GET/PATCH) sigue protegido.
 function esRutaPublica(pathname: string, method: string): boolean {
   // Página del picker (coincidencia exacta).
-  if (pathname === "/picking/picker") return true;
+  if (pathname === "/deposito/picking/picker" || pathname === "/picking/picker") return true;
   // Estado del picking para el widget de escritorio (autoelevador):
   // sólo lectura del conteo de pendientes, GET exacto, sin datos sensibles.
   if (method === "GET" && pathname === "/api/picking/estado") return true;

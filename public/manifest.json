@@ -2,7 +2,7 @@
   "name": "Picking EverWear",
   "short_name": "Picking",
   "description": "Pedidos al depósito",
-  "start_url": "/picking",
+  "start_url": "/deposito/picking",
   "display": "standalone",
   "background_color": "#030712",
   "theme_color": "#030712",

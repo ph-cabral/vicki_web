@@ -3,7 +3,6 @@
 import type { NavNode } from "./modules";
 
 export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
-  "buscador": [],
   "calidad": [],
   "compras": [
     {
@@ -43,6 +42,16 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/deposito/pedidos"
     },
     {
+      "label": "Picking",
+      "href": "/deposito/picking",
+      "children": [
+        {
+          "label": "Picker",
+          "href": "/deposito/picking/picker"
+        }
+      ]
+    },
+    {
       "label": "Streaming",
       "href": "/deposito/streaming"
     }
@@ -51,15 +60,19 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
     {
       "label": "Faltantes",
       "href": "/fabrica/faltantes"
+    },
+    {
+      "label": "Manguera",
+      "href": "/fabrica/manguera",
+      "children": [
+        {
+          "label": "Corte",
+          "href": "/fabrica/manguera/corte"
+        }
+      ]
     }
   ],
   "finanza": [],
-  "manguera": [
-    {
-      "label": "Corte",
-      "href": "/manguera/corte"
-    }
-  ],
   "mostradores": [
     {
       "label": "Administrar",
@@ -68,12 +81,6 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
     {
       "label": "Control",
       "href": "/mostradores/control"
-    }
-  ],
-  "picking": [
-    {
-      "label": "Picker",
-      "href": "/picking/picker"
     }
   ],
   "rrhh": [
@@ -112,18 +119,22 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
       "href": "/sistema/edit"
     },
     {
-      "label": "WMS",
-      "href": "/sistema/wms"
-    }
-  ],
-  "sorteo": [
-    {
-      "label": "Armar",
-      "href": "/sorteo/armar"
+      "label": "Sorteo",
+      "href": "/sistema/sorteo",
+      "children": [
+        {
+          "label": "Armar",
+          "href": "/sistema/sorteo/armar"
+        },
+        {
+          "label": "Teléfono",
+          "href": "/sistema/sorteo/telefono"
+        }
+      ]
     },
     {
-      "label": "Teléfono",
-      "href": "/sorteo/telefono"
+      "label": "WMS",
+      "href": "/sistema/wms"
     }
   ],
   "ventas": [
@@ -148,12 +159,6 @@ export const GENERATED_CHILDREN: Record<string, NavNode[]> = {
 };
 
 export const GENERATED_MODULES: { key: string; label: string; href: string; hasIndex: boolean }[] = [
-  {
-    "key": "buscador",
-    "label": "Buscador",
-    "href": "/buscador",
-    "hasIndex": true
-  },
   {
     "key": "calidad",
     "label": "Calidad",
@@ -185,22 +190,10 @@ export const GENERATED_MODULES: { key: string; label: string; href: string; hasI
     "hasIndex": true
   },
   {
-    "key": "manguera",
-    "label": "Manguera",
-    "href": "/manguera",
-    "hasIndex": true
-  },
-  {
     "key": "mostradores",
     "label": "Mostradores",
     "href": "/mostradores",
     "hasIndex": false
-  },
-  {
-    "key": "picking",
-    "label": "Picking",
-    "href": "/picking",
-    "hasIndex": true
   },
   {
     "key": "rrhh",
@@ -212,12 +205,6 @@ export const GENERATED_MODULES: { key: string; label: string; href: string; hasI
     "key": "sistema",
     "label": "Sistema",
     "href": "/sistema",
-    "hasIndex": true
-  },
-  {
-    "key": "sorteo",
-    "label": "Sorteo",
-    "href": "/sorteo",
     "hasIndex": true
   },
   {

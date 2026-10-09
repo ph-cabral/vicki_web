@@ -28,7 +28,7 @@ import ar.com.everwear.comun.Actualizador;
  */
 public class MainActivity extends Activity {
 
-    static final String URL_PICKER = Config.BASE_URL + "/picking/picker";
+    static final String URL_PICKER = Config.BASE_URL + "/deposito/picking/picker";
 
     private WebView web;
     private Actualizador actualizador;

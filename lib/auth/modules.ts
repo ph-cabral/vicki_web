@@ -30,9 +30,9 @@ export interface ModuleDef {
 // se agrega sola con un color default — no hace falta tocar este archivo.
 const RAW_MODULES: Omit<ModuleDef, "children" | "hasIndex">[] = [
   {
-    key: "manguera",
-    label: "Mangueras",
-    href: "/manguera",
+    key: "fabrica",
+    label: "Fábrica",
+    href: "/fabrica",
     color: "bg-orange-600 hover:bg-orange-500",
   },
   {
@@ -46,12 +46,6 @@ const RAW_MODULES: Omit<ModuleDef, "children" | "hasIndex">[] = [
     label: "Depósito",
     href: "/deposito",
     color: "bg-emerald-700 hover:bg-emerald-600",
-  },
-  {
-    key: "picking",
-    label: "Picking",
-    href: "/picking",
-    color: "bg-purple-700 hover:bg-purple-600",
   },
   {
     key: "compras",
@@ -78,22 +72,10 @@ const RAW_MODULES: Omit<ModuleDef, "children" | "hasIndex">[] = [
     color: "bg-indigo-700 hover:bg-indigo-600",
   },
   {
-    key: "sorteo",
-    label: "Sorteo",
-    href: "/sorteo",
-    color: "bg-pink-700 hover:bg-pink-600",
-  },
-  {
     key: "vicki",
     label: "Vicki",
     href: "/vicki",
     color: "bg-slate-700 hover:bg-slate-600",
-  },
-  {
-    key: "buscador",
-    label: "Buscador",
-    href: "/buscador",
-    color: "bg-cyan-700 hover:bg-cyan-600",
   },
   {
     key: "calidad",
@@ -196,7 +178,30 @@ export function isModuleKey(v: unknown): v is ModuleKey {
 export const LEGACY_VIEW_HREFS: Record<string, string> = {
   "/ventas/bulones": "/ventas/lineas", // 2026-09-23
   "/deposito/deposito": "/deposito/streaming", // 2026-10-09
+  // 2026-10-09: picking -> deposito, manguera -> fabrica, sorteo -> sistema
+  "/picking": "/deposito/picking",
+  "/picking/picker": "/deposito/picking/picker",
+  "/manguera": "/fabrica/manguera",
+  "/manguera/corte": "/fabrica/manguera/corte",
+  "/sorteo": "/sistema/sorteo",
+  "/sorteo/armar": "/sistema/sorteo/armar",
+  "/sorteo/telefono": "/sistema/sorteo/telefono",
 };
+
+/**
+ * Keys de módulo que se fusionaron en otro (2026-10-09). Lo guardado en
+ * sector_permiso.modulos / ocultos con la key vieja sigue valiendo. "buscador"
+ * se eliminó: se descarta.
+ */
+export const LEGACY_MODULE_KEYS: Record<string, ModuleKey> = {
+  picking: "deposito",
+  manguera: "fabrica",
+  sorteo: "sistema",
+};
+
+export function normalizarModulo(k: string): string {
+  return LEGACY_MODULE_KEYS[k] ?? k;
+}
 
 export function normalizarHref(h: string): string {
   return LEGACY_VIEW_HREFS[h] ?? h;
@@ -234,17 +239,15 @@ export interface SessionPayload {
 // tenga entrada acá queda sin protección de permisos en el middleware — agregar
 // las 2 líneas correspondientes cuando se cree una carpeta nueva en app/.
 const ROUTE_MODULE: { prefix: string; mod: ModuleKey }[] = [
-  { prefix: "/manguera", mod: "manguera" },
-  { prefix: "/api/manguera", mod: "manguera" },
-  { prefix: "/api/reportes", mod: "manguera" }, // ranking de cortes
-  { prefix: "/fabrica", mod: "manguera" },
-  { prefix: "/api/fabrica", mod: "manguera" },
+  { prefix: "/api/manguera", mod: "fabrica" }, // mangueras vive en /fabrica/manguera
+  { prefix: "/api/reportes", mod: "fabrica" }, // ranking de cortes
+  { prefix: "/fabrica", mod: "fabrica" },
+  { prefix: "/api/fabrica", mod: "fabrica" },
   { prefix: "/mostradores", mod: "mostradores" },
   { prefix: "/api/mostradores", mod: "mostradores" },
   { prefix: "/deposito", mod: "deposito" },
   { prefix: "/api/deposito", mod: "deposito" },
-  { prefix: "/picking", mod: "picking" },
-  { prefix: "/api/picking", mod: "picking" },
+  { prefix: "/api/picking", mod: "deposito" }, // picking vive en /deposito/picking
   { prefix: "/compras", mod: "compras" },
   { prefix: "/api/compras", mod: "compras" },
   { prefix: "/ventas", mod: "ventas" },
@@ -254,12 +257,9 @@ const ROUTE_MODULE: { prefix: string; mod: ModuleKey }[] = [
   { prefix: "/rrhh", mod: "rrhh" },
   { prefix: "/api/rrhh", mod: "rrhh" },
   { prefix: "/api/foto", mod: "rrhh" },
-  { prefix: "/sorteo", mod: "sorteo" },
-  { prefix: "/api/sorteo", mod: "sorteo" },
+  { prefix: "/api/sorteo", mod: "sistema" }, // sorteo vive en /sistema/sorteo
   { prefix: "/vicki", mod: "vicki" },
   { prefix: "/api/vicki", mod: "vicki" },
-  { prefix: "/buscador", mod: "buscador" },
-  { prefix: "/api/buscador", mod: "buscador" },
   { prefix: "/calidad", mod: "calidad" },
   { prefix: "/api/calidad", mod: "calidad" },
   { prefix: "/sistema", mod: "sistema" },
@@ -293,23 +293,22 @@ export function isAdminPath(pathname: string): boolean {
 // Módulos sugeridos por sector. Se ofrecen como default editable la primera vez;
 // el admin los ajusta en /admin/permisos. La clave se compara en minúsculas.
 export const DEFAULT_SECTOR_MODULOS: Record<string, ModuleKey[]> = {
-  deposito: ["deposito", "picking"],
-  depósito: ["deposito", "picking"],
-  logistica: ["deposito", "picking"],
-  logística: ["deposito", "picking"],
-  fabrica: ["manguera"],
-  fábrica: ["manguera"],
-  produccion: ["manguera"],
-  producción: ["manguera"],
+  deposito: ["deposito"],
+  depósito: ["deposito"],
+  logistica: ["deposito"],
+  logística: ["deposito"],
+  fabrica: ["fabrica"],
+  fábrica: ["fabrica"],
+  produccion: ["fabrica"],
+  producción: ["fabrica"],
   rrhh: ["rrhh"],
   "recursos humanos": ["rrhh"],
-  administracion: ["finanza", "rrhh", "buscador"],
-  administración: ["finanza", "rrhh", "buscador"],
+  administracion: ["finanza", "rrhh"],
+  administración: ["finanza", "rrhh"],
   sistemas: ["sistema"],
   soporte: ["sistema"],
   finanzas: ["finanza"],
-  comercial: ["buscador"],
-  ventas: ["buscador", "ventas"],
+  ventas: ["ventas"],
   gerencia: ALL_MODULE_KEYS,
   direccion: ALL_MODULE_KEYS,
   dirección: ALL_MODULE_KEYS,

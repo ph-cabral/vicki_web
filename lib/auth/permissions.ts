@@ -8,13 +8,14 @@ import {
   isModuleKey,
   isViewHref,
   normalizarHrefs,
+  normalizarModulo,
   viewsForModule,
   type ModuleKey,
 } from "./modules";
 
 function sanitizeMods(v: unknown): ModuleKey[] {
   if (!Array.isArray(v)) return [];
-  return v.filter(isModuleKey);
+  return [...new Set(v.map((x) => (typeof x === "string" ? normalizarModulo(x) : x)))].filter(isModuleKey);
 }
 
 function sanitizeHrefs(v: unknown): string[] {
@@ -25,9 +26,9 @@ function sanitizeHrefs(v: unknown): string[] {
 // Para "ocultos" admitimos tanto keys de módulo como hrefs de vista.
 function sanitizeOcultos(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return normalizarHrefs(v.filter((x): x is string => typeof x === "string")).filter(
-    (x) => isModuleKey(x) || isViewHref(x),
-  );
+  return normalizarHrefs(
+    v.filter((x): x is string => typeof x === "string").map(normalizarModulo),
+  ).filter((x) => isModuleKey(x) || isViewHref(x));
 }
 
 export interface PermisosSector {

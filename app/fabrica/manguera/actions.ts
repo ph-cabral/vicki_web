@@ -27,7 +27,7 @@ export async function addMangueraAction(formData: FormData) {
   await prisma.manguera.create({
     data: { codigo, metros, ubicacion: ubicacion || null },
   });
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera");
 }
 
 export async function cortarMangueraAction(
@@ -57,7 +57,7 @@ export async function cortarMangueraAction(
     });
     await tx.manguera.deleteMany({ where: { id, metros: { lte: 0 } } });
   });
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera");
 }
 
 export async function addPersonalAction(formData: FormData) {
@@ -65,7 +65,7 @@ export async function addPersonalAction(formData: FormData) {
   const dni = (formData.get("dni") as string)?.trim() || null;
   if (!nombre) throw new Error("El nombre es obligatorio");
   await prisma.personal.create({ data: { nombre, dni } });
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera");
 }
 
 /* ---------- TRABAJOS ---------- */
@@ -241,7 +241,7 @@ export async function createTrabajoAction(input: NuevoTrabajoInput) {
     }
   });
 
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera");
 }
 
 export async function updateCorteAction(input: {
@@ -308,8 +308,8 @@ export async function updateCorteAction(input: {
     }
   });
 
-  revalidatePath("/manguera/corte");
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera/corte");
+  revalidatePath("/fabrica/manguera");
 }
 export async function getTrabajoAction(id: number) {
   return prisma.trabajo.findUnique({
@@ -423,6 +423,6 @@ export async function updateTrabajoAction(
     });
   });
 
-  revalidatePath("/manguera/corte");
-  revalidatePath("/manguera");
+  revalidatePath("/fabrica/manguera/corte");
+  revalidatePath("/fabrica/manguera");
 }

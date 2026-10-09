@@ -204,7 +204,7 @@ export default function ArmarClient() {
         <Link href="/" className={styles.volver}>
           ← Inicio
         </Link>
-        <Link href="/sorteo" className={styles.volver}>
+        <Link href="/sistema/sorteo" className={styles.volver}>
           ← Sorteo
         </Link>
         <h1 className={styles.titulo}>🎁 Armar premios</h1>
@@ -366,7 +366,7 @@ export default function ArmarClient() {
 
       <div className={styles.barra}>
         <span className={styles.msg}>{msg}</span>
-        <Link href="/sorteo" className={styles.btnSec}>
+        <Link href="/sistema/sorteo" className={styles.btnSec}>
           Ir al sorteo
         </Link>
         <button className={styles.btnGuardar} onClick={guardar} disabled={guardando || locked}>

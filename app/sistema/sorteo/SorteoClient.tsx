@@ -560,7 +560,7 @@ export default function SorteoClient() {
         <section>
           <div className={styles.colTit}>
             🎰 Ruleta
-            <Link href="/sorteo/armar" className={styles.armarLink}>
+            <Link href="/sistema/sorteo/armar" className={styles.armarLink}>
               🎁 Armar premios
             </Link>
           </div>
@@ -630,7 +630,7 @@ export default function SorteoClient() {
                   : `▶ Iniciar — Instancia ${pendActual.instIdx + 1} (${restanteN} ${restanteN === 1 ? "giro" : "giros"})`}
             </button>
             {totalPremios === 0 ? (
-              <Link href="/sorteo/armar" className={styles.btnArmar}>
+              <Link href="/sistema/sorteo/armar" className={styles.btnArmar}>
                 🎁 Armar premios
               </Link>
             ) : !pendActual ? (

@@ -7,6 +7,19 @@ const nextConfig: NextConfig = {
   // Extracción de texto de los adjuntos de /rrhh/puestos: son CommonJS con
   // binarios/assets propios; si el bundler los empaqueta rompen en runtime.
   serverExternalPackages: ["pdf-parse", "mammoth"],
+  // 2026-10-09: picking -> /deposito/picking, manguera -> /fabrica/manguera,
+  // sorteo -> /sistema/sorteo. Links viejos (APK del picker instalado, PWA, favoritos).
+  async redirects() {
+    return [
+      { source: "/picking", destination: "/deposito/picking", permanent: false },
+      { source: "/picking/:path*", destination: "/deposito/picking/:path*", permanent: false },
+      { source: "/manguera", destination: "/fabrica/manguera", permanent: false },
+      { source: "/manguera/:path*", destination: "/fabrica/manguera/:path*", permanent: false },
+      { source: "/sorteo", destination: "/sistema/sorteo", permanent: false },
+      { source: "/sorteo/:path*", destination: "/sistema/sorteo/:path*", permanent: false },
+      { source: "/buscador", destination: "/", permanent: false },
+    ];
+  },
   eslint: {
     // ESLint corre en CI/dev; no bloquear el build de producción
     ignoreDuringBuilds: true,

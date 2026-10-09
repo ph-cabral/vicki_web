@@ -253,7 +253,7 @@ export function NuevoTrabajoClient({
       if (isEdit)
         await updateTrabajoAction({ trabajoId: trabajo!.id, ...base });
       else await createTrabajoAction(base);
-      router.push("/manguera/corte");
+      router.push("/fabrica/manguera/corte");
       router.refresh();
     } catch (err) {
       alert(err instanceof Error ? err.message : "Error al guardar");
@@ -271,7 +271,7 @@ export function NuevoTrabajoClient({
           {isEdit ? "Editar trabajo" : "Nuevo trabajo"}
         </h1>
         <Link
-          href="/manguera/corte"
+          href="/fabrica/manguera/corte"
           className="text-gray-500 hover:text-gray-700"
         >
           ← Volver

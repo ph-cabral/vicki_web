@@ -21,12 +21,11 @@ type Lookup = {
 };
 
 const MODULO_LABEL: Record<string, string> = {
-  manguera: "Mangueras",
+  fabrica: "Fábrica",
   deposito: "Depósito",
-  picking: "Picking",
   finanza: "Finanzas",
   rrhh: "RRHH",
-  sorteo: "Sorteo",
+  sistema: "Sistema",
   vicki: "Vicki",
 };
 

@@ -96,7 +96,7 @@ export function TrabajosClient({ trabajos }: { trabajos: Trabajo[] }) {
             )}
           </div>
           <Link
-            href="/manguera/corte/nuevo"
+            href="/fabrica/manguera/corte/nuevo"
             className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors whitespace-nowrap"
           >
             + Crear trabajo
@@ -140,7 +140,7 @@ export function TrabajosClient({ trabajos }: { trabajos: Trabajo[] }) {
                   <tr
                     key={t.id}
                     onClick={() =>
-                      router.push(`/manguera/corte/${t.id}/editar`)
+                      router.push(`/fabrica/manguera/corte/${t.id}/editar`)
                     }
                     className="cursor-pointer hover:bg-gray-50"
                   >

@@ -54,7 +54,7 @@ interface CatalogoItem extends Acceso {
 //   · vistas de PDA (picker y control de mostradores): el input tiene foco
 //     permanente y el deslizamiento se usa para otras cosas; la sidebar
 //     abierta por error tapaba el escaneo.
-const OCULTA_EN = ["/login", "/picking/picker", "/mostradores/control"];
+const OCULTA_EN = ["/login", "/deposito/picking/picker", "/mostradores/control"];
 
 const estaOculta = (pathname: string) =>
   OCULTA_EN.some((p) => pathname === p || pathname.startsWith(p + "/"));
