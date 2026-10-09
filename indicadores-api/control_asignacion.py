@@ -940,7 +940,7 @@ LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente  = cli.CodCli
 LEFT JOIN EVERWEAR.dbo.Ven_PedImpresoCA      pca ON pca.NroMovVenta = cab.NroMovVenta
 LEFT JOIN EVERWEAR.dbo.[Gen_Usuarios]        usr ON usr.Numero      = rmt.UsuarioArmado
 WHERE rmt.CompCodigo = 71                 -- remito de acopio
-  AND cab.CompCodigo IN (70, 75)          -- el pedido es un acopio
+  AND cab.CompCodigo IN (70, 75, 170)          -- el pedido es un acopio
   AND ISNULL(rmt.FechaCierre, 0) = 0      -- todavía no pasó por mesa
   AND rmt.EstadoRemito NOT IN (3, 4)      -- 3 borrador (vuelta vacía) / 4 anulado
   AND (
@@ -1673,7 +1673,7 @@ INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMo
 -- tampoco filtra el estado del pedido. rmt.CodCliente = cab.CodCliente en
 -- 574/574 remitos 71 (desde 82350).
 WHERE rmt.CodCliente IN ({ph})
-  AND cab.CompCodigo IN (70, 75)
+  AND cab.CompCodigo IN (70, 75, 170)
   AND rmt.CompCodigo = 71
   AND ISNULL(rmt.FechaCierre, 0) = 0
   AND (
@@ -2328,7 +2328,7 @@ INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = rmt.NroMo
 LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc  ON cab.CompCodigo = cc.CompCodigo
 LEFT JOIN MAGNUS_SITD.dbo.Clientes           cli ON cab.CodCliente = cli.CodCliente
 WHERE rmt.CompCodigo = 71
-  AND cab.CompCodigo IN (70, 75)
+  AND cab.CompCodigo IN (70, 75, 170)
   AND ISNULL(rmt.FechaCierre, 0) = 0
   AND ISNULL(rmt.FechaArmado, 0) = 0
   AND rmt.EstadoRemito IN (1, 2)
@@ -2863,7 +2863,7 @@ def fetch_pedidos_asignados(desde: str | None = None, hasta: str | None = None) 
                    "armadoEn", "cerradoEn", "usuarioCierre", lineas, unidades
             FROM deposito.control_asignacion
             WHERE "asignadoEn" IS NOT NULL AND {cond}
-              AND NOT (COALESCE("compCodigo", 0) IN (70, 75) AND "nroRemito" = 0)
+              AND NOT (COALESCE("compCodigo", 0) IN (70, 75, 170) AND "nroRemito" = 0)
             ORDER BY "asignadoEn" DESC
             """,
             params,
@@ -3029,7 +3029,7 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
                    "cerradoEn", "usuarioCierre", lineas
             FROM deposito.control_asignacion
             WHERE "nroOperarioAsignado" IS NOT NULL AND "asignadoEn" IS NOT NULL
-              AND NOT (COALESCE("compCodigo", 0) IN (70, 75) AND "nroRemito" = 0)
+              AND NOT (COALESCE("compCodigo", 0) IN (70, 75, 170) AND "nroRemito" = 0)
               AND (
                     ("asignadoEn" >= (%(d)s::timestamp AT TIME ZONE %(tz)s AT TIME ZONE 'UTC')
                      AND "asignadoEn" < ((%(d)s::timestamp + interval '1 day') AT TIME ZONE %(tz)s AT TIME ZONE 'UTC'))

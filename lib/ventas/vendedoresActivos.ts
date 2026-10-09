@@ -28,6 +28,17 @@ export async function fetchCatalogoVendedores(): Promise<VendedorCatalogo[]> {
 }
 
 /**
+ * MOSTRADORES (cód. 92 en `Vendedores`) es un canal, no una persona: no tiene
+ * usuario ni legajo, pero factura bajo su propio código en
+ * `Ven_CompCabecera.vendedor` y se pidió poder verlo en ventas. Entra al
+ * filtro por nombre (cualquier "MOSTRADOR…" habilitado), sin pasar por la
+ * condición de usuario/legajo.
+ */
+function esMostrador(v: VendedorCatalogo): boolean {
+  return (v.nombre ?? "").trim().toUpperCase().startsWith("MOSTRADOR");
+}
+
+/**
  * Vendedores para el filtro de admin de /ventas/vendedor.
  *
  * DOS condiciones, las dos obligatorias:
@@ -47,7 +58,9 @@ export async function fetchCatalogoVendedores(): Promise<VendedorCatalogo[]> {
  * en otro estado— NO aparece. Se arregla en Administración → Usuarios, no
  * acá.
  */
-export async function listarVendedoresActivos(): Promise<VendedorCatalogo[]> {
+export async function listarVendedoresActivos(): Promise<
+  (VendedorCatalogo & { mostrador: boolean })[]
+> {
   const [catalogo, usuarios] = await Promise.all([
     fetchCatalogoVendedores(),
     prisma.usuario.findMany({
@@ -67,6 +80,11 @@ export async function listarVendedoresActivos(): Promise<VendedorCatalogo[]> {
   );
 
   return catalogo
-    .filter((v) => v.activo && v.persona && conLegajoActivo.has(v.codigo))
+    .filter(
+      (v) =>
+        v.activo &&
+        ((v.persona && conLegajoActivo.has(v.codigo)) || esMostrador(v)),
+    )
+    .map((v) => ({ ...v, mostrador: esMostrador(v) }))
     .sort((a, b) => (a.nombre ?? "").localeCompare(b.nombre ?? "", "es"));
 }

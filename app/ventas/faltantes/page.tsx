@@ -178,6 +178,7 @@ function agruparListos(items: ItemListo[]): GrupoListo[] {
 interface VendedorOpcion {
   codigo: number;
   nombre: string | null;
+  mostrador?: boolean;
 }
 
 export default function VentasFaltantesPage() {
@@ -289,7 +290,14 @@ export default function VentasFaltantesPage() {
     fetch("/api/ventas/vendedor/vendedores", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
-        if (vivo && j) setVendedores(Array.isArray(j.vendedores) ? j.vendedores : []);
+        // MOSTRADORES queda afuera: un faltante es un pedido pendiente y se
+        // recorta por cartera de clientes; el canal no tiene cartera.
+        if (vivo && j)
+          setVendedores(
+            Array.isArray(j.vendedores)
+              ? j.vendedores.filter((v: VendedorOpcion) => !v.mostrador)
+              : [],
+          );
       })
       .catch(() => {});
     return () => {
