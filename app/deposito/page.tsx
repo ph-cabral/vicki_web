@@ -15,10 +15,21 @@ import {
   AlertOctagon,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
-import { MonthRangeField, lastFullMonthRange } from "@/components/ui/date-range-field";
-import { useDepositoData } from "@/lib/deposito/store";
+import { MonthRangePickerField, lastFullMonthRange } from "@/components/ui/date-range-field";
+import { useDepositoData, useDepositoProd } from "@/lib/deposito/store";
 import { filterDepositoByOperario } from "@/lib/deposito/parseDeposito";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const ymDe = (y: number, m0: number) => {
+  const d = new Date(y, m0, 1); // normaliza desbordes de mes/año
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+};
+const primerDia = (ym: string) => `${ym}-01`;
+const ultimoDia = (ym: string) => {
+  const [y, m] = ym.split("-").map(Number);
+  return `${ym}-${pad2(new Date(y, m, 0).getDate())}`;
+};
 
 const TABS = [
   // { id: "resumen", label: "Resumen", icon: LayoutDashboard, needs: "prod" },
@@ -38,6 +49,9 @@ export default function DepositoPage() {
   const [hasta, setHasta] = useState("");
   const [operario, setOperario] = useState("__all__");
   const [tab, setTab] = useState<TabId>("picking");
+  // false = el usuario todavía no tocó el selector de meses → el gráfico de
+  // "Items recolectados por mes" muestra el mes en curso y 2 hacia atrás.
+  const [mesesTocados, setMesesTocados] = useState(false);
 
   // Por defecto: el último mes calendario completo (cliente, evita mismatch
   // SSR). 2026-08-20 — antes arrancaba en "hoy".
@@ -48,6 +62,45 @@ export default function DepositoPage() {
   }, []);
 
   const { prod, tiempo, loading, error, reload } = useDepositoData(desde, hasta);
+
+  // Meses del gráfico "Items recolectados por mes" (cronológico, mínimo 3):
+  //  - sin tocar el selector: mes en curso y hacia atrás;
+  //  - con selección: los meses elegidos y, si son menos de 3, se agregan meses
+  //    ANTERIORES al inicio hasta completar 3 columnas.
+  const chartMeses = useMemo(() => {
+    const hoy = new Date();
+    const actual = ymDe(hoy.getFullYear(), hoy.getMonth());
+    let lo = ymDe(hoy.getFullYear(), hoy.getMonth() - 2);
+    let hi = actual;
+    if (mesesTocados && desde && hasta) {
+      lo = desde.slice(0, 7);
+      hi = hasta.slice(0, 7);
+    }
+    const out: string[] = [];
+    for (let [y, m] = lo.split("-").map(Number) as [number, number]; ymDe(y, m - 1) <= hi; m++) {
+      out.push(ymDe(y, m - 1));
+    }
+    while (out.length < 3) {
+      const [y, m] = out[0].split("-").map(Number);
+      out.unshift(ymDe(y, m - 2));
+    }
+    return out;
+  }, [mesesTocados, desde, hasta]);
+  const chartDesde = primerDia(chartMeses[0]);
+  const chartHasta = ultimoDia(chartMeses[chartMeses.length - 1]);
+  // Si el rango del gráfico coincide con el filtro, se reutiliza `prod`.
+  const mismoRango = chartDesde === desde && chartHasta === hasta;
+  const chartFetch = useDepositoProd(chartDesde, chartHasta, !!desde && !mismoRango);
+  const chartProd = mismoRango ? prod : chartFetch.prod;
+  const chartRegs = useMemo(
+    () =>
+      chartProd
+        ? operario === "__all__"
+          ? chartProd.registros
+          : chartProd.registros.filter((r) => r.operario === operario)
+        : null,
+    [chartProd, operario],
+  );
 
   // Filtro por operario (cliente): recalcula agregados sin re-consultar SQL.
   const viewProd = useMemo(
@@ -110,10 +163,12 @@ export default function DepositoPage() {
               duplicado). Solo mes a mes, sin calendario de días (2026-08-20). Oculto solo en Mesas de Control, que filtra
               por checkbox de meses propio (ver mesaControl.tsx). */}
           <div className={tab === "mesa-control" ? "invisible pointer-events-none" : ""}>
-            <MonthRangeField
+            <MonthRangePickerField
               desde={desde}
               hasta={hasta}
+              align="end"
               onChange={(d, h) => {
+                setMesesTocados(true);
                 setDesde(d);
                 setHasta(h);
               }}
@@ -138,9 +193,12 @@ export default function DepositoPage() {
               </select>
             </label>
             <button
-              onClick={reload}
+              onClick={() => {
+                reload();
+                chartFetch.reload();
+              }}
               title="Refrescar"
-              disabled={loading}
+              disabled={loading || chartFetch.loading}
               className="text-zinc-400 hover:text-yellow-400 transition-colors p-2 disabled:opacity-40"
             >
               <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
@@ -196,13 +254,13 @@ export default function DepositoPage() {
             // {tab === "resumen" && viewProd && <ResumenTab d={viewProd} mes="__all__" />}
           <>
             {tab === "picking" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Picking" mes="__all__" />
+              <ProcesoTab d={viewProd} proceso="Picking" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
             )}
             {tab === "librepo" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Libre + Reposicion" mes="__all__" />
+              <ProcesoTab d={viewProd} proceso="Libre + Reposicion" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
             )}
             {tab === "reub" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Re-Ubicacion" mes="__all__" />
+              <ProcesoTab d={viewProd} proceso="Re-Ubicacion" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
             )}
             {tab === "operarios" && viewProd && <OperariosTab d={viewProd} />}
             {tab === "tiempos-picking" && (

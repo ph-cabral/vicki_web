@@ -378,10 +378,16 @@ export function ProcesoTab({
   d,
   proceso,
   mes,
+  chartMeses,
+  chartRegs,
 }: {
   d: DepositoData;
   proceso: string;
   mes: string;
+  /** Meses "yyyy-mm" a graficar en "Items recolectados por mes" (cronológico). */
+  chartMeses: string[];
+  /** Registros del rango del gráfico (ya filtrados por operario); null = cargando. */
+  chartRegs: DepRegistro[] | null;
 }) {
   const regs = d.registros.filter((r) => r.proceso === proceso);
   const meses = [...new Set(regs.map((r) => r.mes))].sort();
@@ -416,7 +422,6 @@ export function ProcesoTab({
     operario: clip(x.operario, 13),
     recolectados: x.recolectados,
   }));
-  const tabla = tablaOperarios(regsMes);
 
   // Líneas de referencia del mes activo (ya vienen en ITEMS desde la API).
   const objMes: ObjetivoMes | undefined = obj.objetivos[mesActivo];
@@ -435,15 +440,15 @@ export function ProcesoTab({
     ? ranking.filter((r) => r.recolectados >= objMes.objetivo).length
     : 0;
 
-  // Series HISTÓRICAS (todos los meses)
-  const recolMes = meses.map((m) => ({
+  // Serie del gráfico: una columna por mes de `chartMeses` (con 0 si no hubo).
+  const regsChart = (chartRegs ?? []).filter((r) => r.proceso === proceso);
+  const recolMes = chartMeses.map((m) => ({
     mes: fmtMes(m),
     recolectados: sumBy(
-      regs.filter((r) => r.mes === m),
+      regsChart.filter((r) => r.mes === m),
       (r) => r.itemsRecolectados,
     ),
   }));
-  const matriz = matrizOperarioMes(regs, meses);
 
   return (
     <div>
@@ -478,16 +483,22 @@ export function ProcesoTab({
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-5">
         <Panel title="Items recolectados por mes">
-          <ChartBar
-            data={recolMes}
-            xKey="mes"
-            height={280}
-            series={[
-              { key: "recolectados", name: "Recolectados", color: PALETTE[0] },
-            ]}
-            fmt={(n) => fmtNum(n)}
-            showValues
-          />
+          {chartRegs === null ? (
+            <div className="flex items-center justify-center h-[280px] text-sm text-zinc-500">
+              Cargando…
+            </div>
+          ) : (
+            <ChartBar
+              data={recolMes}
+              xKey="mes"
+              height={280}
+              series={[
+                { key: "recolectados", name: "Recolectados", color: PALETTE[0] },
+              ]}
+              fmt={(n) => fmtNum(n)}
+              showValues
+            />
+          )}
         </Panel>
         <Panel
           title={`Ranking operarios — ${nombreDe(mesActivo)}`}
@@ -536,50 +547,6 @@ export function ProcesoTab({
           )}
         </Panel>
       </div>
-
-      <SectionTitle>
-        👷 Detalle por Operario — {nombreDe(mesActivo)}
-      </SectionTitle>
-      <Table<OpRow>
-        cols={[
-          { key: "operario", label: "Operario" },
-          {
-            key: "recolectados",
-            label: "Recolectados",
-            num: true,
-            render: (x) => fmtNum(x.recolectados),
-          },
-          {
-            key: "pedidos",
-            label: "Pedidos",
-            num: true,
-            render: (x) => fmtNum(x.pedidos),
-          },
-          { key: "ot", label: "OT", num: true, render: (x) => fmtNum(x.ot) },
-          {
-            key: "fill",
-            label: "Fill %",
-            num: true,
-            render: (x) => (x.fill != null ? `${x.fill.toFixed(1)} %` : "—"),
-          },
-        ]}
-        rows={tabla}
-        max={50}
-        maxH={420}
-      />
-
-      <SectionTitle>🗓️ Evolución mensual por operario</SectionTitle>
-      <MatrixTable
-        head={[...meses.map(fmtMes), "Total"]}
-        rows={matriz.map((o) => ({
-          label: o.operario,
-          cells: [
-            ...o.valores.map((v) => fmtNum(v)),
-            <strong key="t">{fmtNum(o.total)}</strong>,
-          ],
-        }))}
-      />
-      <EvolucionPorOperario meses={meses} matriz={matriz} />
 
       {modal && (
         <ObjetivoModal
