@@ -14,6 +14,7 @@ import {
   ChartDonut,
   ChartEvol,
   PALETTE,
+  type RefLinea,
   C,
   fmtNum,
   fmtMes,
@@ -22,6 +23,7 @@ import {
 } from "./ui";
 import {
   aItemsTxt,
+  useObjetivosDeposito,
   type ObjetivoMes,
 } from "@/lib/deposito/objetivos";
 
@@ -394,6 +396,9 @@ export function ProcesoTab({
   // Faltantes del mes activo (items que llegaron a /deposito/faltantes).
   const [falt, setFalt] = React.useState<FaltResumen | null>(null);
   const faltantes = falt?.items ?? null;
+  const { objetivos, puedeEditar, guardar, borrar } =
+    useObjetivosDeposito(proceso);
+  const [modalObjetivo, setModalObjetivo] = React.useState(false);
   React.useEffect(() => {
     if (!mesActivo) return;
     let vivo = true;
@@ -441,6 +446,19 @@ export function ProcesoTab({
     ),
   }));
 
+  // Ranking: top 15 operarios del mes activo + líneas de objetivo del mes.
+  const rankingOperarios = tablaOperarios(regsMes)
+    .slice(0, 15)
+    .map((o) => ({ operario: clip(o.operario, 13), recolectados: o.recolectados }));
+  const objMes = objetivos[mesActivo];
+  const refLines: RefLinea[] = [];
+  if (objMes?.sobresaliente != null)
+    refLines.push({ y: objMes.sobresaliente, label: "Sobresaliente", color: C.brand });
+  if (objMes?.objetivo != null)
+    refLines.push({ y: objMes.objetivo, label: "Objetivo", color: C.green });
+  if (objMes?.bajo != null)
+    refLines.push({ y: objMes.bajo, label: "Bajo rendimiento", color: C.red });
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -483,6 +501,11 @@ export function ProcesoTab({
               >
                 {faltantes === null ? "—" : fmtNum(faltantes)}
               </p>
+              <p className="text-[11px] mt-1.5 leading-tight text-amber-400 tabular-nums">
+                {falt && falt.items > 0
+                  ? `${((falt.enExistencia / falt.items) * 100).toFixed(1)} % en existencia`
+                  : "— en existencia"}
+              </p>
             </div>
           </div>
           <p className="text-[11px] text-zinc-600 mt-1.5 leading-tight">
@@ -523,72 +546,48 @@ export function ProcesoTab({
             />
           )}
         </Panel>
-        <Panel title={`Faltantes por existencia — ${nombreDe(mesActivo)}`}>
-          {falt === null ? (
-            <div className="flex items-center justify-center h-[280px] text-sm text-zinc-500">
-              Cargando…
-            </div>
-          ) : (
-            <FaltExistencia f={falt} />
-          )}
+        <Panel
+          title="Ranking operarios (top 15)"
+          accent={nombreDe(mesActivo)}
+          action={
+            puedeEditar ? (
+              <button
+                type="button"
+                onClick={() => setModalObjetivo(true)}
+                className="rounded-lg border border-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+              >
+                Objetivo
+              </button>
+            ) : undefined
+          }
+        >
+          <ChartBar
+            data={rankingOperarios}
+            xKey="operario"
+            height={280}
+            angle={-35}
+            series={[
+              { key: "recolectados", name: "Recolectados", color: PALETTE[0] },
+            ]}
+            fmt={(n) => fmtNum(n)}
+            showValues
+            refLines={refLines}
+          />
         </Panel>
       </div>
 
-    </div>
-  );
-}
-
-const FALT_SEGS: { key: keyof Omit<FaltResumen, "items">; label: string; bg: string; txt: string }[] = [
-  { key: "enExistencia", label: "En existencia", bg: "bg-amber-400", txt: "text-amber-400" },
-  { key: "sinExistencia", label: "Sin existencia", bg: "bg-red-500", txt: "text-red-400" },
-  { key: "malFacturado", label: "Mal facturado", bg: "bg-purple-500", txt: "text-purple-400" },
-  { key: "pendiente", label: "Sin marcar", bg: "bg-zinc-600", txt: "text-zinc-400" },
-];
-
-/** Barra de faltantes del mes por marca de la mesa + % marcado "en existencia". */
-function FaltExistencia({ f }: { f: FaltResumen }) {
-  const pctDe = (n: number) => (f.items > 0 ? (n / f.items) * 100 : 0);
-  return (
-    <div className="flex items-center gap-6 min-h-[280px]">
-      <div className="flex-1 min-w-0">
-        <p className="text-[11px] uppercase tracking-wider text-zinc-500">
-          Faltantes · items
-        </p>
-        <p className="text-[22px] leading-none font-bold mt-1.5 text-zinc-100">
-          {fmtNum(f.items)}
-        </p>
-        <div className="flex h-5 w-full overflow-hidden rounded bg-zinc-800 mt-4">
-          {FALT_SEGS.map((s) =>
-            f[s.key] > 0 ? (
-              <div
-                key={s.key}
-                className={s.bg}
-                style={{ width: `${pctDe(f[s.key])}%` }}
-                title={`${s.label}: ${fmtNum(f[s.key])}`}
-              />
-            ) : null,
-          )}
-        </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px] text-zinc-400">
-          {FALT_SEGS.map((s) => (
-            <span key={s.key} className="flex items-center gap-1.5">
-              <span className={`inline-block h-2 w-2 rounded-sm ${s.bg}`} />
-              {s.label} · {fmtNum(f[s.key])}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="shrink-0 text-right border-l border-zinc-800 pl-6">
-        <p className="text-[11px] uppercase tracking-wider text-zinc-500">
-          En existencia
-        </p>
-        <p className="text-[40px] leading-none font-bold mt-1.5 text-amber-400">
-          {f.items > 0 ? `${pctDe(f.enExistencia).toFixed(1)} %` : "—"}
-        </p>
-        <p className="text-[11px] text-zinc-600 mt-1.5">
-          {fmtNum(f.enExistencia)} de {fmtNum(f.items)}
-        </p>
-      </div>
+      {modalObjetivo && (
+        <ObjetivoModal
+          proceso={proceso}
+          meses={meses}
+          mesInicial={mesActivo}
+          nombreDe={nombreDe}
+          objetivos={objetivos}
+          onGuardar={guardar}
+          onBorrar={borrar}
+          onCerrar={() => setModalObjetivo(false)}
+        />
+      )}
     </div>
   );
 }
