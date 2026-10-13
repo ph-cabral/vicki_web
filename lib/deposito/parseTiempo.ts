@@ -19,6 +19,7 @@ export interface TiempoData {
   meses: string[]; // YYYY-MM
   mesReciente: string | null; // nombre del mes
   metricas: EtapaRow[]; // por mes (cronológico)
+  metricas3m: EtapaRow[]; // últimos 3 meses cerrados (sin el mes en curso), independiente del filtro de fechas
   porPrioridad: EtapaRow[]; // mes reciente, prioridad 1/2/3
   prioridades: PrioridadResumen[]; // mes reciente, todas las prioridades
   porPrioridadPorMes: Record<string, EtapaRow[]>;
@@ -67,7 +68,7 @@ function avgNoNeg(vals: (number | null)[]): number {
 }
 
 interface Reg {
-  mes: string; nombreMes: string; prioridad: number;
+  mes: string; nombreMes: string; prioridad: number; enRango: boolean;
   regConf: number | null; confArm: number | null; armCierre: number | null;
   regSusp: number | null; suspConf: number | null; confCierre: number | null;
 }
@@ -91,24 +92,37 @@ export function parseTiempo(
 ): TiempoData {
   const lo = opts?.desde ? new Date(`${opts.desde}T00:00:00`) : null;
   const hi = opts?.hasta ? new Date(`${opts.hasta}T23:59:59`) : null;
-  const filtrados: Reg[] = [];
+  const todos: Reg[] = [];
   for (const row of rows) {
     if (!PEDIDOS.has(s(row[COL.cod]))) continue;
     if (!FACTURA.has(s(row[COL.fac]))) continue;
     if (!ESTADOS.has(s(row[COL.estado]))) continue;
     const fecha = parseFecha(row[COL.fecha]);
     if (!fecha) continue;
-    if (lo && fecha < lo) continue;
-    if (hi && fecha > hi) continue;
+    const enRango = !((lo && fecha < lo) || (hi && fecha > hi));
     const mm = String(fecha.getMonth() + 1).padStart(2, "0");
-    filtrados.push({
+    todos.push({
       mes: `${fecha.getFullYear()}-${mm}`,
       nombreMes: MESES[fecha.getMonth()],
-      prioridad: Number(row[COL.prioridad]),
+      prioridad: Number(row[COL.prioridad]), enRango,
       regConf: toHoras(row[COL.regConf]), confArm: toHoras(row[COL.confArm]), armCierre: toHoras(row[COL.armCierre]),
       regSusp: toHoras(row[COL.regSusp]), suspConf: toHoras(row[COL.suspConf]), confCierre: toHoras(row[COL.confCierre]),
     });
   }
+
+  const filtrados = todos.filter((r) => r.enRango);
+
+  // Últimos 3 meses cerrados (sin contar el mes en curso), sin importar el rango elegido.
+  const hoy = new Date();
+  const ult3: string[] = [];
+  for (let i = 3; i >= 1; i--) {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    ult3.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  const metricas3m: EtapaRow[] = ult3
+    .map((m) => todos.filter((r) => r.mes === m))
+    .filter((rs) => rs.length > 0)
+    .map((rs) => etapa(rs, rs[0].nombreMes));
 
   const meses = [...new Set(filtrados.map((r) => r.mes))].sort();
   const metricas: EtapaRow[] = meses.map((m) => {
@@ -179,6 +193,7 @@ export function parseTiempo(
     meses,
     mesReciente,
     metricas,
+    metricas3m,
     porPrioridad,
     prioridades,
     porPrioridadPorMes,

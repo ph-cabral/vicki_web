@@ -872,7 +872,7 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
         accent="(promedio, horas apiladas)"
       >
         <ChartBar
-          data={d.metricas}
+          data={d.metricas3m}
           xKey="clave"
           height={300}
           series={S3}
@@ -914,7 +914,7 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
               render: (r) => fmtNum(r.ops),
             },
           ]}
-          rows={d.metricas}
+          rows={d.metricas3m}
         />
       </div>
 
@@ -924,7 +924,7 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
         accent="(promedio, horas apiladas)"
       >
         <ChartBar
-          data={d.metricas}
+          data={d.metricas3m}
           xKey="clave"
           height={240}
           series={S2}

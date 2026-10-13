@@ -9,7 +9,6 @@ import {
   KPI,
   Grid,
   ChartBar,
-  ChartDonut,
   Alert,
   PALETTE,
   fmtNum,
@@ -97,26 +96,8 @@ interface MesaControlData {
   total_general: number;
 }
 
-type EjeTiempo = "hora" | "dia" | "semana" | "controlador";
-// Sub-eje del modo "Por controlador" — mismos nombres visuales que el eje de
-// arriba, pero significan otra cosa: acá SIEMPRE se agrega sobre todos los
-// meses tildados (no hay selector de fecha puntual, ver mesa_control.py):
-// "dia" = franjas de 30 min del día, "semana" = día de la semana, "mes" =
-// día calendario.
-type GranCtrl = "dia" | "semana" | "mes";
-
-const DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
-
 const isoMes = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-
-// "YYYY-MM-DD" -> "dd/mm" sin el corrimiento de un día que da parsear con
-// `new Date(s)` (lo toma como medianoche UTC y en es-AR corre para atrás).
-function fmtDiaCorto(s: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return s;
-  return `${m[3]}/${m[2]}`;
-}
 
 // Últimos N meses (más reciente primero), para el selector.
 function ultimosMeses(n: number): string[] {
@@ -138,8 +119,6 @@ export function MesaControlTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verTodos, setVerTodos] = useState(false); // toggle carta por controlador
-  const [ejeTiempo, setEjeTiempo] = useState<EjeTiempo>("dia"); // Por hora/día/semana/controlador
-  const [granCtrl, setGranCtrl] = useState<GranCtrl>("mes"); // sub-eje de "Por controlador"
 
   const load = useCallback(async (meses: string[]) => {
     if (!meses.length) {
@@ -181,14 +160,6 @@ export function MesaControlTab() {
 
   const mesesOrdenados = data?.meses ?? []; // ya viene ascendente desde el back
   const ultimoMes = mesesOrdenados[mesesOrdenados.length - 1] ?? null;
-  const ult2 = mesesOrdenados.slice(-2);
-
-  // Pie: comparación de los últimos 2 meses seleccionados.
-  const pieData = ult2.map((m, i) => ({
-    name: fmtMes(m),
-    value: data?.por_mes.find((p) => p.mes === m)?.total ?? 0,
-    color: PALETTE[i % PALETTE.length],
-  }));
 
   // Barras: 1 barra por mes, todos los meses seleccionados.
   const barMesData = (data?.por_mes ?? []).map((p) => ({
@@ -215,73 +186,6 @@ export function MesaControlTab() {
     ? data?.total_general ?? 0
     : (ultimoMes && data?.por_mes.find((p) => p.mes === ultimoMes)?.total) ?? 0;
   const dobleControl = sumaControladores - totalRef;
-
-  // Barras por hora del día (0-23): distribución acumulada de los meses
-  // elegidos — en qué franja horaria se concentra el control.
-  const barHoraData = (data?.por_hora ?? []).map((h) => ({
-    hora: `${String(h.hora).padStart(2, "0")}:00`,
-    total: h.total,
-  }));
-  const horaPico = (data?.por_hora ?? []).reduce(
-    (top, h) => (h.total > top.total ? h : top),
-    { hora: -1, total: 0 },
-  );
-
-  // Barras por día calendario, un renglón por fecha (todos los meses elegidos
-  // concatenados en orden cronológico).
-  const barDiaData = (data?.por_dia ?? []).map((p) => ({
-    fecha: fmtDiaCorto(p.fecha),
-    total: p.total,
-  }));
-  const promedioDiario =
-    data && data.por_dia.length > 0
-      ? data.total_general / data.por_dia.length
-      : 0;
-
-  // Barras por semana (lunes de esa semana como etiqueta).
-  const barSemanaData = (data?.por_semana ?? []).map((p) => ({
-    semana: fmtDiaCorto(p.semana),
-    total: p.total,
-  }));
-  const promedioSemanal =
-    data && data.por_semana.length > 0
-      ? data.total_general / data.por_semana.length
-      : 0;
-
-  // ── "Por controlador": 1 gráfico de barras por controlador + torta de
-  // líneas debajo. Siempre agrega sobre TODOS los meses tildados arriba (ver
-  // GranCtrl) — no hay selector de fecha puntual.
-  const controladoresConDatos = (data?.por_controlador ?? []).filter((c) => c.total > 0);
-
-  // Barras de un controlador según el sub-eje elegido.
-  function barControladorEje(c: PorControlador) {
-    if (granCtrl === "dia") {
-      return c.por_slot30
-        .filter((s) => s.total > 0)
-        .map((s) => ({ x: s.hora, total: s.total, ot: s.ot }));
-    }
-    if (granCtrl === "semana") {
-      return c.por_dow.map((d) => ({
-        x: DIAS_SEMANA[d.dow].slice(0, 3),
-        total: d.total,
-        ot: d.ot,
-      }));
-    }
-    return c.por_dia.map((d) => ({ x: fmtDiaCorto(d.fecha), total: d.total, ot: d.ot }));
-  }
-
-  // Top 5 líneas + "Otros" para la torta de un controlador.
-  function donutLineasControlador(c: PorControlador) {
-    const top5 = c.por_linea.slice(0, 5);
-    const restoTotal = c.por_linea.slice(5).reduce((s, l) => s + l.total, 0);
-    const out = top5.map((l, i) => ({
-      name: l.linea,
-      value: l.total,
-      color: PALETTE[i % PALETTE.length],
-    }));
-    if (restoTotal > 0) out.push({ name: "Otros", value: restoTotal, color: "#6b7280" });
-    return out;
-  }
 
   return (
     <div>
@@ -374,21 +278,8 @@ export function MesaControlTab() {
             />
           </Grid>
 
-          <SectionTitle>📊 Comparación de los últimos 2 meses</SectionTitle>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Panel
-              title="Últimos 2 meses seleccionados"
-              accent={ult2.length === 2 ? `(${fmtMes(ult2[0])} vs ${fmtMes(ult2[1])})` : ""}
-            >
-              {ult2.length < 2 ? (
-                <div className="py-10 text-center text-zinc-600 text-sm">
-                  Elegí al menos 2 meses para comparar.
-                </div>
-              ) : (
-                <ChartDonut data={pieData} height={260} fmt={(n) => fmtNum(n)} />
-              )}
-            </Panel>
-
+          <SectionTitle>📊 Total por mes</SectionTitle>
+          <div>
             <Panel
               title="Total por mes"
               accent={`(${data.meses.length} ${data.meses.length === 1 ? "mes" : "meses"})`}
@@ -438,161 +329,6 @@ export function MesaControlTab() {
               )}
             </p>
           </Panel>
-
-          <SectionTitle>⏱️ Por hora / día / semana / controlador</SectionTitle>
-          <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {(
-              [
-                ["hora", "Por hora del día"],
-                ["dia", "Por día"],
-                ["semana", "Por semana"],
-                ["controlador", "Por controlador"],
-              ] as [EjeTiempo, string][]
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                onClick={() => setEjeTiempo(id)}
-                className={`px-3 py-1.5 rounded-lg text-[12px] font-medium border transition-colors ${
-                  ejeTiempo === id
-                    ? "bg-yellow-400/10 border-yellow-400/40 text-yellow-400"
-                    : "bg-[#1f1f1f] border-zinc-800 text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {ejeTiempo === "hora" && (
-            <Panel
-              title="Distribución por hora del día"
-              accent={
-                horaPico.hora >= 0
-                  ? `(pico: ${String(horaPico.hora).padStart(2, "0")}:00 con ${fmtNum(horaPico.total)})`
-                  : ""
-              }
-            >
-              <ChartBar
-                data={barHoraData}
-                xKey="hora"
-                height={280}
-                series={[{ key: "total", name: "Items controlados", color: PALETTE[2] }]}
-                fmt={(n) => fmtNum(n)}
-                showValues
-              />
-              <p className="text-[11px] text-zinc-600 mt-3">
-                Suma de todos los meses elegidos, agrupada por la hora del día
-                en que se controló cada renglón (no por día individual) — sirve
-                para ver en qué franja del día se concentra el trabajo de mesa
-                de control.
-              </p>
-            </Panel>
-          )}
-
-          {ejeTiempo === "dia" && (
-            <Panel
-              title="Total por día"
-              accent={`(${fmtNum(data.por_dia.length)} días · promedio ${fmtNum(Math.round(promedioDiario))}/día)`}
-            >
-              <ChartBar
-                data={barDiaData}
-                xKey="fecha"
-                height={300}
-                series={[{ key: "total", name: "Items controlados", color: PALETTE[3] }]}
-                fmt={(n) => fmtNum(n)}
-                angle={-60}
-              />
-            </Panel>
-          )}
-
-          {ejeTiempo === "semana" && (
-            <Panel
-              title="Total por semana"
-              accent={`(${fmtNum(data.por_semana.length)} semanas · promedio ${fmtNum(Math.round(promedioSemanal))}/semana)`}
-            >
-              <ChartBar
-                data={barSemanaData}
-                xKey="semana"
-                height={300}
-                series={[{ key: "total", name: "Items controlados", color: PALETTE[4] }]}
-                fmt={(n) => fmtNum(n)}
-                angle={-35}
-                showValues
-              />
-              <p className="text-[11px] text-zinc-600 mt-3">
-                Cada barra es la semana que arranca en la fecha indicada (lunes
-                a domingo).
-              </p>
-            </Panel>
-          )}
-
-          {ejeTiempo === "controlador" && (
-            <>
-              <div className="flex items-center gap-2 mb-4 flex-wrap">
-                {(
-                  [
-                    ["dia", "Día (franjas de 30 min)"],
-                    ["semana", "Semana (día de la semana)"],
-                    ["mes", "Mes (día calendario)"],
-                  ] as [GranCtrl, string][]
-                ).map(([id, label]) => (
-                  <button
-                    key={id}
-                    onClick={() => setGranCtrl(id)}
-                    className={`px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-colors ${
-                      granCtrl === id
-                        ? "bg-yellow-400/10 border-yellow-400/40 text-yellow-400"
-                        : "bg-[#1f1f1f] border-zinc-800 text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {controladoresConDatos.length === 0 ? (
-                <div className="py-10 text-center text-zinc-600 text-sm">
-                  Sin controles en los meses elegidos.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {controladoresConDatos.map((c) => (
-                    <Panel
-                      key={c.codigo ?? c.controlador}
-                      title={c.controlador}
-                      accent={`(${fmtNum(c.total)} controlados)`}
-                    >
-                      <ChartBar
-                        data={barControladorEje(c)}
-                        xKey="x"
-                        height={200}
-                        series={[{ key: "total", name: "Items controlados", color: PALETTE[1] }]}
-                        fmt={(n) => fmtNum(n)}
-                        angle={granCtrl === "semana" ? undefined : -60}
-                        insideValues
-                        topLabelKey="ot"
-                        topLabelFmt={(n) => fmtNum(n)}
-                      />
-                      <p className="text-[10px] uppercase tracking-wider text-zinc-600 mt-4 mb-1">
-                        Top 5 líneas más controladas
-                      </p>
-                      <ChartDonut data={donutLineasControlador(c)} height={200} fmt={(n) => fmtNum(n)} />
-                    </Panel>
-                  ))}
-                </div>
-              )}
-              <p className="text-[11px] text-zinc-600 mt-3">
-                Cada gráfico agrega TODOS los meses elegidos arriba (no un
-                día/semana puntual) — "Día" suma por franja de 30 min, "Semana"
-                por día de la semana y "Mes" por día calendario. El número
-                dentro de cada barra es items (renglones) controlados; el
-                número arriba es la cantidad de pedidos (OT) distintos detrás
-                de esos items. La torta muestra las 5 líneas de catálogo más
-                controladas por esa persona en el período; el resto se agrupa
-                en "Otros".
-              </p>
-            </>
-          )}
 
           <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
             Fuente: EVERWEAR.dbo.Ven_PedImpresoCP (CodControlador1/2, FechaControl)
