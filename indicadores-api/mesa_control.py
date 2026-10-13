@@ -241,7 +241,8 @@ def _nombres_usuarios(conn) -> dict[int, str]:
 
 # ── Pendientes de control al cierre de cada mes (carta "Quedaron para el mes
 # siguiente") ──────────────────────────────────────────────────────────────
-# Pedidos (no acopio) que al último día del mes YA estaban preparados (cumplen
+# Renglones (items, misma unidad que "Total por mes") de los pedidos (no acopio)
+# que al último día del mes YA estaban preparados (cumplen
 # el gate de "Asignar pedidos": ubicación cargada por el armador + todos los
 # centros de preparación terminados, ver control_asignacion._SQL_GATE_CENTROS)
 # y que todavía no se habían cerrado en mesa: FechaCierre = 0 con EstadoPedido=2
@@ -253,7 +254,8 @@ def _nombres_usuarios(conn) -> dict[int, str]:
 # barrido (medido: ningún pendiente con pedido de más de 60 días).
 _ARRASTRE_VENTANA_DIAS = 120
 SQL_PENDIENTES_CIERRE_MES = """
-SELECT COUNT(*) FROM (
+SELECT COUNT(*) FROM EVERWEAR.dbo.VenFer_PedidoReng rr
+JOIN (
     SELECT cab.NroMovVenta
     FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
     JOIN EVERWEAR.dbo.Ven_PedImpresoCA ca ON ca.NroMovVenta = cab.NroMovVenta
@@ -276,12 +278,13 @@ SELECT COUNT(*) FROM (
     GROUP BY cab.NroMovVenta
     HAVING MAX(CASE WHEN LTRIM(RTRIM(ISNULL(ca.ObsArmadorMovil, ''))) <> ''
                     THEN ca.FechaAsignacion END) <= ?
-) x
+) x ON x.NroMovVenta = rr.NroMovVenta
+WHERE rr.CodCentroPrep > 0 AND rr.Estado <> 4
 """
 
 
 def _pendientes_cierre_mes(cur, meses: list[str]) -> dict[str, int]:
-    """{mes: pedidos preparados que quedaron sin controlar al cierre del mes}.
+    """{mes: renglones (items) de pedidos preparados que quedaron sin controlar al cierre del mes}.
     Una consulta por mes (seeks por rango de FechaPedido). Si falla devuelve 0
     para ese mes: es un dato accesorio, no debe tirar la vista."""
     out: dict[str, int] = {}

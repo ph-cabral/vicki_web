@@ -180,7 +180,7 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
     total: p.total,
   }));
 
-  // Barras: pedidos preparados que quedaron sin controlar al cierre de cada mes
+  // Barras: items de pedidos preparados que quedaron sin controlar al cierre de cada mes
   // (mismas columnas que "Total por mes"). El mes en curso corta en hoy.
   const mesActual = isoMes(new Date());
   const barPendientesData = (data?.pendientes_cierre ?? []).map((p) => ({
@@ -304,13 +304,13 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
                 data={barPendientesData}
                 xKey="mes"
                 height={260}
-                series={[{ key: "total", name: "Pedidos por controlar", color: PALETTE[2] }]}
+                series={[{ key: "total", name: "Items por controlar", color: PALETTE[2] }]}
                 fmt={(n) => fmtNum(n)}
                 showValues
               />
               <p className="text-[11px] text-zinc-600 mt-3">
-                Pedidos ya preparados que al cierre del mes todavía no se
-                habían controlado en mesa. El mes en curso cuenta los
+                Items de pedidos ya preparados que al cierre del mes todavía
+                no se habían controlado en mesa. El mes en curso cuenta los
                 pendientes de hoy.
               </p>
             </Panel>

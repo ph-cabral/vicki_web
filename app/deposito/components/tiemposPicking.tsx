@@ -23,7 +23,6 @@ interface HeatRow {
   FECHA: string;        // dd/mm/yyyy
   OPERARIO: string | null;
   HORA: number;
-  CANCELADO: number;   // 1 = pedido cancelado en Magnus (EstadoPedido 7)
   ITEMS: number;
   RECOLECTADOS: number;
   SEG_TOTAL: number;
@@ -45,7 +44,6 @@ interface OtRow {
   LARGOS: number;
   CLIENTE: string;
   PEDIDO: number | null;
-  CANCELADO: number;
 }
 
 interface ItemRow {
@@ -250,14 +248,12 @@ export function TiemposPickingTab({
   }, [heatFilt, eje]);
 
   // ─── KPIs del rango ────────────────────────────────────────────────────────
-  // Las cartas excluyen los pedidos cancelados en Magnus. El mapa de calor y la
-  // tabla de OT los conservan: el operario igual pickeó y trabajó ese renglón.
+  // Incluye pedidos cancelados en Magnus: el operario igual pickeó el renglón.
   const kpis = useMemo(() => {
     let items = 0, recol = 0, seg = 0, cron = 0, largos = 0;
     const porHora = new Map<number, number>();
-    const otsKpi = otsFilt.filter((o) => !o.CANCELADO);
+    const otsKpi = otsFilt;
     for (const r of heatFilt) {
-      if (r.CANCELADO) continue;
       items += r.ITEMS; recol += r.RECOLECTADOS;
       seg += r.SEG_TOTAL; cron += r.CRONOMETRADOS; largos += r.LARGOS;
       porHora.set(r.HORA, (porHora.get(r.HORA) ?? 0) + r.ITEMS);

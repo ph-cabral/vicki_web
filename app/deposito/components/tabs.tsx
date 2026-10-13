@@ -395,7 +395,6 @@ export function ProcesoTab({
 
   // Faltantes del mes activo (items que llegaron a /deposito/faltantes).
   const [falt, setFalt] = React.useState<FaltResumen | null>(null);
-  const faltantes = falt?.items ?? null;
   const { objetivos, puedeEditar, guardar, borrar } =
     useObjetivosDeposito(proceso);
   const [modalObjetivo, setModalObjetivo] = React.useState(false);
@@ -492,13 +491,9 @@ export function ProcesoTab({
               </p>
               <p
                 className="text-[22px] leading-none font-bold mt-1.5 text-red-400"
-                title={
-                  operario !== "__all__"
-                    ? "El faltante no se asigna a un operario: es el total del mes"
-                    : undefined
-                }
+                title="Renglones pedidos que no se recolectaron (Pedidos − Recolectados)"
               >
-                {faltantes === null ? "—" : fmtNum(faltantes)}
+                {fmtNum(Math.max(0, totPed - totRecol))}
               </p>
             </div>
           </div>
