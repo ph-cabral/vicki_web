@@ -91,6 +91,10 @@ export default function FaltantesPage() {
   const [exitDir, setExitDir] = useState<"left" | "right" | "up" | null>(null); // tarjeta móvil saliendo
   const [transitioning, setTransitioning] = useState(false);
   const [mesExport, setMesExport] = useState(mesActual);
+  // Día a consultar ("" = último día con pedidos cerrados, lo que resuelve la
+  // API). Vive en ref para que el refresco automático y load() lo respeten.
+  const [fechaSel, setFechaSel] = useState("");
+  const fechaSelRef = useRef("");
   const [exportLoading, setExportLoading] = useState(false);
   // Acumulado del mes en curso — DOS series, según la marca de la mesa:
   //   sinExistencia → faltante real (marcado "sin existencia")
@@ -111,9 +115,13 @@ export default function FaltantesPage() {
     setLoading(true);
     setError(null);
     try {
-      const fRes = await fetch("/api/deposito/faltantes", {
-        cache: "no-store",
-      });
+      const sel = fechaSelRef.current;
+      const fRes = await fetch(
+        sel
+          ? `/api/deposito/faltantes?desde=${sel}&hasta=${sel}`
+          : "/api/deposito/faltantes",
+        { cache: "no-store" },
+      );
       const fj = await fRes.json().catch(() => ({}));
       if (!fRes.ok) throw new Error(fj.error || `HTTP ${fRes.status}`);
       const rows: Item[] = fj.rows ?? [];
@@ -670,6 +678,18 @@ export default function FaltantesPage() {
               <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
             </button>
             <div className="w-px h-7 bg-yellow-400/30" />
+            <input
+              type="date"
+              onClick={abrirPicker}
+              value={fechaSel || fecha}
+              onChange={(e) => {
+                fechaSelRef.current = e.target.value;
+                setFechaSel(e.target.value);
+                load();
+              }}
+              title="Día de cierre a revisar"
+              className="bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-100 outline-none focus:border-yellow-400 cursor-pointer"
+            />
             <input
               type="month"
               onClick={abrirPicker}

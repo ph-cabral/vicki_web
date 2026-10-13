@@ -19,14 +19,11 @@ import {
   fmtMes,
   type Col,
   type Serie,
-  type RefLinea,
 } from "./ui";
 import {
-  useObjetivosDeposito,
   aItemsTxt,
   type ObjetivoMes,
 } from "@/lib/deposito/objetivos";
-import { Target } from "lucide-react";
 
 const sumBy = <T,>(rows: T[], f: (r: T) => number) =>
   rows.reduce<number>((s, r) => s + (f(r) || 0), 0);
@@ -42,16 +39,6 @@ interface OpRow {
   fill: number | null;
 }
 
-function rankingOperarios(regs: DepRegistro[], topN = 15) {
-  const m = new Map<string, number>();
-  regs.forEach((r) =>
-    m.set(r.operario, (m.get(r.operario) ?? 0) + r.itemsRecolectados),
-  );
-  return [...m.entries()]
-    .map(([operario, recolectados]) => ({ operario, recolectados }))
-    .sort((a, b) => b.recolectados - a.recolectados)
-    .slice(0, topN);
-}
 function tablaOperarios(regs: DepRegistro[]): OpRow[] {
   const m = new Map<string, OpRow>();
   regs.forEach((r) => {
@@ -373,6 +360,14 @@ export function ResumenTab({ d, mes }: { d: DepositoData; mes: string }) {
   );
 }
 
+interface FaltResumen {
+  items: number;
+  enExistencia: number;
+  sinExistencia: number;
+  malFacturado: number;
+  pendiente: number;
+}
+
 // ─── POR PROCESO (Picking / Libre+Repo / Re-Ubicación) ───────────────────────
 export function ProcesoTab({
   d,
@@ -380,10 +375,13 @@ export function ProcesoTab({
   mes,
   chartMeses,
   chartRegs,
+  operario = "__all__",
 }: {
   d: DepositoData;
   proceso: string;
   mes: string;
+  /** Operario filtrado en el header ("__all__" = todos). El faltante no tiene operario. */
+  operario?: string;
   /** Meses "yyyy-mm" a graficar en "Items recolectados por mes" (cronológico). */
   chartMeses: string[];
   /** Registros del rango del gráfico (ya filtrados por operario); null = cargando. */
@@ -393,10 +391,25 @@ export function ProcesoTab({
   const meses = [...new Set(regs.map((r) => r.mes))].sort();
   const mesActivo = meses.includes(mes) ? mes : meses[meses.length - 1];
 
-  // Objetivos del ranking (líneas verde/amarilla/roja) — una sola lectura por
-  // proceso trae todos los meses, así que cambiar de mes no re-consulta.
-  const obj = useObjetivosDeposito(proceso);
-  const [modal, setModal] = React.useState(false);
+  // Faltantes del mes activo (items que llegaron a /deposito/faltantes).
+  const [falt, setFalt] = React.useState<FaltResumen | null>(null);
+  const faltantes = falt?.items ?? null;
+  React.useEffect(() => {
+    if (!mesActivo) return;
+    let vivo = true;
+    setFalt(null);
+    fetch(`/api/deposito/faltantes/resumen?mes=${mesActivo}`, {
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (vivo) setFalt(typeof j?.items === "number" ? j : null);
+      })
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, [mesActivo]);
 
   if (!regs.length) {
     return (
@@ -418,28 +431,6 @@ export function ProcesoTab({
   const totPed = sumBy(regsMes, (r) => r.itemsPedidos);
   const totOT = sumBy(regsMes, (r) => r.ot);
   const ops = new Set(regsMes.map((r) => r.operario)).size;
-  const ranking = rankingOperarios(regsMes, 15).map((x) => ({
-    operario: clip(x.operario, 13),
-    recolectados: x.recolectados,
-  }));
-
-  // Líneas de referencia del mes activo (ya vienen en ITEMS desde la API).
-  const objMes: ObjetivoMes | undefined = obj.objetivos[mesActivo];
-  const refLines: RefLinea[] = objMes
-    ? [
-        objMes.bajo != null
-          ? { y: objMes.bajo, label: "Bajo rendimiento", color: C.red }
-          : null,
-        { y: objMes.objetivo, label: "Objetivo", color: C.green },
-        objMes.sobresaliente != null
-          ? { y: objMes.sobresaliente, label: "Sobresaliente", color: C.brand }
-          : null,
-      ].filter((l): l is RefLinea => l !== null)
-    : [];
-  const cumplen = objMes
-    ? ranking.filter((r) => r.recolectados >= objMes.objetivo).length
-    : 0;
-
   // Serie del gráfico: una columna por mes de `chartMeses` (con 0 si no hubo).
   const regsChart = (chartRegs ?? []).filter((r) => r.proceso === proceso);
   const recolMes = chartMeses.map((m) => ({
@@ -455,31 +446,63 @@ export function ProcesoTab({
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <PageTitle
           title={proceso}
-          sub={`Recolección, ranking y evolución por operario — ${meses.length} ${meses.length === 1 ? "mes" : "meses"}`}
+          sub={`Recolección y faltantes — ${meses.length} ${meses.length === 1 ? "mes" : "meses"}`}
         />
       </div>
 
-      <Grid cols={5}>
-        <KPI
-          label="Recolectados"
-          value={fmtNum(totRecol)}
-          sub={nombreDe(mesActivo)}
-          accent="green"
-        />
-        <KPI
-          label="Pedidos"
-          value={fmtNum(totPed)}
-          sub={nombreDe(mesActivo)}
-          accent="neutral"
-        />
-        <KPI
-          label="Fill rate"
-          value={pct(totRecol, totPed)}
-          accent={totPed > 0 && totRecol / totPed >= 0.95 ? "green" : "amber"}
-        />
-        <KPI label="OT" value={fmtNum(totOT)} accent="yellow" />
-        <KPI label="Operarios" value={fmtNum(ops)} accent="neutral" />
-      </Grid>
+      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="sm:col-span-3 lg:col-span-3 rounded-lg bg-[#171717] border border-zinc-800 px-4 py-3.5">
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+                Pedidos
+              </p>
+              <p className="text-[22px] leading-none font-bold mt-1.5 text-zinc-100">
+                {fmtNum(totPed)}
+              </p>
+            </div>
+            <div className="border-l border-zinc-800 pl-4">
+              <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+                Recolectados
+              </p>
+              <p className="text-[22px] leading-none font-bold mt-1.5 text-green-400">
+                {fmtNum(totRecol)}
+              </p>
+            </div>
+            <div className="border-l border-zinc-800 pl-4">
+              <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+                Faltantes
+              </p>
+              <p
+                className="text-[22px] leading-none font-bold mt-1.5 text-red-400"
+                title={
+                  operario !== "__all__"
+                    ? "El faltante no se asigna a un operario: es el total del mes"
+                    : undefined
+                }
+              >
+                {faltantes === null ? "—" : fmtNum(faltantes)}
+              </p>
+            </div>
+          </div>
+          <p className="text-[11px] text-zinc-600 mt-1.5 leading-tight">
+            Items · {nombreDe(mesActivo)}
+          </p>
+        </div>
+        <div className="lg:col-span-1">
+          <KPI
+            label="Fill rate"
+            value={pct(totRecol, totPed)}
+            accent={totPed > 0 && totRecol / totPed >= 0.95 ? "green" : "amber"}
+          />
+        </div>
+        <div className="lg:col-span-1">
+          <KPI label="OT" value={fmtNum(totOT)} accent="yellow" />
+        </div>
+        <div className="lg:col-span-1">
+          <KPI label="Operarios" value={fmtNum(ops)} accent="neutral" />
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-5">
         <Panel title="Items recolectados por mes">
@@ -500,66 +523,72 @@ export function ProcesoTab({
             />
           )}
         </Panel>
-        <Panel
-          title={`Ranking operarios — ${nombreDe(mesActivo)}`}
-          accent="(top 15)"
-          action={
-            obj.puedeEditar ? (
-              <button
-                type="button"
-                onClick={() => setModal(true)}
-                title="Cargar el objetivo, el sobresaliente y el piso de bajo rendimiento de este mes"
-                className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1f1f1f] px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors shrink-0"
-              >
-                <Target size={13} />
-                {objMes ? "Editar objetivo" : "Objetivo"}
-              </button>
-            ) : null
-          }
-        >
-          <ChartBar
-            data={ranking}
-            xKey="operario"
-            height={280}
-            series={[
-              { key: "recolectados", name: "Recolectados", color: PALETTE[2] },
-            ]}
-            fmt={(n) => fmtNum(n)}
-            angle={0}
-            showValues
-            refLines={refLines}
-          />
-          {refLines.length > 0 && (
-            <div className="flex flex-wrap items-center gap-4 px-1 pt-2 text-[11px] text-zinc-400">
-              {refLines.map((r) => (
-                <span key={r.label} className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block h-0.5 w-4 rounded"
-                    style={{ background: r.color }}
-                  />
-                  {r.label} · {fmtNum(r.y)}
-                </span>
-              ))}
-              <span className="text-zinc-600">
-                Cumplen el objetivo: {cumplen} de {ranking.length}
-              </span>
+        <Panel title={`Faltantes por existencia — ${nombreDe(mesActivo)}`}>
+          {falt === null ? (
+            <div className="flex items-center justify-center h-[280px] text-sm text-zinc-500">
+              Cargando…
             </div>
+          ) : (
+            <FaltExistencia f={falt} />
           )}
         </Panel>
       </div>
 
-      {modal && (
-        <ObjetivoModal
-          proceso={proceso}
-          meses={meses}
-          mesInicial={mesActivo}
-          nombreDe={nombreDe}
-          objetivos={obj.objetivos}
-          onGuardar={obj.guardar}
-          onBorrar={obj.borrar}
-          onCerrar={() => setModal(false)}
-        />
-      )}
+    </div>
+  );
+}
+
+const FALT_SEGS: { key: keyof Omit<FaltResumen, "items">; label: string; bg: string; txt: string }[] = [
+  { key: "enExistencia", label: "En existencia", bg: "bg-amber-400", txt: "text-amber-400" },
+  { key: "sinExistencia", label: "Sin existencia", bg: "bg-red-500", txt: "text-red-400" },
+  { key: "malFacturado", label: "Mal facturado", bg: "bg-purple-500", txt: "text-purple-400" },
+  { key: "pendiente", label: "Sin marcar", bg: "bg-zinc-600", txt: "text-zinc-400" },
+];
+
+/** Barra de faltantes del mes por marca de la mesa + % marcado "en existencia". */
+function FaltExistencia({ f }: { f: FaltResumen }) {
+  const pctDe = (n: number) => (f.items > 0 ? (n / f.items) * 100 : 0);
+  return (
+    <div className="flex items-center gap-6 min-h-[280px]">
+      <div className="flex-1 min-w-0">
+        <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+          Faltantes · items
+        </p>
+        <p className="text-[22px] leading-none font-bold mt-1.5 text-zinc-100">
+          {fmtNum(f.items)}
+        </p>
+        <div className="flex h-5 w-full overflow-hidden rounded bg-zinc-800 mt-4">
+          {FALT_SEGS.map((s) =>
+            f[s.key] > 0 ? (
+              <div
+                key={s.key}
+                className={s.bg}
+                style={{ width: `${pctDe(f[s.key])}%` }}
+                title={`${s.label}: ${fmtNum(f[s.key])}`}
+              />
+            ) : null,
+          )}
+        </div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[11px] text-zinc-400">
+          {FALT_SEGS.map((s) => (
+            <span key={s.key} className="flex items-center gap-1.5">
+              <span className={`inline-block h-2 w-2 rounded-sm ${s.bg}`} />
+              {s.label} · {fmtNum(f[s.key])}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="shrink-0 text-right border-l border-zinc-800 pl-6">
+        <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+          En existencia
+        </p>
+        <p className="text-[40px] leading-none font-bold mt-1.5 text-amber-400">
+          {f.items > 0 ? `${pctDe(f.enExistencia).toFixed(1)} %` : "—"}
+        </p>
+        <p className="text-[11px] text-zinc-600 mt-1.5">
+          {fmtNum(f.enExistencia)} de {fmtNum(f.items)}
+        </p>
+      </div>
     </div>
   );
 }

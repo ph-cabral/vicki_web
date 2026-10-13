@@ -249,7 +249,7 @@ export default function DepositoPage() {
             // {tab === "resumen" && viewProd && <ResumenTab d={viewProd} mes="__all__" />}
           <>
             {tab === "picking" && viewProd && (
-              <ProcesoTab d={viewProd} proceso="Picking" mes="__all__" chartMeses={chartMeses} chartRegs={chartRegs} />
+              <ProcesoTab d={viewProd} proceso="Picking" mes="__all__" operario={operario} chartMeses={chartMeses} chartRegs={chartRegs} />
             )}
             {tab === "tiempos-picking" && (
               <TiemposPickingTab desde={desde} hasta={hasta} operario={operario} />
