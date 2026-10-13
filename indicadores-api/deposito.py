@@ -3596,6 +3596,7 @@ SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103)  AS [FECHA],
     LTRIM(RTRIM(P.PersonalNombre))                      AS [OPERARIO],
     DATEPART(HOUR, c.momento)                           AS [HORA],
+    CASE WHEN pc.NroMovVenta IS NULL THEN 0 ELSE 1 END  AS [CANCELADO],
     COUNT(*)                                            AS [ITEMS],
     SUM(CASE WHEN it.OTItemCantCumplida > 0 THEN 1 ELSE 0 END)          AS [RECOLECTADOS],
     SUM(CASE WHEN c.seg <= {PICK_SEG_MAX} THEN c.seg ELSE 0 END)        AS [SEG_TOTAL],
@@ -3605,6 +3606,8 @@ FROM OT
 INNER JOIN Codot  ON OT.CodotCodigo = Codot.CodotCodigo AND Codot.CodotProcesoNegocio = 4
 INNER JOIN OTItem it ON it.OTId = OT.OTId AND it.OTItemTipo = 1
 LEFT  JOIN Personal P ON OT.OTUsuarioGUID_Repositor = P.PersonalId
+LEFT  JOIN EVERWEAR.dbo.VenFer_PedidoCabecera pc
+       ON pc.NroMovVenta = OT.{{col_pedido}} AND pc.EstadoPedido = 7
 CROSS APPLY (VALUES (
     CASE WHEN it.OTItemFechaHoraPickFin > '1900-01-01'
          THEN it.OTItemFechaHoraPickFin ELSE OT.OTFechaHoraEjecucion END,
@@ -3616,7 +3619,8 @@ WHERE OT.OTEstado IN (2, 3, 4)
   AND OT.OTFechaHoraEjecucion >= ?
   AND OT.OTFechaHoraEjecucion <= ?
 GROUP BY CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103),
-         P.PersonalNombre, DATEPART(HOUR, c.momento)
+         P.PersonalNombre, DATEPART(HOUR, c.momento),
+         CASE WHEN pc.NroMovVenta IS NULL THEN 0 ELSE 1 END
 """
 
 # Cabeceras de OT con hora de inicio y fin reales. Los agregados de renglones van
@@ -3642,10 +3646,13 @@ SELECT
     i.cron                                               AS [CRONOMETRADOS],
     i.largos                                             AS [LARGOS],
     LTRIM(RTRIM(ISNULL(OT.OTClienteNombre, '')))         AS [CLIENTE],
-    OT.{{col_pedido}}                                      AS [PEDIDO]
+    OT.{{col_pedido}}                                      AS [PEDIDO],
+    CASE WHEN pc.NroMovVenta IS NULL THEN 0 ELSE 1 END   AS [CANCELADO]
 FROM OT
 INNER JOIN Codot ON OT.CodotCodigo = Codot.CodotCodigo AND Codot.CodotProcesoNegocio = 4
 LEFT  JOIN Personal P ON OT.OTUsuarioGUID_Repositor = P.PersonalId
+LEFT  JOIN EVERWEAR.dbo.VenFer_PedidoCabecera pc
+       ON pc.NroMovVenta = OT.{{col_pedido}} AND pc.EstadoPedido = 7
 CROSS APPLY (
     SELECT
         MIN(CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01' THEN it.OTItemFechaHoraPickIni END) AS ini,
@@ -3701,7 +3708,7 @@ def fetch_pick_heatmap(desde: datetime, hasta: datetime):
     conn = get_connection("WMS")
     try:
         cur = conn.cursor()
-        cur.execute(SQL_PICK_HEATMAP, (desde, hasta))
+        cur.execute(SQL_PICK_HEATMAP.format(col_pedido=OT_COL_PEDIDO), (desde, hasta))
         return _rows(cur)
     finally:
         conn.close()

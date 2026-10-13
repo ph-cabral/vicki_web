@@ -23,6 +23,7 @@ interface HeatRow {
   FECHA: string;        // dd/mm/yyyy
   OPERARIO: string | null;
   HORA: number;
+  CANCELADO: number;   // 1 = pedido cancelado en Magnus (EstadoPedido 7)
   ITEMS: number;
   RECOLECTADOS: number;
   SEG_TOTAL: number;
@@ -44,6 +45,7 @@ interface OtRow {
   LARGOS: number;
   CLIENTE: string;
   PEDIDO: number | null;
+  CANCELADO: number;
 }
 
 interface ItemRow {
@@ -248,24 +250,28 @@ export function TiemposPickingTab({
   }, [heatFilt, eje]);
 
   // ─── KPIs del rango ────────────────────────────────────────────────────────
+  // Las cartas excluyen los pedidos cancelados en Magnus. El mapa de calor y la
+  // tabla de OT los conservan: el operario igual pickeó y trabajó ese renglón.
   const kpis = useMemo(() => {
     let items = 0, recol = 0, seg = 0, cron = 0, largos = 0;
     const porHora = new Map<number, number>();
+    const otsKpi = otsFilt.filter((o) => !o.CANCELADO);
     for (const r of heatFilt) {
+      if (r.CANCELADO) continue;
       items += r.ITEMS; recol += r.RECOLECTADOS;
       seg += r.SEG_TOTAL; cron += r.CRONOMETRADOS; largos += r.LARGOS;
       porHora.set(r.HORA, (porHora.get(r.HORA) ?? 0) + r.ITEMS);
     }
     let pico = -1, picoItems = 0;
     for (const [h, v] of porHora) if (v > picoItems) { pico = h; picoItems = v; }
-    const spans = otsFilt.reduce((s, o) => s + (o.SEG_SPAN && o.SEG_SPAN > 0 ? o.SEG_SPAN : 0), 0);
-    const segItems = otsFilt.reduce((s, o) => s + o.SEG_ITEMS, 0);
+    const spans = otsKpi.reduce((s, o) => s + (o.SEG_SPAN && o.SEG_SPAN > 0 ? o.SEG_SPAN : 0), 0);
+    const segItems = otsKpi.reduce((s, o) => s + o.SEG_ITEMS, 0);
     return {
       items, recol, largos,
       prom: cron > 0 ? seg / cron : null,
       sinCron: items - cron - largos,
       pico, picoItems,
-      ots: otsFilt.length,
+      ots: otsKpi.length,
       muerto: spans > 0 ? 1 - segItems / spans : null,
     };
   }, [heatFilt, otsFilt]);
