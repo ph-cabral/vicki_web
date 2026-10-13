@@ -877,6 +877,8 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
           height={300}
           series={S3}
           fmt={aHs}
+          topLabelKey="totalPag1"
+          topLabelFmt={aHs}
         />
       </Panel>
       <div className="mt-4">
@@ -929,6 +931,8 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
           height={240}
           series={S2}
           fmt={aHs}
+          topLabelKey="totalPag2"
+          topLabelFmt={aHs}
         />
       </Panel>
 

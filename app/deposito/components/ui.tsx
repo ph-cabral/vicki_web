@@ -558,7 +558,8 @@ export function ChartBar({
   refLines?: RefLinea[];
   /** Valor de cada serie IMPRESO DENTRO de la barra (arriba, alto contraste). */
   insideValues?: boolean;
-  /** Campo extra (no es una serie graficada) impreso ARRIBA de la barra —
+  /** En barras apiladas se imprime sobre el tope de la pila (última serie).
+   * Campo extra (no es una serie graficada) impreso ARRIBA de la barra —
    * ej. cantidad de OT/pedidos distintos, cuando la barra en sí mide items. */
   topLabelKey?: string;
   topLabelFmt?: (n: number) => string;
@@ -693,7 +694,8 @@ export function ChartBar({
                 style={{ fontSize: 10, fontWeight: 700, fill: "#0d1117" }}
               />
             )}
-            {topLabelKey && i === 0 && (
+            {topLabelKey &&
+              i === (series[0]?.stackId ? series.length - 1 : 0) && (
               <LabelList
                 dataKey={topLabelKey}
                 position={horizontal ? "right" : "top"}
