@@ -29,6 +29,7 @@ const LABELS = {
   armar: "Armar",
   dashboard: "Dashboard",
   asistencia: "Asistencia",
+  busqueda: "Búsqueda",
   legajos: "Legajos",
   telefono: "Teléfono",
   lineas: "Líneas",

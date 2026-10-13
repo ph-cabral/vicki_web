@@ -804,6 +804,7 @@ model puesto {
   updatedAt   DateTime           @updatedAt
   sector      sector?            @relation(fields: [sectorId], references: [id])
   documentos  puesto_documento[]
+  busquedas   rrhh_busqueda[]
 
   @@index([sectorId])
   @@schema("everwear")
@@ -1119,5 +1120,59 @@ model usuario_extension {
   updatedAt       DateTime @updatedAt
   usuario         usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
+  @@schema("everwear")
+}
+
+// ===== /rrhh/busqueda (sql/rrhh_busqueda.sql) =====
+// Búsquedas de personal + postulantes vinculados (rag_system.candidato, sin
+// relación Prisma: ese schema no está en el datasource; se lee con $queryRaw) +
+// fechas del proceso. estado de postulante: EN_PROCESO | RECHAZADO | DESISTIO |
+// MALAS_REFERENCIAS | DESCARTADO. tipo de evento: ENTREVISTA | PREOCUPACIONAL |
+// PSICOTECNICO | INGRESO_PROGRAMADO.
+model rrhh_busqueda {
+  id          Int                         @id @default(autoincrement())
+  titulo      String                      @db.VarChar(160)
+  puestoId    Int?
+  descripcion String?
+  estado      String                      @default("ABIERTA") @db.VarChar(10)
+  abiertaEn   DateTime                    @default(now()) @db.Date
+  cerradaEn   DateTime?                   @db.Date
+  creadoPor   String?                     @db.VarChar(100)
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @default(now()) @updatedAt
+  puesto      puesto?                     @relation(fields: [puestoId], references: [id], onDelete: SetNull)
+  postulantes rrhh_busqueda_postulante[]
+
+  @@index([estado, abiertaEn(sort: Desc)])
+  @@schema("everwear")
+}
+
+model rrhh_busqueda_postulante {
+  id          Int                   @id @default(autoincrement())
+  busquedaId  Int
+  candidatoId Int
+  estado      String                @default("EN_PROCESO") @db.VarChar(20)
+  motivo      String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @default(now()) @updatedAt
+  busqueda    rrhh_busqueda         @relation(fields: [busquedaId], references: [id], onDelete: Cascade)
+  eventos     rrhh_busqueda_evento[]
+
+  @@unique([busquedaId, candidatoId])
+  @@index([candidatoId])
+  @@schema("everwear")
+}
+
+model rrhh_busqueda_evento {
+  id          Int                      @id @default(autoincrement())
+  postulanteId Int
+  tipo        String                   @db.VarChar(20)
+  fecha       DateTime
+  nota        String?
+  createdAt   DateTime                 @default(now())
+  postulante  rrhh_busqueda_postulante @relation(fields: [postulanteId], references: [id], onDelete: Cascade)
+
+  @@index([postulanteId, fecha])
+  @@index([fecha])
   @@schema("everwear")
 }
