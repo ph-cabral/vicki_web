@@ -803,6 +803,8 @@ WHERE r.CodArticu = ?
 # (deposito.py DEPOSITOS). Se repiten acá para no importar media tabla de
 # constantes; si algún día se agrega un depósito, actualizar en ambos lados.
 CONSUMO_DEPOSITOS = (1, 2, 3)
+# Nombres de Magnus (EVERWEAR.dbo.Stk_Deposito, CodSucursal=1) — fijos, sin query extra.
+CONSUMO_DEPOSITOS_NOMBRE = {1: "CENTRAL", 2: "CASA LILSER", 3: "EW RUTA"}
 
 # Mismo criterio que arriba: columna cruda para poder entrar por el índice
 # agrupado (CodArticulo, CodSucursal, Deposito) en vez de barrer la tabla.
@@ -945,7 +947,11 @@ def fetch_consumo_articulo(codigo: str, desde: str, hasta: str):
         "totalSobreMinimo": round(total / minimo, 2) if minimo else None,
         "stock": {
             "porDeposito": [
-                {"deposito": d, "stock": round(stock_por_dep[d], 2)}
+                {
+                    "deposito": d,
+                    "nombre": CONSUMO_DEPOSITOS_NOMBRE.get(d, f"Depósito {d}"),
+                    "stock": round(stock_por_dep[d], 2),
+                }
                 for d in CONSUMO_DEPOSITOS
             ],
             "total": round(sum(stock_por_dep.values()), 2),

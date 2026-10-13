@@ -74,6 +74,7 @@ interface MesRow {
 }
 interface DepRow {
   deposito: number;
+  nombre?: string;
   stock: number;
 }
 interface Resp {
@@ -683,7 +684,10 @@ export default function ComprasConsumoPage() {
                     ? "Todos los depósitos"
                     : deps.size === 0
                       ? "Sin depósitos tildados"
-                      : `Depósito(s) ${[...deps].sort().join(", ")}`
+                      : (data?.stock.porDeposito ?? [])
+                          .filter((r) => deps.has(r.deposito))
+                          .map((r) => r.nombre ?? `Depósito ${r.deposito}`)
+                          .join(", ")
                 }
                 icon={Warehouse}
                 accent="green"
@@ -790,7 +794,7 @@ export default function ComprasConsumoPage() {
                           onChange={() => toggleDep(r.deposito)}
                           className="accent-yellow-400"
                         />
-                        Depósito {r.deposito}
+                        {r.nombre ?? `Depósito ${r.deposito}`}
                       </span>
                       <span className="tabular-nums text-zinc-100">{fmtNum(r.stock)}</span>
                     </label>

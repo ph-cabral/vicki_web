@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 // Público en middleware como la página (sólo los pedidos de ese nombre).
 // creado_en es timestamp SIN zona guardado en UTC (now() con TimeZone=UTC):
 // el corte se calcula en AR y se pasa a UTC para que el filtro use el índice
-// (picker_nombre, creado_en); día y hora salen ya formateados en AR.
+// (lower(btrim(picker_nombre)), creado_en); día y hora salen ya formateados en AR.
+// El nombre se compara sin mayúsculas ni espacios en los bordes (igual que el topic
+// de notificaciones): "carba" (Fully Kiosk) y "Carba" (app) ven el mismo historial.
 export const dynamic = "force-dynamic";
 
 interface Fila {
@@ -31,7 +33,7 @@ export async function GET(req: NextRequest) {
              to_char(creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'YYYY-MM-DD') AS dia,
              to_char(creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS hora
       FROM preparado.picking_eventos
-      WHERE picker_nombre = ${picker}
+      WHERE lower(btrim(picker_nombre)) = lower(btrim(${picker}))
         AND creado_en >= ((date_trunc('day', now() AT TIME ZONE 'America/Argentina/Buenos_Aires')
                            - make_interval(days => ${dias - 1}::int))
                           AT TIME ZONE 'America/Argentina/Buenos_Aires') AT TIME ZONE 'UTC'
