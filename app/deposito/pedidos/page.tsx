@@ -397,7 +397,7 @@ export default function PedidosPreparadosPage() {
           <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
             La barra verde va apilada: tramo claro = pedidos ingresados en el mismo período; tramo oscuro = arrastre de períodos anteriores.
             Preparado (OT) = WMS Picking (1 fila = 1 OT). Ingresados = pedidos registrados/día (Magnus, comprobantes 10, 70, 75, 100,
-            210, 310 y 410 — los 75 y 410 no se facturan, por eso no se les exige factura). Controlado: 3ª barra lista para cuando se
+            210, 310 y 410 — los 75 y 410 no se facturan, por eso no se les exige factura; el día en curso sale en vivo de Magnus y no exige factura). Controlado: 3ª barra lista para cuando se
             defina la fuente. Semanas lunes→domingo (ISO). SQL en vivo.
           </p>
       </main>

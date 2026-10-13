@@ -2,19 +2,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChevronRight, Star, X, GripVertical, Home } from "lucide-react";
+import { ChevronLeft, Star, X, GripVertical, Home } from "lucide-react";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Sidebar GLOBAL de la app (2026-08-27: antes vivía sólo en
 // /compras). Se monta en app/layout.tsx, así que aparece en TODAS las vistas.
 //
 // Se abre por hover: está escondida fuera de pantalla y aparece cuando el mouse
-// se acerca al borde izquierdo (franja invisible de 12px + pestaña con chevron
+// se acerca al borde derecho (franja invisible de 12px + pestaña con chevron
 // como pista visual). Es un overlay fijo: no corre el layout de las páginas.
 //
 // En pantallas táctiles (matchMedia "(hover: none)") el hover no existe, así que
-// se abre con gesto: deslizar el dedo desde el borde izquierdo (franja de 28px)
-// la trae, y deslizar hacia la izquierda estando abierta la cierra. El panel
+// se abre con gesto: deslizar el dedo desde el borde derecho (franja de 28px)
+// la trae, y deslizar hacia la derecha estando abierta la cierra. El panel
 // sigue al dedo (transform en px, sin transición mientras dura el gesto) y al
 // soltar cae al lado más cercano (mitad del ancho). Además, en mobile hay
 // backdrop tocable y una X en la cabecera, porque no hay "mouse leave" que
@@ -61,7 +61,7 @@ const estaOculta = (pathname: string) =>
 
 // Gesto táctil.
 const ANCHO = 240; // w-60, en px: lo necesitamos como número para el arrastre
-const BORDE = 28; // franja desde el borde izquierdo que arranca la apertura
+const BORDE = 28; // franja desde el borde derecho que arranca la apertura
 const UMBRAL = 8; // px antes de decidir si el gesto es horizontal o vertical
 
 export function SidebarGlobal() {
@@ -141,7 +141,7 @@ export function SidebarGlobal() {
       if (e.touches.length !== 1) return;
       const t = e.touches[0];
       const abierta = abiertaRef.current;
-      if (!abierta && t.clientX > BORDE) return; // sólo desde el borde
+      if (!abierta && window.innerWidth - t.clientX > BORDE) return; // sólo desde el borde
       gesto.current = { x0: t.clientX, y0: t.clientY, abierta, eje: null };
     };
 
@@ -149,7 +149,7 @@ export function SidebarGlobal() {
       const g = gesto.current;
       if (!g || e.touches.length !== 1) return;
       const t = e.touches[0];
-      const dx = t.clientX - g.x0;
+      const dx = g.x0 - t.clientX; // sidebar a la derecha: arrastrar hacia la izquierda abre
       const dy = t.clientY - g.y0;
       if (g.eje === null) {
         if (Math.abs(dx) < UMBRAL && Math.abs(dy) < UMBRAL) return;
@@ -279,9 +279,9 @@ export function SidebarGlobal() {
 
   return (
     <>
-      {/* Franja invisible pegada al borde izquierdo: acercar el mouse abre */}
+      {/* Franja invisible pegada al borde derecho: acercar el mouse abre */}
       <div
-        className="fixed left-0 top-0 h-full w-3 z-[120]"
+        className="fixed right-0 top-0 h-full w-3 z-[120]"
         onMouseEnter={() => {
           if (!tactil) setOpen(true);
         }}
@@ -307,11 +307,11 @@ export function SidebarGlobal() {
         }}
         onClick={() => setOpen(true)}
         aria-label="Abrir menú"
-        className={`fixed left-0 top-1/2 -translate-y-1/2 z-[120] flex items-center justify-center
-          w-5 h-16 rounded-r-lg bg-[#1A1A1A] border border-l-0 border-yellow-400/40
+        className={`fixed right-0 top-1/2 -translate-y-1/2 z-[120] flex items-center justify-center
+          w-5 h-16 rounded-l-lg bg-[#1A1A1A] border border-r-0 border-yellow-400/40
           text-yellow-400 transition-opacity duration-200 ${visible > 0 ? "opacity-0 pointer-events-none" : "opacity-80"}`}
       >
-        <ChevronRight size={14} />
+        <ChevronLeft size={14} />
       </button>
 
       <aside
@@ -319,10 +319,10 @@ export function SidebarGlobal() {
           if (!tactil && drag === null) cerrar();
         }}
         style={{
-          transform: `translateX(${visible - ANCHO}px)`,
+          transform: `translateX(${ANCHO - visible}px)`,
           transition: arrastrando ? "none" : undefined,
         }}
-        className="fixed left-0 top-0 h-full w-60 z-[130] bg-[#161616] border-r border-zinc-800
+        className="fixed right-0 top-0 h-full w-60 z-[130] bg-[#161616] border-l border-zinc-800
           flex flex-col transition-transform duration-200 ease-out shadow-2xl shadow-black/60"
       >
         <div className="h-16 flex items-center border-b border-zinc-800">

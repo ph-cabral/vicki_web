@@ -233,26 +233,73 @@ ORDER BY f
 """
 
 
+# Dias NO cubiertos por la foto TMP_TiempoDePedidos (se recrea de madrugada: no trae
+# el dia en curso, ni los posteriores a su create_date). Para esos dias Ingresados sale
+# EN VIVO de VenFer_PedidoCabecera (FechaPedido = dias desde 1800-12-28): mismos
+# comprobantes, estados 2/3/4 (Abiertos/Cerrados/Facturados = Abierto/Cerrado/Facturado
+# de TMP), sin exigir factura (un pedido de hoy todavia no la tiene).
+SQL_TMP_SNAPSHOT_FECHA = """
+SELECT create_date FROM sys.objects WHERE name = 'TMP_TiempoDePedidos' AND type = 'U'
+"""
+
+SQL_INGRESADOS_VIVO = """
+SELECT FechaPedido, COUNT(*) AS pedidos
+FROM dbo.VenFer_PedidoCabecera
+WHERE FechaPedido BETWEEN ? AND ?
+  AND CompCodigo IN ({cods})
+  AND EstadoPedido IN (2, 3, 4)
+GROUP BY FechaPedido
+ORDER BY FechaPedido
+"""
+
+_MAGNUS_EPOCH = date(1800, 12, 28)
+
+
 def fetch_ingresados(desde, hasta):
-    """desde/hasta = datetime. Pedidos mayoristas/día desde TMP_TiempoDePedidos."""
+    """desde/hasta = datetime. Pedidos mayoristas/día: TMP_TiempoDePedidos hasta el
+    día anterior al snapshot; desde el día del snapshot en adelante, en vivo."""
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd;")
-        cur.execute(
-            SQL_INGRESADOS.format(
-                cod_fact=",".join(map(str, CODIGOS_INGRESADOS_FACTURABLES)),
-                cod_sin_fact=",".join(map(str, CODIGOS_INGRESADOS_SIN_FACTURA)),
-            ),
-            (desde, hasta),
-        )
-        out = []
-        for f, pedidos in cur.fetchall():
-            if f is None:
-                continue
-            fecha = f.isoformat() if hasattr(f, "isoformat") else str(f)
-            out.append({"fecha": fecha, "pedidos": int(pedidos)})
-        return out
+        cur.execute(SQL_TMP_SNAPSHOT_FECHA)
+        r = cur.fetchone()
+        corte = r[0].date() if r and r[0] is not None else None  # 1er dia en vivo
+        d_tmp = desde
+        h_tmp = hasta
+        if corte is not None:
+            tope = datetime.combine(corte - timedelta(days=1), datetime.min.time())
+            if hasta > tope:
+                h_tmp = tope
+        out = {}
+        if corte is None or desde <= h_tmp:
+            cur.execute(
+                SQL_INGRESADOS.format(
+                    cod_fact=",".join(map(str, CODIGOS_INGRESADOS_FACTURABLES)),
+                    cod_sin_fact=",".join(map(str, CODIGOS_INGRESADOS_SIN_FACTURA)),
+                ),
+                (d_tmp, h_tmp),
+            )
+            for f, pedidos in cur.fetchall():
+                if f is None:
+                    continue
+                fecha = f.isoformat() if hasattr(f, "isoformat") else str(f)
+                out[fecha] = out.get(fecha, 0) + int(pedidos)
+        h_date = hasta.date() if hasattr(hasta, "date") else hasta
+        if corte is not None and h_date >= corte:
+            ini = max(corte, desde.date() if hasattr(desde, "date") else desde)
+            cur.execute(
+                SQL_INGRESADOS_VIVO.format(
+                    cods=",".join(map(str, CODIGOS_INGRESADOS_FACTURABLES + CODIGOS_INGRESADOS_SIN_FACTURA)),
+                ),
+                ((ini - _MAGNUS_EPOCH).days, (h_date - _MAGNUS_EPOCH).days),
+            )
+            for fd, pedidos in cur.fetchall():
+                if fd is None:
+                    continue
+                fecha = (_MAGNUS_EPOCH + timedelta(days=int(fd))).isoformat()
+                out[fecha] = out.get(fecha, 0) + int(pedidos)
+        return [{"fecha": k, "pedidos": v} for k, v in sorted(out.items())]
     finally:
         conn.close()
 
