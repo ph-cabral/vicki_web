@@ -435,7 +435,6 @@ export function ProcesoTab({
   const totRecol = sumBy(regsMes, (r) => r.itemsRecolectados);
   const totPed = sumBy(regsMes, (r) => r.itemsPedidos);
   const totOT = sumBy(regsMes, (r) => r.ot);
-  const ops = new Set(regsMes.map((r) => r.operario)).size;
   // Serie del gráfico: una columna por mes de `chartMeses` (con 0 si no hubo).
   const regsChart = (chartRegs ?? []).filter((r) => r.proceso === proceso);
   const recolMes = chartMeses.map((m) => ({
@@ -501,11 +500,6 @@ export function ProcesoTab({
               >
                 {faltantes === null ? "—" : fmtNum(faltantes)}
               </p>
-              <p className="text-[11px] mt-1.5 leading-tight text-amber-400 tabular-nums">
-                {falt && falt.items > 0
-                  ? `${((falt.enExistencia / falt.items) * 100).toFixed(1)} % en existencia`
-                  : "— en existencia"}
-              </p>
             </div>
           </div>
           <p className="text-[11px] text-zinc-600 mt-1.5 leading-tight">
@@ -523,7 +517,25 @@ export function ProcesoTab({
           <KPI label="OT" value={fmtNum(totOT)} accent="yellow" />
         </div>
         <div className="lg:col-span-1">
-          <KPI label="Operarios" value={fmtNum(ops)} accent="neutral" />
+          <div
+            className="rounded-lg bg-[#171717] border border-zinc-800 px-4 py-3.5"
+            title="Faltantes marcados «en existencia» (había stock y no se cumplió) y % sobre el total de faltantes del mes"
+          >
+            <p className="text-[11px] uppercase tracking-wider text-zinc-500">
+              Faltantes en existencia
+            </p>
+            <div className="flex items-center gap-3 mt-1.5">
+              <p className="text-[22px] leading-none font-bold text-amber-400 tabular-nums">
+                {falt ? fmtNum(falt.enExistencia) : "—"}
+              </p>
+              <span className="self-stretch w-px bg-zinc-800" />
+              <p className="text-[22px] leading-none font-bold text-amber-400 tabular-nums">
+                {falt && falt.items > 0
+                  ? `${((falt.enExistencia / falt.items) * 100).toFixed(1)}%`
+                  : "—"}
+              </p>
+            </div>
+          </div>
         </div>
       </div>
 
