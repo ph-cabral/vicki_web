@@ -32,8 +32,9 @@ import {
 // pequeña diferencia es por recontrol/reimpresión real del mismo renglón
 // (créditos legítimos), no por el bug viejo.
 //
-// Selección de meses por checkbox (no un rango de fechas): se corre una
-// consulta por mes elegido para poder comparar meses entre sí.
+// Los meses salen del filtro global del header de /deposito (desde/hasta,
+// mes a mes): se corre una consulta por mes del rango para poder comparar
+// meses entre sí. Ya no hay selector propio (2026-10-13).
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface PorMes {
@@ -86,6 +87,10 @@ interface PorHora {
   hora: number; // 0-23
   total: number;
 }
+interface PendienteCierre {
+  mes: string;
+  total: number; // pedidos preparados que quedaron sin controlar al cierre del mes
+}
 interface MesaControlData {
   meses: string[];
   por_mes: PorMes[];
@@ -93,28 +98,28 @@ interface MesaControlData {
   por_dia: PorDia[];
   por_semana: PorSemana[];
   por_hora: PorHora[];
+  pendientes_cierre?: PendienteCierre[];
   total_general: number;
 }
 
 const isoMes = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
-// Últimos N meses (más reciente primero), para el selector.
-function ultimosMeses(n: number): string[] {
+// Meses (YYYY-MM, ascendente) comprendidos entre desde y hasta (YYYY-MM-DD).
+function mesesDeRango(desde: string, hasta: string): string[] {
+  if (!desde || !hasta) return [];
   const out: string[] = [];
-  const hoy = new Date();
-  for (let i = 0; i < n; i++) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-    out.push(isoMes(d));
+  let [y, m] = desde.slice(0, 7).split("-").map(Number);
+  const fin = hasta.slice(0, 7);
+  while (`${y}-${String(m).padStart(2, "0")}` <= fin && out.length < 60) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+    if (++m > 12) { m = 1; y++; }
   }
   return out;
 }
 
-export function MesaControlTab() {
-  const disponibles = useMemo(() => ultimosMeses(12), []);
-  const [seleccionados, setSeleccionados] = useState<string[]>(() =>
-    ultimosMeses(3).reverse(), // cronológico ascendente
-  );
+export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string }) {
+  const seleccionados = useMemo(() => mesesDeRango(desde, hasta), [desde, hasta]);
   const [data, setData] = useState<MesaControlData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,18 +150,7 @@ export function MesaControlTab() {
 
   useEffect(() => {
     load(seleccionados);
-    // Sólo en el montaje: los cambios posteriores los dispara toggleMes().
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const toggleMes = (m: string) => {
-    const next = seleccionados.includes(m)
-      ? seleccionados.filter((x) => x !== m)
-      : [...seleccionados, m];
-    const ordenados = disponibles.filter((x) => next.includes(x)).reverse(); // cronológico
-    setSeleccionados(ordenados);
-    load(ordenados);
-  };
+  }, [load, seleccionados]);
 
   const mesesOrdenados = data?.meses ?? []; // ya viene ascendente desde el back
   const ultimoMes = mesesOrdenados[mesesOrdenados.length - 1] ?? null;
@@ -164,6 +158,14 @@ export function MesaControlTab() {
   // Barras: 1 barra por mes, todos los meses seleccionados.
   const barMesData = (data?.por_mes ?? []).map((p) => ({
     mes: fmtMes(p.mes),
+    total: p.total,
+  }));
+
+  // Barras: pedidos preparados que quedaron sin controlar al cierre de cada mes
+  // (mismas columnas que "Total por mes"). El mes en curso corta en hoy.
+  const mesActual = isoMes(new Date());
+  const barPendientesData = (data?.pendientes_cierre ?? []).map((p) => ({
+    mes: p.mes === mesActual ? `${fmtMes(p.mes)} (hoy)` : fmtMes(p.mes),
     total: p.total,
   }));
 
@@ -216,28 +218,6 @@ export function MesaControlTab() {
         </Alert>
       </div>
 
-      {/* Selector de meses */}
-      <Panel title="Meses a comparar" accent="(elegí uno o más)" className="mb-5">
-        <div className="flex flex-wrap gap-2">
-          {disponibles.map((m) => {
-            const activo = seleccionados.includes(m);
-            return (
-              <button
-                key={m}
-                onClick={() => toggleMes(m)}
-                className={`px-3 py-1.5 rounded-md border text-[12px] font-medium transition-colors ${
-                  activo
-                    ? "bg-yellow-400/10 border-yellow-400/50 text-yellow-400"
-                    : "border-zinc-700 text-zinc-400 hover:border-zinc-500"
-                }`}
-              >
-                {fmtMes(m)}
-              </button>
-            );
-          })}
-        </div>
-      </Panel>
-
       {error && (
         <div className="flex items-center gap-3 bg-[#1A1A1A] border border-red-400/40 rounded-xl px-5 py-3 text-sm text-red-300 mb-5">
           <AlertTriangle size={16} className="text-red-400" /> {error}
@@ -253,7 +233,7 @@ export function MesaControlTab() {
         <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
           <ClipboardList size={40} className="text-zinc-700" />
           <p className="text-zinc-400 font-medium">
-            Elegí al menos un mes para ver datos.
+            Sin meses en el rango seleccionado.
           </p>
         </div>
       ) : (
@@ -279,7 +259,7 @@ export function MesaControlTab() {
           </Grid>
 
           <SectionTitle>📊 Total por mes</SectionTitle>
-          <div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Panel
               title="Total por mes"
               accent={`(${data.meses.length} ${data.meses.length === 1 ? "mes" : "meses"})`}
@@ -292,6 +272,24 @@ export function MesaControlTab() {
                 fmt={(n) => fmtNum(n)}
                 showValues
               />
+            </Panel>
+            <Panel
+              title="Quedaron para el mes siguiente"
+              accent={`(${data.meses.length} ${data.meses.length === 1 ? "mes" : "meses"})`}
+            >
+              <ChartBar
+                data={barPendientesData}
+                xKey="mes"
+                height={260}
+                series={[{ key: "total", name: "Pedidos por controlar", color: PALETTE[2] }]}
+                fmt={(n) => fmtNum(n)}
+                showValues
+              />
+              <p className="text-[11px] text-zinc-600 mt-3">
+                Pedidos ya preparados que al cierre del mes todavía no se
+                habían controlado en mesa. El mes en curso cuenta los
+                pendientes de hoy.
+              </p>
             </Panel>
           </div>
 

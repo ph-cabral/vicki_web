@@ -7,12 +7,11 @@ import {
 } from "./components/tabs";
 import { MesaControlTab } from "./components/mesaControl";
 import { ErroresMesaTab } from "./components/erroresMesa";
-import { RankingPreparadoresTab } from "./components/rankingPreparadores";
 import { TiemposPickingTab } from "./components/tiemposPicking";
 import {
   LayoutDashboard, PackageSearch, Clock, Timer,
   Loader2, RefreshCw, AlertTriangle, FileSpreadsheet, ClipboardList,
-  AlertOctagon, Trophy,
+  AlertOctagon,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { MonthRangePickerField, lastFullMonthRange } from "@/components/ui/date-range-field";
@@ -38,7 +37,6 @@ const TABS = [
   { id: "tiempo", label: "Tiempo de Pedidos", icon: Clock, needs: "tiempo" },
   { id: "mesa-control", label: "Mesas de Control", icon: ClipboardList, needs: "mesa" },
   { id: "errores-mesa", label: "Errores de Mesa", icon: AlertOctagon, needs: "errores" },
-  { id: "ranking-prep", label: "Ranking preparadores", icon: Trophy, needs: "ranking" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -120,7 +118,7 @@ export default function DepositoPage() {
   const ready =
     needs === "tiempo"
       ? !!tiempo
-      : needs === "mesa" || needs === "errores" || needs === "picking" || needs === "ranking"
+      : needs === "mesa" || needs === "errores" || needs === "picking"
         ? true
         : !!viewProd;
 
@@ -157,10 +155,9 @@ export default function DepositoPage() {
 
         <div className="flex items-center gap-3 text-sm">
           {/* Filtro de fechas: único, en el header, para todas las pestañas
-              (incluida Errores de Mesa — antes tenía su propio selector
-              duplicado). Solo mes a mes, sin calendario de días (2026-08-20). Oculto solo en Mesas de Control, que filtra
-              por checkbox de meses propio (ver mesaControl.tsx). */}
-          <div className={tab === "mesa-control" ? "invisible pointer-events-none" : ""}>
+              (incluidas Errores de Mesa y Mesas de Control). Solo mes a mes,
+              sin calendario de días (2026-08-20). */}
+          <div>
             <MonthRangePickerField
               desde={desde}
               hasta={hasta}
@@ -173,7 +170,7 @@ export default function DepositoPage() {
             />
           </div>
           <div
-            className={`flex items-center gap-3 ${tab === "mesa-control" || tab === "errores-mesa" || tab === "ranking-prep" ? "invisible pointer-events-none" : ""}`}
+            className={`flex items-center gap-3 ${tab === "mesa-control" || tab === "errores-mesa" ? "invisible pointer-events-none" : ""}`}
           >
             <label className="flex items-center gap-1.5 text-zinc-400">
               Operario
@@ -258,9 +255,8 @@ export default function DepositoPage() {
               <TiemposPickingTab desde={desde} hasta={hasta} operario={operario} />
             )}
             {tab === "tiempo" && tiempo && <TiempoTab d={tiempo} mes="__all__" />}
-            {tab === "mesa-control" && <MesaControlTab />}
+            {tab === "mesa-control" && <MesaControlTab desde={desde} hasta={hasta} />}
             {tab === "errores-mesa" && <ErroresMesaTab desde={desde} hasta={hasta} />}
-            {tab === "ranking-prep" && <RankingPreparadoresTab desde={desde} hasta={hasta} />}
           </>
         )}
       </main>

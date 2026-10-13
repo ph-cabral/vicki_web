@@ -828,6 +828,7 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
   const nombreMes = idx >= 0 ? d.metricas[idx].clave : fmtMes(mes);
   const priData = idx >= 0 ? (d.porPrioridadPorMes?.[key] ?? []) : [];
   const priTabla = idx >= 0 ? (d.prioridadesPorMes?.[key] ?? []) : [];
+  const priTotal = priTabla.reduce((t, r) => t + (r.cantidad || 0), 0);
 
   return (
     <div>
@@ -960,6 +961,15 @@ export function TiempoTab({ d, mes }: { d: TiempoData; mes: string }) {
                 label: "Pedidos",
                 num: true,
                 render: (r) => fmtNum(r.cantidad),
+              },
+              {
+                key: "pct",
+                label: "%",
+                num: true,
+                render: (r) =>
+                  priTotal > 0
+                    ? `${((r.cantidad / priTotal) * 100).toFixed(1)}%`
+                    : "—",
               },
               {
                 key: "tiempoPromedio",

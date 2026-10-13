@@ -239,6 +239,67 @@ def _nombres_usuarios(conn) -> dict[int, str]:
     return {int(r[0]): str(r[1]).strip() for r in cur.fetchall() if r[0] is not None}
 
 
+# ── Pendientes de control al cierre de cada mes (carta "Quedaron para el mes
+# siguiente") ──────────────────────────────────────────────────────────────
+# Pedidos (no acopio) que al último día del mes YA estaban preparados (cumplen
+# el gate de "Asignar pedidos": ubicación cargada por el armador + todos los
+# centros de preparación terminados, ver control_asignacion._SQL_GATE_CENTROS)
+# y que todavía no se habían cerrado en mesa: FechaCierre = 0 con EstadoPedido=2
+# (abierto hoy) o FechaCierre posterior al último día del mes.
+# "Preparado al cierre" = FechaAsignacion de la fila CA con ubicación <= fin de
+# mes (Magnus no guarda la fecha exacta de fin de armado; es aproximación). El
+# gate de centros se evalúa con el estado ACTUAL. Para el mes en curso el corte
+# es hoy (= cola actual). Ventana FechaPedido >= corte-120 para acotar el
+# barrido (medido: ningún pendiente con pedido de más de 60 días).
+_ARRASTRE_VENTANA_DIAS = 120
+SQL_PENDIENTES_CIERRE_MES = """
+SELECT COUNT(*) FROM (
+    SELECT cab.NroMovVenta
+    FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+    JOIN EVERWEAR.dbo.Ven_PedImpresoCA ca ON ca.NroMovVenta = cab.NroMovVenta
+    WHERE cab.FechaPedido BETWEEN ? AND ?
+      AND cab.CompCodigo IN (10, 100, 210, 310, 410)
+      AND (ISNULL(cab.FechaCierre, 0) > ?
+           OR (ISNULL(cab.FechaCierre, 0) = 0 AND cab.EstadoPedido = 2))
+      AND NOT EXISTS (
+            SELECT 1 FROM EVERWEAR.dbo.VenFer_PedidoReng r
+            WHERE r.NroMovVenta = cab.NroMovVenta
+              AND r.CodCentroPrep > 0 AND r.Estado <> 4
+              AND NOT EXISTS (
+                    SELECT 1 FROM EVERWEAR.dbo.Ven_PedImpresoCA c
+                    WHERE c.NroMovVenta = r.NroMovVenta
+                      AND c.CodCentroPrep = r.CodCentroPrep
+                      AND (   (r.CodCentroPrep = 2 AND ISNULL(c.Estado, 0) = 1)
+                           OR (r.CodCentroPrep <> 2
+                               AND (LTRIM(RTRIM(ISNULL(c.ObsArmadorMovil, ''))) <> ''
+                                    OR ISNULL(c.FechaFin, 0) > 0)))))
+    GROUP BY cab.NroMovVenta
+    HAVING MAX(CASE WHEN LTRIM(RTRIM(ISNULL(ca.ObsArmadorMovil, ''))) <> ''
+                    THEN ca.FechaAsignacion END) <= ?
+) x
+"""
+
+
+def _pendientes_cierre_mes(cur, meses: list[str]) -> dict[str, int]:
+    """{mes: pedidos preparados que quedaron sin controlar al cierre del mes}.
+    Una consulta por mes (seeks por rango de FechaPedido). Si falla devuelve 0
+    para ese mes: es un dato accesorio, no debe tirar la vista."""
+    out: dict[str, int] = {}
+    for mes in meses:
+        try:
+            _, hasta = _rango_mes(mes)
+            corte = _dia_magnus(hasta)
+            cur.execute(
+                SQL_PENDIENTES_CIERRE_MES,
+                corte - _ARRASTRE_VENTANA_DIAS, corte, corte, corte,
+            )
+            out[mes] = int(cur.fetchone()[0] or 0)
+        except Exception:  # noqa: BLE001
+            out[mes] = 0
+    return out
+
+
+
 def fetch_mesa_control(meses: list[str]) -> dict:
     """Renglones (items) controlados por mes + por controlador + por hora del
     día / día / semana — consulta directa a las tablas fuente (no al SP).
@@ -295,6 +356,7 @@ def fetch_mesa_control(meses: list[str]) -> dict:
         return {
             "meses": [], "por_mes": [], "por_controlador": [],
             "por_dia": [], "por_semana": [], "por_hora": [],
+            "pendientes_cierre": [],
             "total_general": 0,
         }
 
@@ -383,6 +445,8 @@ def fetch_mesa_control(meses: list[str]) -> dict:
                 por_dia[fecha_str] = por_dia.get(fecha_str, 0) + 1
                 if hora_num >= 0:
                     por_hora[hora_num] = por_hora.get(hora_num, 0) + 1
+
+        pendientes = _pendientes_cierre_mes(cur, meses)
     finally:
         conn.close()
 
@@ -435,6 +499,9 @@ def fetch_mesa_control(meses: list[str]) -> dict:
             {"semana": s, "total": por_semana[s]} for s in sorted(por_semana.keys())
         ],
         "por_hora": [{"hora": hh, "total": por_hora[hh]} for hh in range(24)],
+        "pendientes_cierre": [
+            {"mes": m, "total": pendientes.get(m, 0)} for m in meses
+        ],
         "total_general": sum(por_mes.values()),
     }
 

@@ -38,8 +38,8 @@ import {
 //   % Eficiencia   = preparado / ingresado
 // Día / Semana (lun→dom ISO) / Mes · Comparativa / Ítems.
 // (2026-10-09) Individual, Reposición y En picking se quitaron; el ranking de
-// preparadores + detalle pasó a la pestaña "Ranking preparadores" de /deposito
-// (components/rankingPreparadores.tsx). Helpers en components/pedidosUtil.ts.
+// preparadores + detalle estuvo en la pestaña "Ranking preparadores" de /deposito (eliminada 2026-10-13)
+// Helpers en components/pedidosUtil.ts.
 // ──────────────────────────────────────────────────────────────────────────────
 
 type Vista = "comp" | "mat";

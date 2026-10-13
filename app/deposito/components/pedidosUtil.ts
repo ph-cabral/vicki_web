@@ -1,5 +1,5 @@
 // Helpers compartidos entre /deposito/pedidos (Comparativa / Ítems) y la
-// pestaña "Ranking preparadores" de /deposito: parseo de filas WMS Picking e
+// vista de ranking de preparadores (eliminada 2026-10-13): parseo de filas WMS Picking e
 // Ingresados y agrupación por día / semana (lun→dom ISO) / mes.
 import { fmtMes } from "./ui";
 
