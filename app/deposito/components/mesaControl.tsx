@@ -102,6 +102,8 @@ interface MesaControlData {
   total_general: number;
 }
 
+const MIN_MESES_CARTAS = 3;
+
 const isoMes = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
@@ -120,6 +122,18 @@ function mesesDeRango(desde: string, hasta: string): string[] {
 
 export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string }) {
   const seleccionados = useMemo(() => mesesDeRango(desde, hasta), [desde, hasta]);
+  // Las cartas "Total por mes" y "Quedaron para el mes siguiente" muestran
+  // siempre al menos 3 meses: la selección + meses previos hasta completar 3.
+  // KPIs y "Por Controlador" siguen usando solo los meses seleccionados.
+  const mesesCarga = useMemo(() => {
+    const out = [...seleccionados];
+    while (out.length > 0 && out.length < MIN_MESES_CARTAS) {
+      let [y, m] = out[0].split("-").map(Number);
+      if (--m < 1) { m = 12; y--; }
+      out.unshift(`${y}-${String(m).padStart(2, "0")}`);
+    }
+    return out;
+  }, [seleccionados]);
   const [data, setData] = useState<MesaControlData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,11 +163,16 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
   }, []);
 
   useEffect(() => {
-    load(seleccionados);
-  }, [load, seleccionados]);
+    load(mesesCarga);
+  }, [load, mesesCarga]);
 
-  const mesesOrdenados = data?.meses ?? []; // ya viene ascendente desde el back
+  // Solo los meses del filtro (el back puede traer meses previos para las cartas).
+  const selSet = new Set(seleccionados);
+  const mesesOrdenados = (data?.meses ?? []).filter((m) => selSet.has(m)); // ascendente
   const ultimoMes = mesesOrdenados[mesesOrdenados.length - 1] ?? null;
+  const totalSel = (data?.por_mes ?? [])
+    .filter((p) => selSet.has(p.mes))
+    .reduce((s, p) => s + p.total, 0);
 
   // Barras: 1 barra por mes, todos los meses seleccionados.
   const barMesData = (data?.por_mes ?? []).map((p) => ({
@@ -170,11 +189,15 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
   }));
 
   // Barras por controlador: último mes o suma de todos los seleccionados (toggle).
-  const barControladorData = (data?.por_controlador ?? [])
+  const controladoresSel = (data?.por_controlador ?? []).map((c) => ({
+    ...c,
+    totalSel: mesesOrdenados.reduce((s, m) => s + (c.por_mes[m] ?? 0), 0),
+  }));
+  const barControladorData = controladoresSel
     .map((c) => ({
       controlador:
         c.controlador.length > 16 ? c.controlador.slice(0, 16) + "…" : c.controlador,
-      cantidad: verTodos ? c.total : ultimoMes ? (c.por_mes[ultimoMes] ?? 0) : 0,
+      cantidad: verTodos ? c.totalSel : ultimoMes ? (c.por_mes[ultimoMes] ?? 0) : 0,
     }))
     .filter((c) => c.cantidad > 0)
     .sort((a, b) => b.cantidad - a.cantidad);
@@ -185,7 +208,7 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
   // viejo de CodControlador1==CodControlador2 duplicando el crédito.
   const sumaControladores = barControladorData.reduce((s, c) => s + c.cantidad, 0);
   const totalRef = verTodos
-    ? data?.total_general ?? 0
+    ? totalSel
     : (ultimoMes && data?.por_mes.find((p) => p.mes === ultimoMes)?.total) ?? 0;
   const dobleControl = sumaControladores - totalRef;
 
@@ -197,7 +220,7 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
           sub="Renglones controlados (exacto) por Controlador — Ven_PedImpresoCP / venfer_pedidoReng (EVERWEAR)"
         />
         <button
-          onClick={() => load(seleccionados)}
+          onClick={() => load(mesesCarga)}
           disabled={loading}
           className="flex items-center gap-1.5 text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 disabled:opacity-40 text-sm"
         >
@@ -239,11 +262,11 @@ export function MesaControlTab({ desde, hasta }: { desde: string; hasta: string 
       ) : (
         <>
           <Grid cols={4}>
-            <KPI label="Total controlado" value={fmtNum(data.total_general)} accent="yellow" />
-            <KPI label="Meses" value={fmtNum(data.meses.length)} accent="neutral" />
+            <KPI label="Total controlado" value={fmtNum(totalSel)} accent="yellow" />
+            <KPI label="Meses" value={fmtNum(mesesOrdenados.length)} accent="neutral" />
             <KPI
               label="Controladores"
-              value={fmtNum(data.por_controlador.length)}
+              value={fmtNum(controladoresSel.filter((c) => c.totalSel > 0).length)}
               accent="neutral"
             />
             <KPI
