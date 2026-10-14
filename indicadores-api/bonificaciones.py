@@ -609,3 +609,114 @@ def ajuste_por_mes(dia_desde: int, dia_hasta: int,
         cur.close()
         conn.close()
     return _guardar(key, out)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ajuste POR VENDEDOR del comprobante (2026-10-14)
+# ──────────────────────────────────────────────────────────────────────────
+# Para el ranking de vendedores de /ventas/lineas con "Todas las líneas".
+# /ventas/vendedor muestra por vendedor la venta NETA (renglones de artículo
+# + ND/NC por concepto, los 13 comprobantes de la lista blanca); el ranking
+# de /ventas/lineas sumaba sólo los renglones de artículo y le quedaba por
+# encima exactamente por las bonificaciones. Mismo eje (cab.vendedor), mismas
+# sub-empresas y mismo filtro de conceptos que `ajuste_ventanas`, así la suma
+# por vendedor es el ajuste que usa /ventas/vendedor.
+#
+# Una sola pasada por sub-empresa con cuatro SUM(CASE): acumulado, mes en
+# curso, mes pasado y anterior. El BETWEEN externo es la unión de todas
+# (sargable sobre cab.FecMovim); el recorte por vendedor no consume `?`.
+_SQL_AJUSTE_VEND_TODOS = f"""
+SELECT
+    cab.vendedor AS Vendedor,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Acum,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Mes,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS M1,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS M2
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE + "GROUP BY cab.vendedor\n"
+
+_SQL_AJUSTE_VEND_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_VEND_TODOS)
+
+
+def ajuste_por_vendedor(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
+                        dias_m1: tuple[int, int], dias_m2: tuple[int, int],
+                        dias_total: tuple[int, int],
+                        vendedor: int | None = None,
+                        forzar: bool = False) -> dict[int, tuple[float, float, float, float]]:
+    """{codigo_vendedor_del_comprobante: (acum, mes, m1, m2)} ya con signo
+    (negativo = bonificación). Las dos sub-empresas sumadas. `dias_total` es
+    la unión de las cuatro ventanas (la que va al WHERE). Las ventanas
+    deshabilitadas viajan como (0, -1) y suman cero. Cache 15 min."""
+    key = ("aj-vend", dias_acum, dias_mes, dias_m1, dias_m2, dias_total,
+           clave_vendedor(vendedor))
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    sql = recortar_vendedor(_SQL_AJUSTE_VEND_TODOS, vendedor, "cab")
+    sql_p = recortar_vendedor(_SQL_AJUSTE_VEND_TODOS_PRUEBA, vendedor, "cab")
+    params = dias_acum + dias_mes + dias_m1 + dias_m2 + dias_total
+
+    conn, cur = _conn()
+    try:
+        out: dict[int, tuple[float, float, float, float]] = {}
+        for cod, a, m, m1, m2 in unir(filas_dos(cur, sql, sql_p, params),
+                                      (0,), (1, 2, 3, 4)):
+            if cod is None:
+                continue
+            vals = tuple(round(float(_safe(x) or 0), 2) for x in (a, m, m1, m2))
+            if any(vals):
+                out[int(cod)] = vals
+    finally:
+        cur.close()
+        conn.close()
+    return _guardar(key, out)
+
+
+# Apertura (cliente, mes) del ajuste de UN vendedor — para el modal "clientes
+# de este vendedor" de /ventas/lineas con "Todas las líneas", así el total del
+# modal cierra con la fila del ranking (ver ajuste_por_vendedor). Mismo
+# `_WHERE_AJUSTE`, recorte por vendedor del comprobante (+ antecesores). GROUP
+# BY por los enteros CodCliente/FecMovim (pocas filas: una por cliente y día
+# con ND/NC) y el año/mes se arma en Python.
+_SQL_AJUSTE_CLI_VEND = f"""
+SELECT cab.CodCliente AS CodCliente, cab.FecMovim AS Dia, SUM({_AJUSTE_ROW}) AS Importe
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE + "GROUP BY cab.CodCliente, cab.FecMovim\n"
+
+_SQL_AJUSTE_CLI_VEND_PRUEBA = _prueba(_SQL_AJUSTE_CLI_VEND)
+
+
+def ajuste_clientes_de_vendedor(dia_desde: int, dia_hasta: int, vendedor: int,
+                                forzar: bool = False) -> dict[tuple[int, int, int], float]:
+    """{(CodCliente, año, mes): ajuste} del vendedor (y sus antecesores) entre
+    dos enteros Magnus, con signo (negativo = bonificación). Las dos
+    sub-empresas sumadas. Cache 15 min."""
+    key = ("aj-cli-vend", int(dia_desde), int(dia_hasta), clave_vendedor(vendedor))
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    sql = recortar_vendedor(_SQL_AJUSTE_CLI_VEND, vendedor, "cab")
+    sql_p = recortar_vendedor(_SQL_AJUSTE_CLI_VEND_PRUEBA, vendedor, "cab")
+
+    conn, cur = _conn()
+    try:
+        out: dict[tuple[int, int, int], float] = {}
+        for cli, dia, importe in filas_dos(cur, sql, sql_p,
+                                           (int(dia_desde), int(dia_hasta))):
+            if cli is None or dia is None:
+                continue
+            f = BASE_DATE + timedelta(days=int(dia))
+            k = (int(cli), f.year, f.month)
+            out[k] = out.get(k, 0.0) + float(_safe(importe) or 0)
+    finally:
+        cur.close()
+        conn.close()
+    return _guardar(key, out)

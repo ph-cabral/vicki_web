@@ -66,6 +66,7 @@ from vendedores import (MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor,
                         dueno_de, mapa_dueno, clave as clave_vendedor)
 from subempresas import filas_dos, sql_prueba, unir
 from catalogo_pg import codigos_de_linea_id, linea_por_defecto, linea_por_id
+from bonificaciones import ajuste_clientes_de_vendedor, ajuste_por_vendedor
 from ventas import (
     BASE_DATE,
     _CHUNK_CODIGOS,
@@ -75,6 +76,7 @@ from ventas import (
     _anio_vacio,
     _case_anio_mes,
     _dos_meses_previos,
+    _nombres_clientes,
     _rango_ytd_y_mes,
     _round_anio,
     _safe,
@@ -639,6 +641,25 @@ GROUP BY vc.vendedor
             a[7] += float(_safe(monto_m2) or 0)
             if crudo == dueno and nom:
                 a[8] = nom
+        # NETO (2026-10-14). Con "Todas las líneas" sin subconjunto el monto
+        # tiene que ser el de /ventas/vendedor: renglones de artículo MÁS las
+        # ND/NC por concepto (bonificaciones, ajustes de saldo), que no tienen
+        # artículo y por eso no entran en ninguna consulta de renglones. Se
+        # imputan por el vendedor del comprobante —el mismo eje— y siguen el
+        # mismo colapso al sucesor (dueno_de). En una línea puntual (o en un
+        # subconjunto de líneas) no se suma: una NC por concepto no pertenece
+        # a ninguna línea y repartirla sería un supuesto. Sin unidades: el
+        # concepto no tiene cantidad.
+        neto = lin["id"] == LINEA_TODAS and not lin.get("ids")
+        if neto:
+            for cod_aj, (aj_a, aj_m, aj_1, aj_2) in ajuste_por_vendedor(
+                dias_acum, dias_mes, dias_m1, dias_m2, dias_total, vendedor
+            ).items():
+                a = acum.setdefault(dueno_de(cod_aj), [0.0] * 8 + [None])
+                a[2] += aj_a
+                a[3] += aj_m
+                a[6] += aj_1
+                a[7] += aj_2
         # Un sucesor puede no tener venta propia en el período y quedarse sin
         # nombre (el LEFT JOIN sólo trae el de los códigos que facturaron).
         # Se resuelven TODOS de una, en la misma conexión: nada de un SELECT
@@ -709,6 +730,7 @@ GROUP BY vc.vendedor
             "mesM1": _ym_str(m1_ym) if m1_ym else None,
             "mesM2": _ym_str(m2_ym) if m2_ym else None,
             "linea": _linea_payload(lin),
+            "ajusteIncluido": neto,
             "totalVendedores": len(por_u),
             "totalVendedoresMonto": len(por_m),
             "porUnidades": por_u[:limit_i],
@@ -852,6 +874,44 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
     })
 
 
+def _sumar_ajuste_clientes(filas: list, totales: dict, ajuste: dict,
+                           a_ant: int, a_act: int) -> list:
+    """Suma al detalle por cliente (salida de _matriz) el ajuste por concepto
+    {(cliente, año, mes): monto}. Muta `filas` y `totales`; devuelve `filas`
+    reordenada. Los clientes que en el período sólo tienen ND/NC entran con
+    su nombre del maestro. Sólo monto: el concepto no tiene cantidad."""
+    if not ajuste:
+        return filas
+    por_cli = {int(f["clave"]): f for f in filas}
+    nuevos = sorted({c for (c, _a, _m) in ajuste if c not in por_cli})
+    if nuevos:
+        conn, cur = _conn()
+        try:
+            nombres = _nombres_clientes(cur, nuevos)
+        finally:
+            conn.close()
+        for c in nuevos:
+            f = {"clave": c, "nombre": nombres.get(c),
+                 "anioAnterior": _anio_vacio(), "anioActual": _anio_vacio()}
+            por_cli[c] = f
+            filas.append(f)
+    for (cli, anio, mes), monto in ajuste.items():
+        if anio not in (a_ant, a_act) or not 1 <= mes <= 12:
+            continue
+        clave_anio = "anioActual" if anio == a_act else "anioAnterior"
+        for destino in (por_cli[cli][clave_anio], totales[clave_anio]):
+            destino["monto"] += monto
+            destino["meses"][mes - 1]["monto"] += monto
+    for f in filas:
+        f["anioAnterior"] = _round_anio(f["anioAnterior"])
+        f["anioActual"] = _round_anio(f["anioActual"])
+    totales["anioAnterior"] = _round_anio(totales["anioAnterior"])
+    totales["anioActual"] = _round_anio(totales["anioActual"])
+    filas.sort(key=lambda b: b["anioAnterior"]["monto"] + b["anioActual"]["monto"],
+               reverse=True)
+    return filas
+
+
 def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
                                 forzar: bool = False,
                                 linea: int | None = None,
@@ -891,6 +951,15 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
     # detalle no sumaría lo que muestra la fila.
     sub = recortar_vendedor(sub, int(cod_vendedor))
     filas, totales = _matriz(sub, (d1, d2), a_ant, a_act, lin, d1, d2)
+    # NETO (2026-10-14): con "Todas las líneas" sin subconjunto la fila del
+    # ranking incluye las ND/NC por concepto de este vendedor, así que el
+    # detalle también (por cliente y mes). Ver fetch_top_vendedores.
+    if lin["id"] == LINEA_TODAS and not lin.get("ids"):
+        filas = _sumar_ajuste_clientes(
+            filas, totales,
+            ajuste_clientes_de_vendedor(d1, d2, int(cod_vendedor)),
+            a_ant, a_act,
+        )
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}

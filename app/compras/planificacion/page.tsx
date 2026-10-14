@@ -20,7 +20,8 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //     promedio vendido + faltante vivo − stock dep. 1 − OC pendiente (≥ 0).
 //   Máximo / mínimo = mes más alto / mes más bajo con venta del rango (mismo
 //   criterio que /compras/consumo).
-//   Cantidad = input por fila, arranca en el recomendado; lo editado se guarda
+//   Cantidad = input por fila, arranca en ceil(recomendado × meses a cubrir —
+//   input "Cubrir", persistido por reporte en localStorage); lo editado se guarda
 //   en localStorage por reporte + rango y va al Excel.
 //   Columnas reordenables arrastrando el encabezado; el orden se guarda en
 //   localStorage (planificacion:cols) y el Excel sale en ese mismo orden.
@@ -84,6 +85,8 @@ const lsCantKey = (id: number, hasta: string) => `planificacion:cant:${id}:${has
 // Base de la columna Cantidad por reporte: "rec" = arranca en el recomendado,
 // "cero" = se limpió con el tacho y todo arranca en 0 (persiste hasta restaurar).
 const lsCantBaseKey = (id: number) => `planificacion:cantbase:${id}`;
+// Meses a cubrir por reporte: la cantidad base = ceil(recomendado × meses).
+const lsCubrirKey = (id: number) => `planificacion:cubrir:${id}`;
 type CantBase = "rec" | "cero";
 
 type SortKey = keyof Row | "cantidad" | "cobertura";
@@ -91,7 +94,7 @@ const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "codigo", label: "Código", num: false },
   { k: "detalle", label: "Detalle", num: false },
   { k: "proveedor", label: "Proveedor", num: false, title: "proveedor habitual del artículo; si no tiene, el de la última OC" },
-  { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en el recomendado, editable" },
+  { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en recomendado × meses a cubrir, editable" },
   { k: "cobertura", label: "Cobertura (meses)", num: true, title: "(stock + OC pendiente + cantidad) / prom. vendido — meses que cubre lo que hay más lo que se pide (stock negativo cuenta 0)" },
   { k: "recomendado", label: "Recomendado", num: true, title: "promedio + faltante − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
   { k: "promedio", label: "Prom. vendido", num: true, title: "unidades vendidas en el rango / meses" },
@@ -181,7 +184,34 @@ export default function PlanificacionPage() {
     }
   }, [cantBaseKey]);
 
-  const baseDe = useCallback((r: Row) => (cantBase === "cero" ? 0 : r.recomendado), [cantBase]);
+  // Meses a cubrir (texto del input, persistido por reporte). Vacío/inválido = 1.
+  const [cubrirTxt, setCubrirTxt] = useState("1");
+  const cubrirKey = datos ? lsCubrirKey(datos.reporte.id) : null;
+  useEffect(() => {
+    try {
+      setCubrirTxt((cubrirKey && localStorage.getItem(cubrirKey)) || "1");
+    } catch {
+      setCubrirTxt("1");
+    }
+  }, [cubrirKey]);
+  const cubrir = useMemo(() => {
+    const n = Number(cubrirTxt.replace(",", "."));
+    return Number.isFinite(n) && n >= 0 && cubrirTxt.trim() !== "" ? n : 1;
+  }, [cubrirTxt]);
+  const setCubrir = (v: string) => {
+    setCubrirTxt(v);
+    try {
+      if (!cubrirKey) return;
+      if (v.trim() === "" || v === "1") localStorage.removeItem(cubrirKey);
+      else localStorage.setItem(cubrirKey, v);
+    } catch {}
+  };
+
+  // Base de Cantidad = recomendado (por mes) × meses a cubrir, redondeado hacia arriba.
+  const baseDe = useCallback(
+    (r: Row) => (cantBase === "cero" ? 0 : Math.ceil(r.recomendado * cubrir - 1e-9)),
+    [cantBase, cubrir],
+  );
 
   const cantidadDe = useCallback(
     (r: Row) => (r.codigo in cantEdit ? cantEdit[r.codigo] : baseDe(r)),
@@ -531,6 +561,22 @@ export default function PlanificacionPage() {
             )}
             <div className="ml-auto">
              <div className="flex items-center gap-2">
+              <label
+                className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1 text-zinc-300"
+                title="Meses a cubrir — Cantidad = recomendado × meses"
+              >
+                Cubrir
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  inputMode="decimal"
+                  value={cubrirTxt}
+                  onChange={(e) => setCubrir(e.target.value)}
+                  className="bg-transparent outline-none text-xs w-12 text-right tabular-nums text-yellow-400"
+                />
+                meses
+              </label>
               <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                 <Search size={13} className="text-zinc-500" />
                 <input
