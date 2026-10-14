@@ -406,6 +406,7 @@ model area {
   nombre    String   @unique @db.VarChar(80)
   createdAt DateTime @default(now())
   sectores  sector[]
+  busquedas rrhh_busqueda[]
 
   @@schema("everwear")
 }
@@ -1133,6 +1134,7 @@ model rrhh_busqueda {
   id          Int                         @id @default(autoincrement())
   titulo      String                      @db.VarChar(160)
   puestoId    Int?
+  areaId      Int?
   descripcion String?
   estado      String                      @default("ABIERTA") @db.VarChar(10)
   abiertaEn   DateTime                    @default(now()) @db.Date
@@ -1141,6 +1143,7 @@ model rrhh_busqueda {
   createdAt   DateTime                    @default(now())
   updatedAt   DateTime                    @default(now()) @updatedAt
   puesto      puesto?                     @relation(fields: [puestoId], references: [id], onDelete: SetNull)
+  area        area?                       @relation(fields: [areaId], references: [id], onDelete: SetNull)
   postulantes rrhh_busqueda_postulante[]
 
   @@index([estado, abiertaEn(sort: Desc)])

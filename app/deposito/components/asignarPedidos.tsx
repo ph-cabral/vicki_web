@@ -52,8 +52,6 @@ interface Controlador {
   preasignados: number;
 }
 
-type FiltroEstado = "todos" | "listo" | "prep";
-
 const POLL_MS = 30_000;
 const URGENTE = "__urgente__";
 const QUITAR = "__quitar__";
@@ -285,9 +283,7 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [guardando, setGuardando] = useState<Set<string>>(new Set());
-  const [fPedido, setFPedido] = useState("");
-  const [fCliente, setFCliente] = useState("");
-  const [fEstado, setFEstado] = useState<FiltroEstado>("todos");
+  const [fBusca, setFBusca] = useState("");
 
   const cargar = useCallback(async (silencioso = false) => {
     if (!silencioso) setLoading(true);
@@ -380,28 +376,13 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
     }
   };
 
-  const cuenta = useMemo(
-    () => ({
-      todos: unidades.length,
-      listo: unidades.filter((u) => u.estado === "listo").length,
-      prep: unidades.filter((u) => u.estado === "prep").length,
-    }),
-    [unidades],
-  );
-
   const filtradas = useMemo(() => {
-    const qp = fPedido.trim();
-    const qc = fCliente.trim().toLowerCase();
+    const q = fBusca.trim().toLowerCase();
     const filtrado = unidades.filter((u) => {
-      if (fEstado !== "todos" && u.estado !== fEstado) return false;
-      if (qp && !String(u.nroPedido).includes(qp) && !(u.nroRemito && String(u.nroRemito).includes(qp)))
-        return false;
-      if (qc) {
-        const nom = (u.cliente ?? "").toLowerCase();
-        const cod = u.codCliente != null ? String(u.codCliente) : "";
-        if (!nom.includes(qc) && !cod.includes(qc)) return false;
-      }
-      return true;
+      if (!q) return true;
+      if (String(u.nroPedido).includes(q) || (u.nroRemito && String(u.nroRemito).includes(q))) return true;
+      if ((u.cliente ?? "").toLowerCase().includes(q)) return true;
+      return u.codCliente != null && String(u.codCliente).includes(q);
     });
     // Agrupa por cliente; grupos con rojo primero, luego amarillo, luego el resto (orden original).
     const sev = (u: Unidad) => {
@@ -419,7 +400,7 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
     return [...grupos.values()]
       .sort((a, b) => a.rank - b.rank || a.orden - b.orden)
       .flatMap((g) => g.filas.map((u, i) => ({ u, i })).sort((a, b) => sev(a.u) - sev(b.u) || a.i - b.i).map((x) => x.u));
-  }, [unidades, fPedido, fCliente, fEstado]);
+  }, [unidades, fBusca]);
 
   const claveCliente = (u: Unidad) =>
     u.codCliente != null ? `c${u.codCliente}` : u.cliente ? `n${u.cliente}` : `p${claveDe(u)}`;
@@ -429,75 +410,52 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
   return (
     <div>
       <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800`}>
-        <div className="flex items-start justify-end gap-4 flex-wrap mb-2">
-          <button
-            onClick={() => cargar()}
-            disabled={loading}
-            className="flex items-center gap-1.5 text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 py-1.5 rounded-md border border-zinc-700 disabled:opacity-40 text-sm"
-          >
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refrescar
-          </button>
-        </div>
-
         <div className="flex items-center gap-2 flex-wrap">
           <div className="relative">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
-              value={fPedido}
-              onChange={(e) => setFPedido(e.target.value.replace(/\D/g, ""))}
-              placeholder="Nº pedido"
-              inputMode="numeric"
-              className="h-8 w-36 rounded-md border border-zinc-700 bg-[#171717] pl-7 pr-2 text-[12px] text-zinc-200 outline-none focus:border-yellow-400/70 placeholder:text-zinc-600"
+              value={fBusca}
+              onChange={(e) => setFBusca(e.target.value)}
+              placeholder="Nº pedido o cliente (nombre o nº)"
+              className="h-8 w-72 rounded-md border border-zinc-700 bg-[#171717] pl-7 pr-7 text-[12px] text-zinc-200 outline-none focus:border-yellow-400/70 placeholder:text-zinc-600"
             />
-          </div>
-          <div className="relative">
-            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-            <input
-              value={fCliente}
-              onChange={(e) => setFCliente(e.target.value)}
-              placeholder="Cliente (nombre o nº)"
-              className="h-8 w-64 rounded-md border border-zinc-700 bg-[#171717] pl-7 pr-7 text-[12px] text-zinc-200 outline-none focus:border-yellow-400/70 placeholder:text-zinc-600"
-            />
-            {(fCliente || fPedido) && (
+            {fBusca && (
               <button
-                onClick={() => {
-                  setFCliente("");
-                  setFPedido("");
-                }}
+                onClick={() => setFBusca("")}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200"
-                title="Limpiar filtros"
+                title="Limpiar filtro"
               >
                 <X size={13} />
               </button>
             )}
           </div>
-          <div className="flex rounded-md border border-zinc-700 overflow-hidden text-[12px]">
-            {(
-              [
-                ["todos", "Todos", "text-zinc-200"],
-                ["listo", "Listos", "text-sky-300"],
-                ["prep", "En preparación", "text-yellow-300"],
-              ] as [FiltroEstado, string, string][]
-            ).map(([id, label, color]) => (
-              <button
-                key={id}
-                onClick={() => setFEstado(id)}
-                className={`px-3 h-8 transition-colors ${
-                  fEstado === id ? `bg-zinc-800 ${color} font-semibold` : "text-zinc-500 hover:text-zinc-200"
-                }`}
-              >
-                {label} <span className="text-zinc-500 font-normal">{fmtNum(cuenta[id])}</span>
-              </button>
-            ))}
-          </div>
-          <span className="ml-auto flex items-center gap-3 text-[11px] text-zinc-500">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-sky-400" /> Listo para control
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-yellow-400" /> En preparación
-            </span>
-          </span>
+          {/* Controladores activos: quién está con qué */}
+          {controladores.filter((c) => c.activo).map((c) => (
+            <div
+              key={c.nroOperario}
+              className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-[#171717] px-3 h-8 text-[12px]"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-400" title="Widget abierto" />
+              <span className="text-zinc-200 font-medium">{c.nombre}</span>
+              <span className="text-zinc-500">
+                {c.enCurso
+                  ? `controlando ${c.enCurso.nroPedido}${c.enCurso.nroRemito ? ` · vta ${c.enCurso.nroRemito}` : ""}`
+                  : "libre"}
+              </span>
+              {c.preasignados > 0 && (
+                <span className="rounded-full bg-emerald-500/15 text-emerald-300 px-1.5 text-[10px] font-semibold">
+                  +{c.preasignados} en espera
+                </span>
+              )}
+            </div>
+          ))}
+          <button
+            onClick={() => cargar()}
+            disabled={loading}
+            className="ml-auto flex items-center gap-1.5 text-zinc-400 hover:text-yellow-400 transition-colors px-2.5 h-8 rounded-md border border-zinc-700 disabled:opacity-40 text-sm"
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refrescar
+          </button>
         </div>
       </div>
 
@@ -509,36 +467,6 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
       {aviso && (
         <div className="fixed bottom-6 right-6 z-[70] flex items-center gap-3 bg-[#1f1f1f] border border-red-400/50 rounded-lg px-4 py-2.5 text-sm text-red-300 shadow-lg">
           <AlertTriangle size={15} className="text-red-400" /> {aviso}
-        </div>
-      )}
-
-      {/* Controladores: quién está con qué */}
-      {controladores.some((c) => c.activo) && (
-        <div className="flex gap-2 flex-wrap mt-4">
-          {controladores.filter((c) => c.activo).map((c) => (
-            <div
-              key={c.nroOperario}
-              className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-[#171717] px-3 py-1.5 text-[12px]"
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${c.activo ? "bg-emerald-400" : "bg-zinc-600"}`}
-                title={c.activo ? "Widget abierto" : "Sin widget abierto"}
-              />
-              <span className="text-zinc-200 font-medium">{c.nombre}</span>
-              <span className="text-zinc-500">
-                {c.enCurso
-                  ? `controlando ${c.enCurso.nroPedido}${c.enCurso.nroRemito ? ` · vta ${c.enCurso.nroRemito}` : ""}`
-                  : c.activo
-                    ? "libre"
-                    : "sin widget"}
-              </span>
-              {c.preasignados > 0 && (
-                <span className="rounded-full bg-emerald-500/15 text-emerald-300 px-1.5 text-[10px] font-semibold">
-                  +{c.preasignados} en espera
-                </span>
-              )}
-            </div>
-          ))}
         </div>
       )}
 

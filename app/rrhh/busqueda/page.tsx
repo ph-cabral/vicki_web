@@ -1,7 +1,7 @@
 "use client";
 
 // /rrhh/busqueda — búsquedas de personal.
-//  - Se crean búsquedas (puesto a cubrir, opcionalmente atado a un puesto de /rrhh/puestos).
+//  - Se crean búsquedas (el título es el puesto a cubrir; área opcional).
 //  - Se vinculan postulantes que ya ingresaron por el mail de selección
 //    (rag_system.candidato) buscándolos por nombre / email / DNI / teléfono.
 //  - Por postulante: fechas con tipo (entrevista, preocupacional, psicotécnico,
@@ -30,10 +30,12 @@ type BusquedaRes = {
   id: number; titulo: string; descripcion: string | null; estado: "ABIERTA" | "CERRADA";
   abiertaEn: string; cerradaEn: string | null; puestoId: number | null;
   puesto: { id: number; nombre: string } | null;
+  areaId: number | null; area: { id: number; nombre: string } | null;
   conteo: Record<string, number>;
 };
 type BusquedaDet = BusquedaRes & { postulantes: Postulante[] };
-type Puesto = { id: number; nombre: string };
+type Puesto = { id: number; nombre: string; sector?: { area?: { id: number } | null } | null };
+type Area = { id: number; nombre: string };
 type CandRes = {
   id: number; nombre: string; email: string | null; telefono: string | null; dni: string | null;
   estadosExcluyentes: EstadoPostulante[];
@@ -66,11 +68,12 @@ async function api<T = unknown>(url: string, method: string, body?: unknown): Pr
 export default function BusquedaPage() {
   const [lista, setLista] = useState<BusquedaRes[]>([]);
   const [puestos, setPuestos] = useState<Puesto[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [selId, setSelId] = useState<number | null>(null);
   const [det, setDet] = useState<BusquedaDet | null>(null);
   const [loading, setLoading] = useState(true);
   const [aviso, setAviso] = useState<string | null>(null);
-  const [nueva, setNueva] = useState<{ titulo: string; puestoId: string; descripcion: string } | null>(null);
+  const [nueva, setNueva] = useState<{ titulo: string; areaId: string; descripcion: string } | null>(null);
   const [verCerradas, setVerCerradas] = useState(false);
 
   const avisar = useCallback((m: string) => { setAviso(m); setTimeout(() => setAviso(null), 7000); }, []);
@@ -93,6 +96,7 @@ export default function BusquedaPage() {
   useEffect(() => { cargarLista(); }, [cargarLista]);
   useEffect(() => {
     api<Puesto[]>("/api/rrhh/puestos", "GET").then((p) => setPuestos(Array.isArray(p) ? p : [])).catch(() => {});
+    api<Area[]>("/api/rrhh/areas", "GET").then((a) => setAreas(Array.isArray(a) ? a : [])).catch(() => {});
   }, []);
   useEffect(() => { if (selId != null) cargarDet(selId); else setDet(null); }, [selId, cargarDet]);
 
@@ -102,8 +106,10 @@ export default function BusquedaPage() {
     if (!nueva?.titulo.trim()) return;
     try {
       const b = await api<{ id: number }>("/api/rrhh/busquedas", "POST", {
-        titulo: nueva.titulo, descripcion: nueva.descripcion || null,
-        puestoId: nueva.puestoId ? Number(nueva.puestoId) : null,
+        titulo: nueva.titulo.trim(), descripcion: nueva.descripcion || null,
+        // si el puesto escrito es uno del catálogo, se vincula solo
+        puestoId: puestos.find((p) => p.nombre.toLowerCase() === nueva.titulo.trim().toLowerCase())?.id ?? null,
+        areaId: nueva.areaId ? Number(nueva.areaId) : null,
       });
       setNueva(null);
       await cargarLista();
@@ -135,7 +141,7 @@ export default function BusquedaPage() {
           <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
             <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Búsquedas</span>
             <button
-              onClick={() => setNueva({ titulo: "", puestoId: "", descripcion: "" })}
+              onClick={() => setNueva({ titulo: "", areaId: "", descripcion: "" })}
               className="ml-auto inline-flex items-center gap-1 rounded-lg bg-yellow-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-yellow-300"
             ><Plus size={13} /> Nueva</button>
           </div>
@@ -157,7 +163,7 @@ export default function BusquedaPage() {
                     {b.estado === "CERRADA" && <span className="text-[10px] uppercase text-zinc-500 border border-zinc-700 rounded px-1">Cerrada</span>}
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {b.puesto?.nombre ? `${b.puesto.nombre} · ` : ""}desde {fmtDia(b.abiertaEn)} · {total} postulante{total === 1 ? "" : "s"}
+                    {b.area?.nombre ? `${b.area.nombre} · ` : ""}desde {fmtDia(b.abiertaEn)} · {total} postulante{total === 1 ? "" : "s"}
                     {b.conteo.EN_PROCESO ? ` · ${b.conteo.EN_PROCESO} en proceso` : ""}
                   </div>
                 </button>
@@ -177,7 +183,7 @@ export default function BusquedaPage() {
             <Detalle
               key={det.id}
               det={det}
-              puestos={puestos}
+              areas={areas}
               avisar={avisar}
               onCambio={refrescar}
               onBorrada={() => { setSelId(null); cargarLista(); }}
@@ -188,13 +194,21 @@ export default function BusquedaPage() {
 
       {nueva && (
         <Modal titulo="Nueva búsqueda" onClose={() => setNueva(null)}>
-          <label className="block text-xs text-zinc-500 mb-1">Título *</label>
-          <input className={inputCls} autoFocus value={nueva.titulo} placeholder="Ej: Vendedor mostrador – Sucursal Centro"
-            onChange={(e) => setNueva({ ...nueva, titulo: e.target.value })} />
-          <label className="block text-xs text-zinc-500 mb-1 mt-3">Puesto (opcional)</label>
-          <select className={inputCls} value={nueva.puestoId} onChange={(e) => setNueva({ ...nueva, puestoId: e.target.value })}>
-            <option value="">Sin puesto asociado</option>
-            {puestos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          <label className="block text-xs text-zinc-500 mb-1">Puesto *</label>
+          <input className={inputCls} autoFocus list="busq-puestos" value={nueva.titulo} placeholder="Ej: Vendedor mostrador"
+            onChange={(e) => {
+              const v = e.target.value;
+              const pu = puestos.find((p) => p.nombre.toLowerCase() === v.trim().toLowerCase());
+              // si es un puesto del catálogo, completa el área de su sector
+              setNueva({ ...nueva, titulo: v, areaId: pu?.sector?.area?.id ? String(pu.sector.area.id) : nueva.areaId });
+            }} />
+          <datalist id="busq-puestos">
+            {puestos.map((p) => <option key={p.id} value={p.nombre} />)}
+          </datalist>
+          <label className="block text-xs text-zinc-500 mb-1 mt-3">Área (opcional)</label>
+          <select className={inputCls} value={nueva.areaId} onChange={(e) => setNueva({ ...nueva, areaId: e.target.value })}>
+            <option value="">Sin área</option>
+            {areas.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
           </select>
           <label className="block text-xs text-zinc-500 mb-1 mt-3">Notas</label>
           <textarea className={`${inputCls} min-h-[70px]`} value={nueva.descripcion} onChange={(e) => setNueva({ ...nueva, descripcion: e.target.value })} />
@@ -209,8 +223,8 @@ export default function BusquedaPage() {
 }
 
 // ───────────────────────────── detalle de una búsqueda ─────────────────────────────
-function Detalle({ det, puestos, avisar, onCambio, onBorrada }: {
-  det: BusquedaDet; puestos: Puesto[]; avisar: (m: string) => void;
+function Detalle({ det, areas, avisar, onCambio, onBorrada }: {
+  det: BusquedaDet; areas: Area[]; avisar: (m: string) => void;
   onCambio: () => Promise<void>; onBorrada: () => void;
 }) {
   const [q, setQ] = useState("");
@@ -260,12 +274,12 @@ function Detalle({ det, puestos, avisar, onCambio, onBorrada }: {
           <div className="ml-auto flex items-center gap-2">
             <select
               className="bg-zinc-950 border border-zinc-700 text-zinc-300 text-xs rounded-lg px-2 py-1.5"
-              value={det.puestoId ?? ""}
-              onChange={(e) => cambiarBusqueda({ puestoId: e.target.value ? Number(e.target.value) : null })}
-              title="Puesto asociado"
+              value={det.areaId ?? ""}
+              onChange={(e) => cambiarBusqueda({ areaId: e.target.value ? Number(e.target.value) : null })}
+              title="Área"
             >
-              <option value="">Sin puesto</option>
-              {puestos.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              <option value="">Sin área</option>
+              {areas.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
             </select>
             <button
               onClick={() => cambiarBusqueda({ estado: det.estado === "ABIERTA" ? "CERRADA" : "ABIERTA" })}

@@ -11,7 +11,7 @@ export async function GET() {
     const [busquedas, conteo] = await Promise.all([
       prisma.rrhh_busqueda.findMany({
         orderBy: [{ estado: "asc" }, { abiertaEn: "desc" }, { id: "desc" }],
-        include: { puesto: { select: { id: true, nombre: true } } },
+        include: { puesto: { select: { id: true, nombre: true } }, area: { select: { id: true, nombre: true } } },
       }),
       prisma.rrhh_busqueda_postulante.groupBy({
         by: ["busquedaId", "estado"],
@@ -37,7 +37,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const titulo = String(body?.titulo ?? "").trim();
-  if (!titulo) return NextResponse.json({ error: "Falta el título" }, { status: 400 });
+  if (!titulo) return NextResponse.json({ error: "Falta el puesto" }, { status: 400 });
   const s = await getSession();
   try {
     const b = await prisma.rrhh_busqueda.create({
@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
         titulo,
         descripcion: body?.descripcion ? String(body.descripcion) : null,
         puestoId: body?.puestoId ? Number(body.puestoId) : null,
+        areaId: body?.areaId ? Number(body.areaId) : null,
         creadoPor: s?.nombre ?? null,
       },
     });

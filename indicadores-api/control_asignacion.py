@@ -1190,6 +1190,38 @@ def purgar_cola_obsoleta() -> int:
     return borradas
 
 
+# ── LIBERACIÓN DIARIA DE PREASIGNACIONES (2026-10-14) ─────────────────────
+# A las 00:00 (hora Argentina) se liberan TODAS las preasignaciones (manuales
+# y auto CP2): un controlador que no vuelve (vacaciones, licencia) no puede
+# dejar pedidos trabados esperándolo. No hay cron: cada refrescar_cola borra
+# las creadas antes de la medianoche AR de hoy, así que a partir de las 00 la
+# primera consulta de la cola (tablero o widget) las libera. Las que se
+# carguen después de las 00 valen hasta la próxima medianoche.
+# "creadoEn" es UTC (now() del server PG), por eso el doble AT TIME ZONE.
+_TZ_LIBERA = "America/Argentina/Buenos_Aires"
+
+
+def liberar_preasignaciones_vencidas() -> int:
+    """Borra las preasignaciones anteriores a las 00:00 AR de hoy. Devuelve cuántas."""
+    _asegurar_tabla_reserva()
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        cur.execute(
+            """
+            DELETE FROM deposito.control_preasignacion
+            WHERE "creadoEn" < (date_trunc('day', now() AT TIME ZONE %(tz)s) AT TIME ZONE %(tz)s) AT TIME ZONE 'UTC'
+            """,
+            {"tz": _TZ_LIBERA},
+        )
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
 def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     """Agrega a deposito.control_asignacion los pedidos Abiertos(Magnus) ∩ en
     PLAYA_PEDIDOS(WMS) que todavía no estén en la cola (ON CONFLICT DO
@@ -1221,6 +1253,10 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     global _cola_refrescada
     import time as _t
     _cola_refrescada = _t.monotonic()
+    try:
+        liberar_preasignaciones_vencidas()
+    except Exception:  # noqa: BLE001 — sin la liberación la cola sigue
+        pass
     purgar_cola_obsoleta()
     completar_historial()
     candidatos = fetch_pedidos_listos_para_control(limit) + fetch_acopio_vueltas_espera_control(limit)
