@@ -20,7 +20,8 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //     promedio vendido − stock dep. 1 − OC pendiente (≥ 0).
 //   Máximo / mínimo = mes más alto / mes más bajo con venta del rango (mismo
 //   criterio que /compras/consumo).
-//   Cantidad = input por fila, arranca en ceil(recomendado × meses a cubrir —
+//   Recomendado en vivo = ceil(max(0, promedio × meses a cubrir − stock − OC)).
+//   Cantidad = input por fila, arranca en el recomendado (con meses a cubrir —
 //   input "Cubrir", persistido por reporte en localStorage); lo editado se guarda
 //   en localStorage por reporte + rango y va al Excel.
 //   Columnas reordenables arrastrando el encabezado; el orden se guarda en
@@ -82,7 +83,7 @@ const lsCantKey = (id: number, hasta: string) => `mostradores:planificacion:cant
 // Base de la columna Cantidad por reporte: "rec" = arranca en el recomendado,
 // "cero" = se limpió con el tacho y todo arranca en 0 (persiste hasta restaurar).
 const lsCantBaseKey = (id: number) => `mostradores:planificacion:cantbase:${id}`;
-// Meses a cubrir por reporte: la cantidad base = ceil(recomendado × meses).
+// Meses a cubrir por reporte: el recomendado = ceil(promedio × meses − stock − OC).
 const lsCubrirKey = (id: number) => `mostradores:planificacion:cubrir:${id}`;
 type CantBase = "rec" | "cero";
 
@@ -90,9 +91,9 @@ type SortKey = keyof Row | "cantidad" | "cobertura";
 const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "codigo", label: "Código", num: false },
   { k: "detalle", label: "Detalle", num: false },
-  { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en recomendado × meses a cubrir, editable" },
+  { k: "cantidad", label: "Cantidad", num: true, title: "cantidad a pedir — arranca en el recomendado (ya con los meses a cubrir), editable" },
   { k: "cobertura", label: "Cobertura (meses)", num: true, title: "(stock + OC pendiente + cantidad) / prom. vendido — meses que cubre lo que hay más lo que se pide (stock negativo cuenta 0)" },
-  { k: "recomendado", label: "Recomendado", num: true, title: "promedio − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
+  { k: "recomendado", label: "Recomendado", num: true, title: "promedio × meses a cubrir − stock − OC pendiente (mínimo 0, redondeado hacia arriba)" },
   { k: "promedio", label: "Prom. vendido", num: true, title: "unidades vendidas en el rango / meses" },
   { k: "maximo", label: "Máximo", num: true, title: "mes con más unidades vendidas del rango" },
   { k: "minimo", label: "Mínimo", num: true, title: "mes con menos unidades vendidas del rango (sin contar meses sin venta)" },
@@ -202,10 +203,20 @@ export default function PlanificacionPage() {
     } catch {}
   };
 
-  // Base de Cantidad = recomendado (por mes) × meses a cubrir, redondeado hacia arriba.
+  // Recomendado en vivo = ceil(max(0, promedio × meses a cubrir − max(stock,0) − OC pendiente)).
+  // Con Cubrir = 1 coincide con el que calcula el back.
+  const recDe = useCallback(
+    (r: Row) => {
+      const neto = r.promedio * cubrir - Math.max(r.stock, 0) - r.oc;
+      return neto > 0 ? Math.ceil(neto - 1e-9) : 0;
+    },
+    [cubrir],
+  );
+
+  // Base de Cantidad = recomendado (ya incluye los meses a cubrir).
   const baseDe = useCallback(
-    (r: Row) => (cantBase === "cero" ? 0 : Math.ceil(r.recomendado * cubrir - 1e-9)),
-    [cantBase, cubrir],
+    (r: Row) => (cantBase === "cero" ? 0 : recDe(r)),
+    [cantBase, recDe],
   );
 
   const cantidadDe = useCallback(
@@ -313,7 +324,7 @@ export default function PlanificacionPage() {
     if (!datos) return [];
     const q = buscar.trim().toLowerCase();
     let rs = datos.rows;
-    if (soloRec) rs = rs.filter((r) => r.recomendado > 0 || cantidadDe(r) > 0);
+    if (soloRec) rs = rs.filter((r) => recDe(r) > 0 || cantidadDe(r) > 0);
     if (q)
       rs = rs.filter(
         (r) =>
@@ -328,7 +339,9 @@ export default function PlanificacionPage() {
           ? coberturaDe(r) ?? Number.POSITIVE_INFINITY
           : k === "minimo"
             ? r.minimo ?? 0
-            : r[k] ?? "";
+            : k === "recomendado"
+              ? recDe(r)
+              : r[k] ?? "";
     return [...rs].sort((a, b) => {
       const va = val(a);
       const vb = val(b);
@@ -340,7 +353,7 @@ export default function PlanificacionPage() {
       }
       return String(va).localeCompare(String(vb), "es") * dir;
     });
-  }, [datos, buscar, soloRec, sort, cantidadDe, coberturaDe]);
+  }, [datos, buscar, soloRec, sort, cantidadDe, coberturaDe, recDe]);
 
   const nombreNivel = useCallback(
     (n: 1 | 2 | 3 | 4, id: number) => niveles?.nombres[String(n) as "1"]?.[String(id)] ?? `#${id}`,
@@ -362,7 +375,7 @@ export default function PlanificacionPage() {
               const c = coberturaDe(r);
               return c == null ? "" : Math.round(c * 10) / 10;
             })()
-          : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : r[k];
+          : k === "detalle" ? r.detalle || "" : k === "minimo" ? r.minimo ?? "" : k === "recomendado" ? recDe(r) : r[k];
     const filas = visibles.map((r) => {
       const o: Record<string, string | number> = {};
       for (const k of orden) o[COL_BY[k].label] = valorXls(r, k);
@@ -374,18 +387,18 @@ export default function PlanificacionPage() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
     XLSX.writeFile(wb, `planificacion_mostrador_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
-  }, [datos, visibles, cantidadDe, coberturaDe, orden]);
+  }, [datos, visibles, cantidadDe, coberturaDe, recDe, orden]);
 
   const tot = useMemo(
     () => ({
-      conRec: visibles.filter((r) => r.recomendado > 0).length,
-      rec: visibles.reduce((s, r) => s + r.recomendado, 0),
+      conRec: visibles.filter((r) => recDe(r) > 0).length,
+      rec: visibles.reduce((s, r) => s + recDe(r), 0),
       cant: visibles.reduce((s, r) => s + cantidadDe(r), 0),
       // Total en vivo = Σ cantidad × costo unitario de venta (PrecioBase) de TODOS los artículos
       // del reporte (no depende del buscador ni de "Solo a reponer").
       monto: (datos?.rows ?? []).reduce((s, r) => s + cantidadDe(r) * (r.precio || 0), 0),
     }),
-    [visibles, datos, cantidadDe],
+    [visibles, datos, cantidadDe, recDe],
   );
 
   const celda = (r: Row, k: SortKey) => {
@@ -428,9 +441,9 @@ export default function PlanificacionPage() {
         return (
           <td
             key={k}
-            className={`px-2 py-1.5 text-right tabular-nums font-semibold ${r.recomendado > 0 ? "text-green-400" : "text-zinc-600"}`}
+            className={`px-2 py-1.5 text-right tabular-nums font-semibold ${recDe(r) > 0 ? "text-green-400" : "text-zinc-600"}`}
           >
-            {fmtNum(r.recomendado)}
+            {fmtNum(recDe(r))}
           </td>
         );
       case "promedio":
@@ -553,7 +566,7 @@ export default function PlanificacionPage() {
              <div className="flex items-center gap-2">
               <label
                 className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1 text-zinc-300"
-                title="Meses a cubrir — Cantidad = recomendado × meses"
+                title="Meses a cubrir — Recomendado = promedio × meses − stock − OC"
               >
                 Cubrir
                 <input
