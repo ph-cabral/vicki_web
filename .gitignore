@@ -89,3 +89,6 @@ telefonia-gw/datos/
 android/*/build/
 android/*/.cache/
 android/*/test/harness/target/
+android/*
+*.jks
+*.keystore

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { Copy, Download, KeyRound, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type Dispositivo = {
@@ -14,6 +14,121 @@ type Dispositivo = {
   ultimoHandshake: string | null;
   deshabilitado: boolean;
 };
+
+type UsuarioLite = { id: number; nombre: string; dni: string; activo: boolean };
+
+function PreAlta({ onGenerado }: { onGenerado: () => void }) {
+  const [usuarios, setUsuarios] = useState<UsuarioLite[]>([]);
+  const [filtro, setFiltro] = useState("");
+  const [uid, setUid] = useState<number | null>(null);
+  const [generando, setGenerando] = useState(false);
+  const [resultado, setResultado] = useState<{ nombre: string; codigo: string } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/admin/usuarios", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setUsuarios((d.items ?? []).filter((u: UsuarioLite) => u.activo)))
+      .catch(() => {});
+  }, []);
+
+  const f = filtro.trim().toLowerCase();
+  const lista = usuarios.filter((u) => !f || u.nombre.toLowerCase().includes(f) || u.dni.includes(f)).slice(0, 8);
+
+  async function generar() {
+    if (!uid) return;
+    setGenerando(true);
+    try {
+      const r = await fetch("/api/admin/vpn/pre-alta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error ?? "Error");
+      setResultado({ nombre: j.nombre, codigo: j.codigo });
+      onGenerado();
+    } catch (e: any) {
+      toast.error(e?.message ?? "No se pudo generar el código");
+    } finally {
+      setGenerando(false);
+    }
+  }
+
+  const mensaje = resultado
+    ? `Hola ${resultado.nombre.split(" ")[0]}! Instalá la app Vicki (APK adjunto). Al abrirla tocá "Pegar código de acceso" ` +
+      `y pegá este código:\n\n${resultado.codigo}\n\nDespués iniciá sesión con tu usuario de siempre.`
+    : "";
+
+  return (
+    <div className="space-y-3 rounded-md border border-border p-3">
+      <div className="flex items-center gap-2 font-medium">
+        <KeyRound className="size-4" /> Alta remota (para quien no está en la oficina)
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Genera un código con el acceso VPN del usuario. Se lo mandás junto con el APK; lo pega en la app y listo.
+        Volver a generar invalida el código anterior de esa persona.
+      </p>
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="relative">
+          <input
+            value={filtro}
+            onChange={(e) => {
+              setFiltro(e.target.value);
+              setUid(null);
+              setResultado(null);
+            }}
+            placeholder="Buscar usuario (nombre o DNI)"
+            className="w-64 rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+          />
+          {f && !uid && lista.length > 0 && (
+            <div className="absolute z-10 mt-1 w-64 rounded-md border border-border bg-background shadow">
+              {lista.map((u) => (
+                <button
+                  key={u.id}
+                  onClick={() => {
+                    setUid(u.id);
+                    setFiltro(u.nombre);
+                  }}
+                  className="block w-full px-3 py-1.5 text-left text-sm hover:bg-muted"
+                >
+                  {u.nombre} <span className="text-muted-foreground">· {u.dni}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={generar}
+          disabled={!uid || generando}
+          className="inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+        >
+          {generando ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />} Generar código
+        </button>
+      </div>
+      {resultado && (
+        <div className="space-y-2">
+          <textarea
+            readOnly
+            value={mensaje}
+            rows={7}
+            className="w-full rounded-md border border-border bg-muted/30 p-2 font-mono text-xs"
+          />
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(mensaje).then(
+                () => toast.success("Mensaje copiado"),
+                () => toast.error("No se pudo copiar"),
+              );
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            <Copy className="size-4" /> Copiar mensaje
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function VpnClient() {
   const [items, setItems] = useState<Dispositivo[]>([]);
@@ -78,6 +193,8 @@ export function VpnClient() {
         Cada celular se da de alta solo la primera vez que abre la app en el WiFi de la oficina. Desde afuera entra
         por WireGuard y solo llega a vicki. Dar de baja corta el acceso externo al instante.
       </p>
+
+      <PreAlta onGenerado={load} />
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

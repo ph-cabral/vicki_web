@@ -75,13 +75,15 @@ public class MainActivity extends Activity {
     private LinearLayout panel;
     private ProgressBar spinner;
     private TextView titulo, detalle;
-    private Button boton;
+    private Button boton, botonCodigo;
 
     private volatile boolean enLan;
     private boolean cargado, visible;
     private long creadoEn, enFondoDesde;
     private long ultimoIntentoAlta;
     private volatile boolean altaEnCurso;
+    /** Muestra "Pegar código de acceso" en el panel (estados sin túnel utilizable). */
+    private volatile boolean mostrarPegar;
     private ValueCallback<Uri[]> archivoCb;
     private ConnectivityManager.NetworkCallback redCb;
 
@@ -109,7 +111,10 @@ public class MainActivity extends Activity {
         s.setDatabaseEnabled(true);
         s.setAllowFileAccess(false);
         s.setMediaPlaybackRequiresUserGesture(false);
-        s.setUserAgentString(s.getUserAgentString() + " VickiApp/" + Config.VERSION);
+        // El server deja usar el usuario desde UN solo celular: se identifica con el ANDROID_ID
+        // (la MAC real no es legible en Android moderno; se regenera con un reseteo de fábrica).
+        s.setUserAgentString(s.getUserAgentString() + " VickiApp/" + Config.VERSION
+                + " VickiDisp/" + Red.idDispositivo(this) + "/" + modeloCodificado());
         CookieManager.getInstance().setAcceptCookie(true);
 
         web.addJavascriptInterface(new Puente(), "VickiApp");
@@ -206,6 +211,14 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static String modeloCodificado() {
+        try {
+            return java.net.URLEncoder.encode(Build.MANUFACTURER + " " + Build.MODEL, "UTF-8").replace("+", "%20");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     // ------------------------------------------------------------------ conexión
 
     /** Decide LAN / túnel / sin alta. Serializado en un solo hilo. */
@@ -213,6 +226,7 @@ public class MainActivity extends Activity {
         exec.execute(new Runnable() {
             @Override
             public void run() {
+                mostrarPegar = false;
                 if (!cargado) estado("Conectando…", "", null, true);
 
                 if (TunelService.activo() && Red.alcanzable(2000)) {
@@ -229,9 +243,10 @@ public class MainActivity extends Activity {
                 enLan = false;
 
                 if (VpnConfig.leer(MainActivity.this) == null) {
-                    estado("Activá Vicki en la oficina",
-                            "La primera vez hay que abrir la app conectado al WiFi de la empresa "
-                                    + "e iniciar sesión. Después funciona desde cualquier lado.",
+                    mostrarPegar = true;
+                    estado("Activá Vicki",
+                            "Si estás en la oficina, conectate al WiFi de la empresa e iniciá sesión. "
+                                    + "Si estás afuera, pegá el código de acceso que te mandó sistemas.",
                             "Reintentar", false);
                     return;
                 }
@@ -266,10 +281,11 @@ public class MainActivity extends Activity {
                 boolean huboHandshake = TunelService.ultimoHandshake() > 0;
                 if (!huboHandshake) VpnConfig.marcarSinHandshake(MainActivity.this, true);
                 String err = TunelService.ultimoError;
+                mostrarPegar = !huboHandshake;
                 estado("No se pudo conectar con la oficina",
                         huboHandshake
                                 ? "La VPN conectó pero el servidor no responde."
-                                : "¿Hay internet? Si sigue, abrí la app una vez en el WiFi de la oficina "
+                                : "¿Hay internet? Si sigue, abrí la app una vez en el WiFi de la oficina o pegá un código nuevo "
                                         + "para renovar el acceso." + (err.isEmpty() ? "" : "\n(" + err + ")"),
                         "Reintentar", false);
             }
@@ -409,7 +425,45 @@ public class MainActivity extends Activity {
                 asegurar(true);
             }
         });
+
+        botonCodigo = new Button(this);
+        botonCodigo.setTextColor(Color.parseColor("#facc15"));
+        botonCodigo.setBackgroundColor(Color.TRANSPARENT);
+        botonCodigo.setAllCaps(false);
+        botonCodigo.setTextSize(15);
+        botonCodigo.setText("Pegar código de acceso");
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+        cp.topMargin = dp(8);
+        panel.addView(botonCodigo, cp);
+        botonCodigo.setVisibility(View.GONE);
+        botonCodigo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pegarCodigo();
+            }
+        });
         return panel;
+    }
+
+    /** Alta remota: lee el código del portapapeles (lo generó el admin en /admin/vpn) y guarda la config. */
+    private void pegarCodigo() {
+        try {
+            android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            CharSequence txt = null;
+            if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0)
+                txt = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
+            if (txt == null || txt.length() == 0) {
+                aviso("Copiá primero el código que te mandaron");
+                return;
+            }
+            VpnConfig cfg = VpnConfig.desdeCodigo(txt.toString());
+            cfg.guardar(this);
+            aviso("Código aceptado");
+            asegurar(true);
+        } catch (Exception e) {
+            aviso("Código inválido: copiá el mensaje completo y probá de nuevo");
+        }
     }
 
     private void estado(final String t, final String d, final String textoBoton, final boolean cargando) {
@@ -422,6 +476,7 @@ public class MainActivity extends Activity {
                 detalle.setVisibility(d.isEmpty() ? View.GONE : View.VISIBLE);
                 spinner.setVisibility(cargando ? View.VISIBLE : View.GONE);
                 boton.setVisibility(textoBoton == null ? View.GONE : View.VISIBLE);
+                botonCodigo.setVisibility(mostrarPegar ? View.VISIBLE : View.GONE);
                 if (textoBoton != null) boton.setText(textoBoton);
             }
         });

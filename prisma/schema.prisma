@@ -1179,3 +1179,22 @@ model rrhh_busqueda_evento {
   @@index([fecha])
   @@schema("everwear")
 }
+
+// Un solo celular por usuario en la app Android "Vicki" (sql/usuario_dispositivo.sql,
+// lib/auth/dispositivo.ts). deviceId = ANDROID_ID (la MAC real no se puede leer en
+// Android moderno). ACTIVO = el celular registrado; BLOQUEADO = robado, no entra más.
+model usuario_dispositivo {
+  id           Int       @id @default(autoincrement())
+  usuarioId    Int
+  deviceId     String    @db.VarChar(64)
+  modelo       String?   @db.VarChar(120)
+  estado       String    @default("ACTIVO") @db.VarChar(10)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+  ultimoAcceso DateTime  @default(now()) @db.Timestamptz(6)
+  bloqueadoAt  DateTime? @db.Timestamptz(6)
+  bloqueadoPor Int?
+
+  @@unique([usuarioId, deviceId])
+  @@index([deviceId])
+  @@schema("everwear")
+}

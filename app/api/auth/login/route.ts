@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/auth/password";
 import { signSession, sessionCookieOptions, SESSION_COOKIE } from "@/lib/auth/session";
 import { permisosForUsuario } from "@/lib/auth/permissions";
+import { validarDispositivo } from "@/lib/auth/dispositivo";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,11 @@ export async function POST(req: NextRequest) {
   if (!usuario || !usuario.activo || !verifyPassword(password, usuario.passwordHash)) {
     return NextResponse.json({ error: "DNI o contraseña incorrectos" }, { status: 401 });
   }
+
+  // App Android: un solo celular por usuario (lib/auth/dispositivo.ts). Se valida
+  // DESPUÉS de la contraseña para no revelar nada a quien no la sabe.
+  const disp = await validarDispositivo(usuario.id, req.headers.get("user-agent"), true);
+  if (!disp.ok) return NextResponse.json({ error: disp.error }, { status: disp.status });
 
   const rol = usuario.rol === "ADMIN" ? "ADMIN" : "USUARIO";
   const { mods, vistas, ocultos } = await permisosForUsuario({

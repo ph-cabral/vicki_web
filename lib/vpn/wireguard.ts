@@ -164,3 +164,19 @@ export async function bajaDispositivo(id: string): Promise<void> {
   if (!peers[0] || !parseComentario(peers[0].comment)) throw new RouterOSError("No es un dispositivo de la app");
   await rosRun([["/interface/wireguard/peers/remove", `=.id=${id}`]]);
 }
+
+/**
+ * Pre-alta remota hecha por un admin para un usuario que todavía no pasó por la
+ * oficina (ej. viajantes). Reutiliza altaDispositivo con un id de dispositivo
+ * "pre<uid>": volver a generar el código reemplaza la clave anterior (el código
+ * viejo deja de servir). Devuelve el código que el usuario pega en la app.
+ */
+export async function preAltaUsuario(p: { uid: number; nombreUsuario: string }): Promise<string> {
+  const cfg = await altaDispositivo({
+    uid: p.uid,
+    nombreUsuario: p.nombreUsuario,
+    dev: `pre${p.uid}`,
+    modelo: "pre-alta admin",
+  });
+  return "VICKI1." + Buffer.from(JSON.stringify(cfg), "utf8").toString("base64url");
+}

@@ -46,6 +46,16 @@ final class VpnConfig {
         return v;
     }
 
+    /** Código "VICKI1.<base64url del JSON>" generado por el admin en /admin/vpn (alta remota). */
+    static VpnConfig desdeCodigo(String codigo) throws Exception {
+        String t = codigo == null ? "" : codigo.trim();
+        int i = t.indexOf("VICKI1.");
+        if (i < 0) throw new Exception("El código no es válido");
+        t = t.substring(i + 7).replaceAll("[^A-Za-z0-9_-]", "");
+        byte[] b = android.util.Base64.decode(t, android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING);
+        return desdeJson(new JSONObject(new String(b, "UTF-8")));
+    }
+
     void guardar(Context c) {
         StringBuilder ips = new StringBuilder();
         for (String s : allowedIps) {

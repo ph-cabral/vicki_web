@@ -16,6 +16,7 @@ import { legajoUpdateSchema } from "@/lib/rrhh/legajoSchema";
 import { SectorSelect } from "./SectorSelect";
 import { LugarSelect } from "./LugarSelect";
 import { ConvenioSelect } from "./ConvenioSelect";
+import { DispositivoPanel } from "./DispositivoPanel";
 
 const ESTADO_CLASS: Record<string, string> = {
   ACTIVO: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
@@ -201,6 +202,7 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
     () => [
       ...SECTIONS.map((s) => ({ id: s.id, label: s.label, kind: "section" as const })),
       ...RELATIONS.map((r) => ({ id: r.key, label: r.label, kind: "relation" as const })),
+      { id: "dispositivo", label: "Celular (app)", kind: "section" as const },
     ],
     []
   );
@@ -379,6 +381,11 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
           </div>
         )}
         {relation && <RelationTab relation={relation} />}
+        {active === "dispositivo" && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <DispositivoPanel legajoId={id} />
+          </div>
+        )}
       </form>
       </div>
     </FormProvider>
