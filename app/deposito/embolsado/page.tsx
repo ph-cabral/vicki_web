@@ -175,6 +175,7 @@ export default function DepositoEmbolsadoPage() {
     setErrorUsuario(null);
     setCandidatos([]);
   }
+  
 
   /** `quien` = lo tipeado, o el número de un candidato elegido. */
   async function tomar(fila: Fila, quien: string) {
