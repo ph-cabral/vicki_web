@@ -68,6 +68,7 @@ interface FaltRow {
   PrimerDia: string | null; // primera aparición en el rango
   Vivo?: number; // 1 = sigue pendiente; 0 = histórico ya entregado/cubierto
   EstadoPedido?: string | null; // Pedido_Estados de Magnus (deposito.py); ausente si indicadores-api es viejo
+  Cancelado?: boolean; // renglón cancelado (EstadoRenglon=4): entra a compras sin marca "sin existencia"
   TipoArticulo?: string | null; // "Nacional"/"Importado"/"Fabrica" (StkFer_Articulos.NacionalImportado, Magnus) o "" si no está cargado
 }
 // Fila cruda de GET /deposito/faltante-pedidos (indicadores-api/deposito.py,
@@ -126,6 +127,7 @@ function mapFaltantePedido(r: FaltantePedidoRow): FaltRow {
     EstadoPedido:
       r.EstadoPedido != null ? (ESTADO_PEDIDO_TXT[r.EstadoPedido] ?? String(r.EstadoPedido)) : null,
     TipoArticulo: r.TipoArticulo,
+    Cancelado: r.EstadoRenglon === 4,
   };
 }
 // Lote = una OC puntual dentro del artículo (indicadores-api/compras.py,
@@ -614,7 +616,9 @@ export async function GET(req: NextRequest) {
   const buckets = new Map<string, Bucket>();
   for (const it of faltRows) {
     const cod = String(it.CodArticulo ?? "").trim();
-    if (!sinExistencia.has(keyArt(it.NroPedOrigen, cod))) continue;
+    // Renglón cancelado (EstadoRenglon=4) = faltante de compras directo, sin
+    // depender de la marca manual "sin existencia" de /deposito/faltantes.
+    if (!it.Cancelado && !sinExistencia.has(keyArt(it.NroPedOrigen, cod))) continue;
     const dia = it.PrimerDia ?? it.Fecha ?? fecha ?? "";
     if (!cod || !dia) continue;
     // Todo renglón MARCADO "sin existencia" es demanda vigente aunque Vivo=0:
