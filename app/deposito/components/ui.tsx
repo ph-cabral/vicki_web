@@ -397,6 +397,7 @@ export function Table<T>({
   empty = "Sin datos",
   maxH,
   rowClassName,
+  onRowClick,
 }: {
   cols: Col<T>[];
   rows: T[];
@@ -404,6 +405,7 @@ export function Table<T>({
   empty?: string;
   maxH?: number;
   rowClassName?: (row: T) => string;
+  onRowClick?: (row: T) => void;
 }) {
   const shown = rows.slice(0, max);
   return (
@@ -428,7 +430,8 @@ export function Table<T>({
           {shown.map((row, i) => (
             <tr
               key={i}
-              className={`border-b border-zinc-800/60 hover:bg-[#1f1f1f] transition-colors ${rowClassName ? rowClassName(row) : ""}`}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              className={`border-b border-zinc-800/60 hover:bg-[#1f1f1f] transition-colors ${onRowClick ? "cursor-pointer" : ""} ${rowClassName ? rowClassName(row) : ""}`}
             >
               {cols.map((c) => (
                 <td

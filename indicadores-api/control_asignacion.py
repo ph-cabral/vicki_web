@@ -3249,3 +3249,313 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
     operarios.sort(key=lambda o: (not o["activo"], o["nombre"].lower()))
     return {"dia": d.isoformat(), "esHoy": es_hoy, "operarios": operarios,
             "actualizado": datetime.now().isoformat()}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DETALLE DE UNIDAD + LIBERAR (2026-10-15) — vista "Control por operario"
+# (/deposito/streaming): click en una fila abre un modal con el pedido
+# (cabecera + renglones, Magnus en vivo) y un botón "Liberar".
+#
+# LIBERAR = sacarle la unidad al operario y devolverla a la cola libre (la
+# toma el próximo que aprete Asignar):
+#   · asignada y sin cerrar -> control_asignacion: asignadoA / nroOperarioAsignado
+#     / asignadoEn en NULL (la fila sigue en la cola, libre).
+#   · preasignada (esperando) -> se borra la fila de control_preasignacion.
+# CLIENTE CON VARIOS PEDIDOS: se liberan JUNTAS todas las unidades abiertas
+# (asignadas o preasignadas) de ese cliente que tiene el MISMO operario, y se
+# borra su reserva por cliente (control_reserva_cliente) — si no, la reserva
+# seguiría "tomado" y la cola no se las daría a nadie más.
+# Lo ya cerrado en Magnus no se toca (no se puede liberar un pedido controlado).
+# Seeks: control_asignacion por UNIQUE (nroPedido, nroRemito) y
+# idx_control_asignacion_cliente; Magnus por PK de Cabecera/Reng.
+# ══════════════════════════════════════════════════════════════════════════
+LIBERAR_VENTANA_DIAS = 3     # mismo corte que el tablero: asignaciones abiertas más viejas no se arrastran
+
+_SQL_DET_CAB = """
+SELECT cab.FechaPedido, cc.DetalleCorto, cli.Cliente_Nombre, cab.CodCliente, cab.Prioridad,
+       cab.EstadoPedido, LEFT(cab.Observaciones, 400), cab.CantRenglones
+FROM EVERWEAR.dbo.VenFer_PedidoCabecera cab
+LEFT JOIN MAGNUS_SITD.dbo.Ven_CodComprobante cc ON cab.CompCodigo = cc.CompCodigo
+LEFT JOIN MAGNUS_SITD.dbo.Clientes cli ON cab.CodCliente = cli.CodCliente
+WHERE cab.NroMovVenta = ?
+"""
+
+_SQL_DET_UBIC = """
+SELECT TOP 1 LTRIM(RTRIM(ObsArmadorMovil))
+FROM EVERWEAR.dbo.Ven_PedImpresoCA
+WHERE NroMovVenta = ? AND ObsArmadorMovil IS NOT NULL AND LTRIM(RTRIM(ObsArmadorMovil)) <> ''
+"""
+
+_SQL_DET_RENG_PEDIDO = """
+SELECT r.NroRenglon, LTRIM(RTRIM(r.CodArticu)), r.CantidadPedida, r.CantidadCumplida, r.Estado,
+       ap.Detalle, s.DetalleMedida, s.UnidadMedida
+FROM EVERWEAR.dbo.VenFer_PedidoReng r
+LEFT JOIN EVERWEAR.dbo.StkFer_Articulos s ON s.CodArticulo = r.CodArticu
+LEFT JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+WHERE r.NroMovVenta = ?
+ORDER BY r.NroRenglon
+"""
+
+_SQL_DET_RENG_REMITO = """
+SELECT r.NroRenglon, LTRIM(RTRIM(r.CodArticu)), r.Cantidad, r.Cantidad, r.Estado,
+       ap.Detalle, s.DetalleMedida, s.UnidadMedida
+FROM EVERWEAR.dbo.VenFer_RmtoReng r
+LEFT JOIN EVERWEAR.dbo.StkFer_Articulos s ON s.CodArticulo = r.CodArticu
+LEFT JOIN EVERWEAR.dbo.StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
+WHERE r.NroMovVenta = ?
+ORDER BY r.NroRenglon
+"""
+
+
+def _pg_unidad(cur, ped: int, rem: int) -> dict | None:
+    cur.execute(
+        """
+        SELECT id, "codCliente", cliente, "nroOperarioAsignado", "asignadoA",
+               ("asignadoEn" AT TIME ZONE 'UTC' AT TIME ZONE %s) AS asignado_local,
+               "cerradoEn", ubicacion, ot, "nroArmador", "nombreArmador"
+        FROM deposito.control_asignacion
+        WHERE "nroPedido" = %s AND "nroRemito" = %s
+        """,
+        (_TZ_LOCAL, ped, rem),
+    )
+    row = cur.fetchone()
+    return dict(zip([c[0] for c in cur.description], row)) if row else None
+
+
+def _pg_preasignacion(cur, ped: int, rem: int) -> dict | None:
+    cur.execute(
+        'SELECT "nroOperario", "asignadoA", "codCliente", cliente FROM deposito.control_preasignacion '
+        'WHERE "nroPedido" = %s AND "nroRemito" = %s',
+        (ped, rem),
+    )
+    row = cur.fetchone()
+    return dict(zip([c[0] for c in cur.description], row)) if row else None
+
+
+def _candidatas_liberar(cur, op: int, cod_cliente, ped: int, rem: int) -> list[dict]:
+    """Unidades abiertas que tiene `op` del cliente (asignadas sin cerrar y
+    preasignadas) + la unidad clickeada aunque no tenga cliente. Sin filtrar
+    contra Magnus todavía (eso lo hace _filtrar_abiertas)."""
+    cur.execute(
+        """
+        SELECT id, "nroPedido", "nroRemito", cliente, "codCliente", 'asignado' AS origen
+        FROM deposito.control_asignacion
+        WHERE "nroOperarioAsignado" = %(op)s AND "asignadoEn" IS NOT NULL AND "cerradoEn" IS NULL
+          AND (
+                ("codCliente" = %(cod)s::int AND "asignadoEn" > now() - make_interval(days => %(dias)s))
+                OR ("nroPedido" = %(ped)s AND "nroRemito" = %(rem)s)
+              )
+        UNION ALL
+        SELECT NULL, "nroPedido", "nroRemito", cliente, "codCliente", 'preasignado'
+        FROM deposito.control_preasignacion
+        WHERE "nroOperario" = %(op)s
+          AND ("codCliente" = %(cod)s::int OR ("nroPedido" = %(ped)s AND "nroRemito" = %(rem)s))
+        """,
+        {"op": op, "cod": cod_cliente, "ped": ped, "rem": rem, "dias": LIBERAR_VENTANA_DIAS},
+    )
+    cols = [c[0] for c in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _filtrar_abiertas(cands: list[dict]) -> list[dict]:
+    """Descarta las asignadas que Magnus ya cerró (no se pueden liberar). Un
+    único lote por PK para pedidos y otro para remitos."""
+    asignadas = [c for c in cands if c["origen"] == "asignado"]
+    if not asignadas:
+        return cands
+    vivo = _fetch_cierre_y_lineas(
+        sorted({int(c["nroPedido"]) for c in asignadas if not c["nroRemito"]}),
+        sorted({int(c["nroRemito"]) for c in asignadas if c["nroRemito"]}),
+    )
+    out = []
+    for c in cands:
+        if c["origen"] == "asignado":
+            v = vivo["remito"].get(int(c["nroRemito"])) if c["nroRemito"] else vivo["pedido"].get(int(c["nroPedido"]))
+            if v and v["cerradoEn"] is not None:
+                continue
+        out.append(c)
+    return out
+
+
+def _nombre_articulo(patron, medida, unidad) -> str:
+    return " ".join(" ".join(str(x or "").strip() for x in (patron, medida, unidad)).split())
+
+
+def fetch_detalle_unidad(nro_pedido: int, nro_remito: int = 0) -> dict:
+    """Modal de "Control por operario": cabecera + renglones de la unidad
+    (pedido, o vuelta de acopio si nro_remito > 0), su estado de asignación y
+    las unidades que se liberarían juntas. Todo por PK. Sólo lectura."""
+    _asegurar_tabla_reserva()
+    ped, rem = int(nro_pedido), int(nro_remito or 0)
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        u = _pg_unidad(cur, ped, rem)
+        pre = _pg_preasignacion(cur, ped, rem)
+    finally:
+        conn.close()
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        cur.execute(_SQL_DET_CAB, (ped,))
+        cab = cur.fetchone()
+        if cab is None:
+            raise LookupError("Pedido no encontrado en Magnus")
+        cur.execute(_SQL_DET_UBIC, (ped,))
+        ub = cur.fetchone()
+        cur.execute(_SQL_DET_RENG_REMITO if rem else _SQL_DET_RENG_PEDIDO, (rem or ped,))
+        rengs = cur.fetchall()
+    finally:
+        conn.close()
+
+    vivo = _fetch_cierre_y_lineas([] if rem else [ped], [rem] if rem else [])
+    v = vivo["remito"].get(rem) if rem else vivo["pedido"].get(ped)
+    cerrado = (u or {}).get("cerradoEn") or (v["cerradoEn"] if v else None)
+
+    f_ped, tipo, cliente, cod_cliente, prioridad, est_ped, obs, cant_reng = cab
+    cod_cliente = int(cod_cliente) if cod_cliente is not None else None
+
+    op = None
+    nombre_op = None
+    if u and u["nroOperarioAsignado"] is not None and u.get("asignado_local") is not None:
+        op, nombre_op = int(u["nroOperarioAsignado"]), (u["asignadoA"] or "").strip() or None
+    elif pre and pre["nroOperario"] is not None:
+        op, nombre_op = int(pre["nroOperario"]), (pre["asignadoA"] or "").strip() or None
+
+    if cerrado is not None:
+        estado = "controlado"
+    elif u and op is not None and u.get("asignado_local") is not None:
+        estado = "en_proceso"
+    elif pre and pre["nroOperario"] is not None:
+        estado = "esperando"
+    elif pre:
+        estado = "urgente"
+    else:
+        estado = "libre"
+
+    grupo: list[dict] = []
+    if estado in ("en_proceso", "esperando") and op is not None:
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cands = _candidatas_liberar(cur, op, (u or {}).get("codCliente") or cod_cliente, ped, rem)
+        finally:
+            conn.close()
+        grupo = [
+            {"nroPedido": int(c["nroPedido"]), "nroRemito": int(c["nroRemito"] or 0),
+             "cliente": c["cliente"], "origen": c["origen"]}
+            for c in _filtrar_abiertas(cands)
+        ]
+        grupo.sort(key=lambda g: (g["nroPedido"], g["nroRemito"]))
+
+    renglones = [
+        {
+            "renglon": int(r[0]), "codArticulo": r[1], "pedida": float(r[2] or 0),
+            "cumplida": float(r[3] or 0), "anulado": (not rem and r[4] == 4),
+            "descripcion": _nombre_articulo(r[5], r[6], r[7]) or r[1],
+        }
+        for r in rengs[:500]
+    ]
+    return {
+        "nroPedido": ped, "nroRemito": rem,
+        "fecha": (BASE_DATE + timedelta(days=int(f_ped))).isoformat() if f_ped else None,
+        "tipo": (tipo or "").strip() or None,
+        "cliente": ((cliente or "").strip() or (u or {}).get("cliente")),
+        "codCliente": cod_cliente,
+        "prioridad": int(prioridad) if prioridad is not None else None,
+        "estadoPedido": int(est_ped) if est_ped is not None else None,
+        "observaciones": (obs or "").strip() or None,
+        "ubicacion": (ub[0] if ub else None) or (u or {}).get("ubicacion"),
+        "nombreArmador": (u or {}).get("nombreArmador"),
+        "lineas": len([r for r in renglones if not r["anulado"]]),
+        "unidades": sum(r["pedida"] for r in renglones if not r["anulado"]),
+        "estado": estado,
+        "nroOperario": op, "operario": nombre_op,
+        "asignadoEn": (u["asignado_local"].isoformat() if u and u.get("asignado_local") else None),
+        "cerradoEn": cerrado.isoformat() if cerrado else None,
+        "puedeLiberar": estado in ("en_proceso", "esperando"),
+        "grupo": grupo,
+        "renglones": renglones,
+    }
+
+
+def liberar_unidad(nro_pedido: int, nro_remito: int = 0, usuario: str | None = None) -> dict:
+    """Libera la unidad y TODAS las abiertas del mismo cliente que tenga el
+    mismo operario (ver bloque DETALLE + LIBERAR). ValueError si no está
+    asignada/preasignada o si Magnus ya la cerró."""
+    _asegurar_tabla_reserva()
+    ped, rem = int(nro_pedido), int(nro_remito or 0)
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        u = _pg_unidad(cur, ped, rem)
+        pre = _pg_preasignacion(cur, ped, rem)
+        asignada = bool(u and u["nroOperarioAsignado"] is not None and u.get("asignado_local") is not None)
+        if asignada:
+            op, nombre = int(u["nroOperarioAsignado"]), u["asignadoA"]
+        elif pre and pre["nroOperario"] is not None:
+            op, nombre = int(pre["nroOperario"]), pre["asignadoA"]
+        elif pre:
+            # Urgente sin operario: sólo se quita la marca.
+            cur.execute('DELETE FROM deposito.control_preasignacion WHERE "nroPedido" = %s AND "nroRemito" = %s',
+                        (ped, rem))
+            conn.commit()
+            return {"nroOperario": None, "operario": None, "codCliente": None,
+                    "liberados": [{"nroPedido": ped, "nroRemito": rem, "cliente": pre["cliente"], "origen": "preasignado"}],
+                    "reservaLiberada": False}
+        else:
+            raise ValueError("No está asignado a ningún operario")
+        cod = (u or {}).get("codCliente") or (pre or {}).get("codCliente")
+        cands = _candidatas_liberar(cur, op, cod, ped, rem)
+    finally:
+        conn.close()
+
+    abiertas = _filtrar_abiertas(cands)
+    if asignada and not any(c["origen"] == "asignado" and int(c["nroPedido"]) == ped
+                            and int(c["nroRemito"] or 0) == rem for c in abiertas):
+        raise ValueError("Ya fue controlado en Magnus: no se puede liberar")
+
+    ids = [int(c["id"]) for c in abiertas if c["origen"] == "asignado"]
+    pres = [(int(c["nroPedido"]), int(c["nroRemito"] or 0)) for c in abiertas if c["origen"] == "preasignado"]
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        liberadas_ids: set[int] = set()
+        if ids:
+            cur.execute(
+                'UPDATE deposito.control_asignacion '
+                'SET "asignadoA" = NULL, "nroOperarioAsignado" = NULL, "asignadoEn" = NULL '
+                'WHERE id = ANY(%s) AND "nroOperarioAsignado" = %s AND "cerradoEn" IS NULL '
+                'RETURNING id',
+                (ids, op),
+            )
+            liberadas_ids = {int(r[0]) for r in cur.fetchall()}
+        for pp, rr in pres:
+            cur.execute('DELETE FROM deposito.control_preasignacion '
+                        'WHERE "nroPedido" = %s AND "nroRemito" = %s AND "nroOperario" = %s', (pp, rr, op))
+        reserva = False
+        if cod is not None:
+            cur.execute('DELETE FROM deposito.control_reserva_cliente '
+                        'WHERE "codCliente" = %s AND "nroOperario" = %s', (cod, op))
+            reserva = cur.rowcount > 0
+        conn.commit()
+    finally:
+        conn.close()
+
+    liberados = [
+        {"nroPedido": int(c["nroPedido"]), "nroRemito": int(c["nroRemito"] or 0),
+         "cliente": c["cliente"], "origen": c["origen"]}
+        for c in abiertas
+        if c["origen"] == "preasignado" or int(c["id"]) in liberadas_ids
+    ]
+    print(f"[liberar_unidad] {usuario or '?'} liberó {len(liberados)} unidad(es) de op {op} "
+          f"(cliente {cod}): {[(x['nroPedido'], x['nroRemito']) for x in liberados]}", flush=True)
+    return {"nroOperario": op, "operario": nombre, "codCliente": cod,
+            "liberados": sorted(liberados, key=lambda x: (x["nroPedido"], x["nroRemito"])),
+            "reservaLiberada": reserva}

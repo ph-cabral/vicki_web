@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Loader2, AlertTriangle, RefreshCw, Users } from "lucide-react";
 import { PageTitle, Table, Col, Tag, fmtNum } from "./ui";
+import { PedidoControlModal } from "./pedidoControlModal";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Por operario — una tabla por controlador con lo ASIGNADO (Postgres
@@ -92,7 +93,7 @@ const cols: Col<Fila>[] = [
   { key: "hora", label: "Hora", render: (r) => fmtHora(r.hora) },
 ];
 
-function TarjetaOperario({ o }: { o: Operario }) {
+function TarjetaOperario({ o, onAbrir }: { o: Operario; onAbrir: (f: Fila) => void }) {
   const t = o.totales;
   return (
     <div className="bg-[#1A1A1A] border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 min-w-0">
@@ -122,6 +123,7 @@ function TarjetaOperario({ o }: { o: Operario }) {
         maxH={420}
         empty="Sin pedidos en el día"
         rowClassName={(r) => (r.noAsignado ? "bg-red-500/15 hover:bg-red-500/25" : "")}
+        onRowClick={onAbrir}
       />
     </div>
   );
@@ -134,6 +136,7 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const enVuelo = useRef(false);
+  const [abierto, setAbierto] = useState<{ nroPedido: number; nroRemito: number } | null>(null);
 
   useEffect(() => setDia(isoLocal(new Date())), []);
 
@@ -215,16 +218,30 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 mt-5">
             {operarios.map((o) => (
-              <TarjetaOperario key={o.nroOperario} o={o} />
+              <TarjetaOperario
+                key={o.nroOperario}
+                o={o}
+                onAbrir={(f) => setAbierto({ nroPedido: f.nroPedido, nroRemito: f.nroRemito })}
+              />
             ))}
           </div>
           <p className="text-[11px] text-zinc-600 mt-4 leading-relaxed">
             Controlado = cerrado en Magnus. En proceso = asignado y sin cierre. Esperando =
             preasignado, sale cuando termine lo actual (sólo hoy). Items = renglones no anulados.
             Las vueltas de acopio (v) las cierra el puesto de mesa, no la persona: no se marcan en rojo.
-            Punto verde = widget abierto.
+            Punto verde = widget abierto. Click en una fila para ver el pedido y liberarlo
+            (si el cliente tiene más pedidos con el mismo operario, se liberan todos juntos).
           </p>
         </>
+      )}
+
+      {abierto && (
+        <PedidoControlModal
+          nroPedido={abierto.nroPedido}
+          nroRemito={abierto.nroRemito}
+          onClose={() => setAbierto(null)}
+          onLiberado={() => dia && load(dia)}
+        />
       )}
     </div>
   );

@@ -116,7 +116,7 @@ from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
     estado_grupos, decidir_grupo,
     fetch_tablero_asignacion, fetch_controladores, preasignar,
-    fetch_mesa_por_operario,
+    fetch_mesa_por_operario, fetch_detalle_unidad, liberar_unidad,
 )
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
@@ -1904,6 +1904,11 @@ class DecisionGrupoIn(BaseModel):
     codCliente: int
     accion: str   # "tomar" | "esperar"
 
+class LiberarIn(BaseModel):
+    nroPedido: int
+    nroRemito: int = 0
+    usuario: str | None = None
+
 class PreasignarIn(BaseModel):
     nroPedido: int
     nroRemito: int = 0
@@ -2171,6 +2176,31 @@ def deposito_control_asignacion_por_operario(dia: str | None = Query(default=Non
         return fetch_mesa_por_operario(dia)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.get("/deposito/control-asignacion/detalle")
+def deposito_control_asignacion_detalle(nroPedido: int = Query(...), nroRemito: int = Query(default=0)):
+    """Modal de la vista "Control por operario" (/deposito/streaming): cabecera
+    y renglones del pedido (o de la vuelta de acopio si nroRemito > 0), estado
+    de asignación y las unidades que se liberarían juntas. Ver DETALLE + LIBERAR
+    en control_asignacion.py."""
+    try:
+        return fetch_detalle_unidad(nroPedido, nroRemito)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/control-asignacion/liberar")
+def deposito_control_asignacion_liberar(body: LiberarIn):
+    """Libera la unidad (y todas las abiertas del mismo cliente que tenga el
+    mismo operario): vuelve a la cola libre y se borra la reserva por cliente.
+    409 si no está asignada o si Magnus ya la cerró."""
+    try:
+        return liberar_unidad(body.nroPedido, body.nroRemito, body.usuario)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 
