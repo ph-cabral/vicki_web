@@ -107,6 +107,8 @@ function esRutaPublica(pathname: string, method: string): boolean {
   // Botón "Finalizar" del widget Mesa de Control rediseñado (2026-08-04,
   // 1 error por artículo): mismo caso.
   if (method === "POST" && pathname === "/api/deposito/errores-mesa/items") return true;
+  // Hora de control por ítem (widget de Mesa de Control, captura de teclado).
+  if (method === "POST" && pathname === "/api/deposito/errores-mesa/control-items") return true;
   // Widget de escritorio "Errores Calidad" (2026-07-16): mismo caso.
   if (method === "POST" && pathname === "/api/deposito/errores-mesa/calidad") return true;
   // Botón "Asignar" del widget Mesa de Control (2026-07-29): mismo caso.

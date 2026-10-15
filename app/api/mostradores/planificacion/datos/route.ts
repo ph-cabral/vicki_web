@@ -18,7 +18,8 @@ export const maxDuration = 120;
 //   del filtro guardado (niveles Magnus, N meses cerrados):
 //     · vendido / promedio  — pedidos válidos en el rango (indicadores-api)
 //     · máximo / mínimo     — mes más alto / mes más bajo CON venta
-//     · stock               — depósito 1 (central)
+//     · stock               — depósito elegido (?deposito=2 Lilser / 3 Ruta, default 3)
+//     · vendido             — solo pedidos de ese depósito (cabecera.Deposito)
 //     · oc                  — saldo pendiente de OC sin cerrar
 //     · recomendado = ceil(max(0, promedio − max(stock,0) − oc))
 //   Magnus se consulta en UNA sola query por reporte (mismo endpoint que compras).
@@ -40,6 +41,12 @@ export async function GET(req: NextRequest) {
     throw e;
   }
   if (!rep) return NextResponse.json({ error: "Reporte no encontrado" }, { status: 404 });
+
+  const depRaw = req.nextUrl.searchParams.get("deposito");
+  const deposito = depRaw == null ? 3 : Number(depRaw);
+  if (deposito !== 2 && deposito !== 3) {
+    return NextResponse.json({ error: "deposito inválido (2 Lilser / 3 Ruta)" }, { status: 400 });
+  }
 
   const { desde, hasta } = rangoMeses(rep.meses);
 
@@ -70,6 +77,7 @@ export async function GET(req: NextRequest) {
         desde,
         hasta,
         extra: [],
+        deposito,
       }),
     });
     if (!res.ok) {
@@ -103,6 +111,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     reporte: rep,
+    deposito,
     desde,
     hasta,
     ocDesde: api.ocDesde ?? null,

@@ -276,6 +276,7 @@ def fetch_articulos_pedido(nro_pedido: int) -> list[dict]:
 
     codigos = sorted({(it.get("CodArticulo") or "").strip() for it in items if it.get("CodArticulo")})
     nombres: dict[str, str] = {}
+    barras: dict[str, str] = {}
     if codigos:
         conn_ew = get_connection("EVERWEAR")
         try:
@@ -287,16 +288,19 @@ def fetch_articulos_pedido(nro_pedido: int) -> list[dict]:
                 SELECT LTRIM(RTRIM(s.CodArticulo)) AS Cod,
                        ap.Detalle      AS Patron,
                        s.DetalleMedida AS Medida,
-                       s.UnidadMedida  AS Unidad
+                       s.UnidadMedida  AS Unidad,
+                       RTRIM(s.CodBarra) AS CodBarra
                 FROM EVERWEAR.dbo.[StkFer_Articulos]  s
                 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
                 WHERE s.CodArticulo IN ({ph})
                 """,
                 codigos,
             )
-            for cod, patron, medida, unidad in cur_ew.fetchall():
+            for cod, patron, medida, unidad, barra in cur_ew.fetchall():
                 nombre = " ".join(" ".join(str(x or "").strip() for x in (patron, medida, unidad)).split())
                 nombres[(cod or "").strip()] = nombre
+                if (barra or "").strip():
+                    barras[(cod or "").strip()] = barra.strip()
         finally:
             conn_ew.close()
 
@@ -312,6 +316,7 @@ def fetch_articulos_pedido(nro_pedido: int) -> list[dict]:
             "descripcion": nombres.get(cod) or cod,
             "ubicacion": it.get("Ubicacion"),
             "cantidadPedida": it.get("CantPedida"),
+            "codBarra": barras.get(cod),
         })
     return out
 

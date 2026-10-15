@@ -376,6 +376,257 @@ def _truncate(text, maxlen=ROW_MAXLEN):
     return text[: maxlen - 1].rstrip() + "…"
 
 
+# ------------------- Captura de control por ítem (teclado) -------------------
+# (2026-10-14, Calidad) Magnus no guarda la hora a la que se controla cada ítem
+# (sólo el cierre del pedido). El controlador carga cada artículo en Magnus
+# ESCANEANDO el código (~60%) o TIPEÁNDOLO (~40%); en los dos casos son teclas
+# en esta PC. Un hook global de teclado (ctypes, sin librerías externas: así
+# alcanza con publicar este .py, sin recompilar el .exe) arma "palabras" que
+# terminan en Enter/Tab y se queda SOLO con las que coinciden con un artículo
+# (código o código de barras) del pedido asignado. Todo lo demás se descarta en
+# el momento: no se guarda ni se manda lo tipeado, y sin pedido asignado el hook
+# ni procesa teclas. Origen: "escaneo" si la ráfaga es rápida (cada tecla
+# < SCAN_MAX_GAP_S de la anterior, sin Backspace), "manual" si no. Se manda a
+# POST /api/deposito/errores-mesa/control-items → deposito.control_item_log
+# (vista /calidad). La hora la calcula el server (ahora − haceMs): no depende
+# del reloj de la PC. Nunca bloquea ni modifica teclas (siempre CallNextHookEx).
+# Desactivar en una PC: "sin_captura": true en config.json.
+def _norm_code(s):
+    return re.sub(r"[\s\-\./_]", "", str(s or "")).upper()
+
+
+class KeyCapture(object):
+    GAP_CHAR_S = 4.0        # pausa entre teclas que descarta lo tipeado hasta ahí
+    MAX_EDAD_S = 20.0       # Enter más de 20 s después de la última tecla: se ignora
+    SCAN_MAX_GAP_S = 0.08   # tope entre teclas de una ráfaga de lector
+    SCAN_MIN_LEN = 5
+    MAX_TOKEN = 40
+    ENVIO_CADA_S = 2.0
+    MAX_PEND = 500
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._codes = {}          # {código normalizado: codArticulo}
+        self._pedido = None
+        self._operario = None
+        self._q = queue.Queue(maxsize=2000)
+        self._pend = []           # eventos reconocidos, pendientes de enviar
+        self._ev = threading.Event()
+        self._stop = False
+        self._hook_tid = None
+        self._user32 = None
+        self._seq = 0
+        self._buf = []
+        self._ts = []
+        self._corregido = False
+        self.activo = False
+        for fn in (self._hook_loop, self._proc, self._sender):
+            threading.Thread(target=fn, daemon=True).start()
+
+    # ---- API para el widget ----
+    def set_pedido(self, pedido, operario, codes):
+        with self._lock:
+            self._pedido = pedido if codes else None
+            self._operario = operario
+            self._codes = dict(codes or {})
+            self.activo = bool(self._pedido)
+        try:
+            self._q.put_nowait((None, -1, 0.0))     # el hilo de proceso limpia su buffer
+        except Exception:
+            pass
+
+    def stop(self):
+        self._stop = True
+        self.activo = False
+        self._ev.set()
+        try:
+            if self._hook_tid and self._user32:
+                self._user32.PostThreadMessageW(self._hook_tid, 0x12, 0, 0)   # WM_QUIT
+        except Exception:
+            pass
+
+    # ---- hook global (hilo propio con message loop) ----
+    def _hook_loop(self):
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+            from ctypes import (c_int, c_uint, c_ulong, c_long, c_size_t, c_ssize_t,
+                                c_void_p, c_ubyte, c_short, Structure, byref,
+                                WINFUNCTYPE, create_unicode_buffer)
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+            class KBD(Structure):
+                _fields_ = [("vkCode", c_ulong), ("scanCode", c_ulong), ("flags", c_ulong),
+                            ("time", c_ulong), ("dwExtraInfo", c_size_t)]
+
+            class MSG(Structure):
+                _fields_ = [("hwnd", c_void_p), ("message", c_uint), ("wParam", c_size_t),
+                            ("lParam", c_ssize_t), ("time", c_ulong), ("px", c_long), ("py", c_long)]
+
+            HOOKPROC = WINFUNCTYPE(c_ssize_t, c_int, c_size_t, c_ssize_t)
+            user32.SetWindowsHookExW.argtypes = [c_int, HOOKPROC, c_void_p, c_ulong]
+            user32.SetWindowsHookExW.restype = c_void_p
+            user32.CallNextHookEx.argtypes = [c_void_p, c_int, c_size_t, c_ssize_t]
+            user32.CallNextHookEx.restype = c_ssize_t
+            user32.UnhookWindowsHookEx.argtypes = [c_void_p]
+            user32.GetAsyncKeyState.argtypes = [c_int]
+            user32.GetAsyncKeyState.restype = c_short
+            user32.GetKeyState.argtypes = [c_int]
+            user32.GetKeyState.restype = c_short
+            user32.GetForegroundWindow.restype = c_void_p
+            user32.GetWindowThreadProcessId.argtypes = [c_void_p, c_void_p]
+            user32.GetWindowThreadProcessId.restype = c_ulong
+            user32.GetKeyboardLayout.argtypes = [c_ulong]
+            user32.GetKeyboardLayout.restype = c_void_p
+            user32.ToUnicodeEx.argtypes = [c_uint, c_uint, c_void_p, c_void_p, c_int, c_uint, c_void_p]
+            user32.ToUnicodeEx.restype = c_int
+            user32.GetMessageW.argtypes = [c_void_p, c_void_p, c_uint, c_uint]
+            user32.GetMessageW.restype = c_int
+            user32.PostThreadMessageW.argtypes = [c_ulong, c_uint, c_size_t, c_ssize_t]
+            kernel32.GetModuleHandleW.argtypes = [c_void_p]
+            kernel32.GetModuleHandleW.restype = c_void_p
+            kernel32.GetCurrentThreadId.restype = c_ulong
+
+            def tecla_char(vk, scan):
+                altgr = bool(user32.GetAsyncKeyState(0xA5) & 0x8000)
+                if (user32.GetAsyncKeyState(0x11) & 0x8000) and not altgr:
+                    return None                      # Ctrl+tecla: atajo, no es texto
+                st = (c_ubyte * 256)()
+                if user32.GetAsyncKeyState(0x10) & 0x8000:
+                    st[0x10] = 0x80
+                if user32.GetKeyState(0x14) & 1:
+                    st[0x14] = 1
+                if altgr:
+                    st[0x11] = 0x80
+                    st[0x12] = 0x80
+                hkl = user32.GetKeyboardLayout(user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None))
+                out = create_unicode_buffer(8)
+                n = user32.ToUnicodeEx(vk, scan, st, out, 8, 4, hkl)   # 4 = no altera el estado (teclas muertas)
+                return out[0] if n == 1 else None
+
+            def _cb(n_code, w_param, l_param):
+                try:
+                    if n_code == 0 and (w_param == 0x100 or w_param == 0x104) and self.activo:
+                        k = KBD.from_address(l_param)
+                        vk = int(k.vkCode)
+                        ch = None
+                        if vk not in (0x0D, 0x09, 0x08, 0x1B):
+                            ch = tecla_char(vk, int(k.scanCode))
+                        self._q.put_nowait((ch, vk, time.monotonic()))
+                except Exception:
+                    pass
+                return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+            self._cb_ref = HOOKPROC(_cb)               # referencia: si se recolecta, crashea
+            hook = user32.SetWindowsHookExW(13, self._cb_ref, kernel32.GetModuleHandleW(None), 0)
+            if not hook:
+                log("Captura: no se pudo instalar el hook (err=%s)" % ctypes.get_last_error())
+                return
+            self._user32 = user32
+            self._hook_tid = kernel32.GetCurrentThreadId()
+            log("Captura: hook de teclado instalado")
+            msg = MSG()
+            while not self._stop and user32.GetMessageW(byref(msg), None, 0, 0) > 0:
+                pass                                    # el hook se despacha dentro de GetMessage
+            user32.UnhookWindowsHookEx(hook)
+            log("Captura: hook retirado")
+        except Exception:
+            log("Captura: hook falló\n" + traceback.format_exc())
+
+    # ---- armado de "palabras" ----
+    def _proc(self):
+        while not self._stop:
+            try:
+                ch, vk, t = self._q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._tecla(ch, vk, t)
+            except Exception:
+                log("Captura: error procesando tecla\n" + traceback.format_exc())
+
+    def _reset(self):
+        self._buf = []
+        self._ts = []
+        self._corregido = False
+
+    def _tecla(self, ch, vk, t):
+        if vk == -1 or vk == 0x1B:
+            self._reset()
+        elif vk in (0x0D, 0x09):
+            self._fin_token(t)
+        elif vk == 0x08:
+            if self._buf:
+                self._buf.pop()
+                self._ts.pop()
+                self._corregido = True
+        elif ch and ch.isprintable():
+            if self._ts and t - self._ts[-1] > self.GAP_CHAR_S:
+                self._reset()
+            if len(self._buf) >= self.MAX_TOKEN:
+                self._reset()
+            self._buf.append(ch)
+            self._ts.append(t)
+
+    def _fin_token(self, t):
+        buf, ts, corr = self._buf, self._ts, self._corregido
+        self._reset()
+        if len(buf) < 3 or t - ts[-1] > self.MAX_EDAD_S:
+            return
+        with self._lock:
+            cod = self._codes.get(_norm_code("".join(buf)))
+            pedido, op = self._pedido, self._operario
+        if not cod or not pedido:
+            return                                       # no es un artículo del pedido: se descarta
+        gaps = [b - a for a, b in zip(ts, ts[1:])]
+        max_gap = max(gaps) if gaps else 9.9
+        escaneo = (not corr) and len(buf) >= self.SCAN_MIN_LEN and max_gap <= self.SCAN_MAX_GAP_S
+        self._seq += 1
+        ev = {"nro": pedido, "op": op, "codigo": cod, "t": time.time(),
+              "origen": "escaneo" if escaneo else "manual",
+              "eid": "%x-%x" % (int(time.time() * 1000), self._seq)}
+        with self._lock:
+            self._pend.append(ev)
+            if len(self._pend) > self.MAX_PEND:
+                del self._pend[: len(self._pend) - self.MAX_PEND]
+        log("Captura: ped=%s cod=%s origen=%s maxgap=%dms len=%d" %
+            (pedido, cod, ev["origen"], int(max_gap * 1000) if gaps else -1, len(buf)))
+        self._ev.set()
+
+    # ---- envío (con reintento; la hora se calcula en el server) ----
+    def _sender(self):
+        while not self._stop:
+            self._ev.wait(self.ENVIO_CADA_S)
+            self._ev.clear()
+            if self._stop:
+                return
+            with self._lock:
+                if not self._pend:
+                    continue
+                nro, op = self._pend[0]["nro"], self._pend[0]["op"]
+                lote = [e for e in self._pend if e["nro"] == nro][:50]
+            ahora = time.time()
+            body = {"nroPedido": nro, "nroOperario": op,
+                    "eventos": [{"codigo": e["codigo"], "haceMs": int((ahora - e["t"]) * 1000),
+                                 "origen": e["origen"], "eid": e["eid"]} for e in lote]}
+            try:
+                api_post("/api/deposito/errores-mesa/control-items", body, 10)
+                hecho = True
+            except ApiError as e:
+                hecho = e.status_code in (400, 404, 422)   # permanente: no se reintenta
+                log("Captura: envío ped=%s status=%s %s" % (nro, e.status_code, (e.body_text or "")[:200]))
+            if hecho:
+                ids = set(id(e) for e in lote)
+                with self._lock:
+                    self._pend = [e for e in self._pend if id(e) not in ids]
+            else:
+                time.sleep(5.0)
+            if self._pend:
+                self._ev.set()
+
+
 # -------------------------------- Widget --------------------------------------
 class ErroresMesaWidget:
     def __init__(self):
@@ -426,6 +677,12 @@ class ErroresMesaWidget:
         self.operario_nombre = None
         self.error_label_text = "Finalizar"   # pildora PILL_ERROR (ver REDISEÑO 2026-08-19)
         self.articulos_disponibles = []      # [{codArticulo, descripcion}, ...]
+        self._capture = None                 # KeyCapture (hora de control por ítem), ver arriba
+        if not self.cfg.get("sin_captura"):
+            try:
+                self._capture = KeyCapture()
+            except Exception:
+                log("Captura: no se pudo iniciar\n" + traceback.format_exc())
         self.articulos_errores = {}          # {codArticulo: detalleError} - 1 error POR articulo
         self.articulos_label_text = "Artículos"
         self.ubic_text = IDLE_TEXT
@@ -580,6 +837,8 @@ class ErroresMesaWidget:
             self.menu_ctx.grab_release()
 
     def quit(self):
+        if getattr(self, "_capture", None):
+            self._capture.stop()          # retira el hook (el reinicio re-ejecuta en el mismo proceso)
         try:
             self.root.destroy()
         except Exception:
@@ -1154,7 +1413,29 @@ class ErroresMesaWidget:
     def reset_articulos(self):
         self.articulos_disponibles = []
         self.articulos_errores = {}
+        self._capture_sync()
         self.refresh_articulos_label()
+
+    def _capture_sync(self):
+        """Le pasa a la captura de teclado los códigos del pedido asignado
+        (código de artículo y código de barras → codArticulo). Sin artículos
+        la captura queda inactiva."""
+        cap = getattr(self, "_capture", None)
+        if cap is None:
+            return
+        try:
+            mapa = {}
+            for a in self.articulos_disponibles:
+                cod = str(a.get("codArticulo") or "").strip()
+                if not cod:
+                    continue
+                mapa[_norm_code(cod)] = cod
+                barra = str(a.get("codBarra") or "").strip()
+                if barra:
+                    mapa[_norm_code(barra)] = cod
+            cap.set_pedido(self.pedido_asignado if mapa else None, self.operario_nro, mapa)
+        except Exception:
+            log("Captura: sync falló\n" + traceback.format_exc())
 
     def refresh_articulos_label(self):
         n = len(self.articulos_errores)
@@ -1170,6 +1451,7 @@ class ErroresMesaWidget:
     def load_articulos(self, nro_text):
         self.articulos_disponibles = []
         self.articulos_errores = {}
+        self._capture_sync()
         try:
             # 20s: este endpoint hace varios round-trips en el server (WMS +
             # EVERWEAR), mas lento que el resto de las llamadas del widget.
@@ -1178,6 +1460,7 @@ class ErroresMesaWidget:
                 self.articulos_disponibles = list(arts)
         except ApiError as e:
             log("Load-Articulos nro=%s detalle=%s" % (nro_text, e.body_text))
+        self._capture_sync()
         self.refresh_articulos_label()
 
     # -- fila del selector: texto + color segun si ya tiene error elegido --

@@ -1883,7 +1883,7 @@ ven_m AS (
     INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
     INNER JOIN art ON art.CodArticulo = r.CodArticu
     WHERE cab.FechaPedido BETWEEN {d1} AND {d2}
-      {valido}
+      {valido}{ven_dep}
     GROUP BY r.CodArticu,
              DATEDIFF(month, '1800-12-28', DATEADD(day, cab.FechaPedido, '1800-12-28'))
 ),
@@ -1897,7 +1897,7 @@ stk AS (
     SELECT a.CodArticulo AS Cod, SUM(a.StkReal) AS Stock
     FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
     INNER JOIN art ON art.CodArticulo = a.CodArticulo
-    WHERE a.Deposito = 1
+    WHERE a.Deposito = {dep_stk}
     GROUP BY a.CodArticulo
 ),
 oc AS (
@@ -1949,14 +1949,22 @@ def _ints(valores) -> list[int]:
     return sorted(set(out))
 
 
-def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str] | None = None):
+def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str] | None = None,
+                       deposito: int | None = None):
     """Vendido / stock dep. 1 / OC pendiente por artículo para el filtro de
-    niveles. `desde`/`hasta` = YYYY-MM-DD (el route arma N meses cerrados).
+    niveles. `deposito` (2 Lilser / 3 Ruta, usado por /mostradores/planificacion):
+    el vendido cuenta solo pedidos de ese depósito (VenFer_PedidoCabecera.Deposito)
+    y el stock sale de ese depósito; None = comportamiento de compras (todos los
+    pedidos, stock dep. 1). `desde`/`hasta` = YYYY-MM-DD (el route arma N meses cerrados).
     `extra` = códigos con faltante vivo: se devuelven aunque no tengan venta,
     stock ni OC (si están dentro del filtro de niveles)."""
     niveles = {"Nivel1": _ints(n1), "Nivel2": _ints(n2), "Nivel3": _ints(n3), "Nivel4": _ints(n4)}
     if not any(niveles.values()):
         raise ValueError("Elegí al menos una línea, rubro, sub rubro o sub sub rubro")
+    if deposito is not None and deposito not in (2, 3):
+        raise ValueError("deposito inválido (2 Lilser / 3 Ruta)")
+    dep_stk = int(deposito) if deposito is not None else 1
+    ven_dep = f"\n      AND cab.Deposito = {int(deposito)}" if deposito is not None else ""
     frag_niv = "".join(
         f"\n      AND ap.{col} IN ({','.join(str(i) for i in ids)})"
         for col, ids in niveles.items() if ids
@@ -1983,6 +1991,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
             niveles=frag_niv, d1=_dias(d1), d2=_dias(d2),
             valido=_cond_pedido_valido(cur), excl=_EXCL,
             oc_desde=_dias(oc_desde), extra=frag_extra,
+            dep_stk=dep_stk, ven_dep=ven_dep,
         )
         if extras:
             cur.execute(sql, extras)

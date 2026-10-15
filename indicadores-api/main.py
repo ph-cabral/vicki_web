@@ -110,6 +110,7 @@ from calidad import (
     buscar_clientes as calidad_buscar_clientes,
     fetch_controles_cliente as calidad_fetch_controles_cliente,
     fetch_control_pedido as calidad_fetch_control_pedido,
+    registrar_control_items as calidad_registrar_control_items,
 )
 from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
@@ -933,6 +934,7 @@ class PlanificacionIn(BaseModel):
     desde: str
     hasta: str
     extra: list[str] = []
+    deposito: int | None = None  # 2 Lilser / 3 Ruta (mostradores); None = compras
 
 
 @app.get("/compras/planificacion/niveles")
@@ -952,7 +954,7 @@ def compras_planificacion(body: PlanificacionIn):
     códigos con faltante vivo que se devuelven aunque estén en cero."""
     try:
         return fetch_planificacion(body.n1, body.n2, body.n3, body.n4,
-                                   body.desde, body.hasta, body.extra)
+                                   body.desde, body.hasta, body.extra, body.deposito)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1859,6 +1861,19 @@ class ErrorCalidadIn(BaseModel):
     observacion: str | None = None
     articulos: list[str] | None = None
 
+# Captura de hora por ítem desde el widget de Mesa de Control (ver
+# calidad.registrar_control_items).
+class ControlItemEvento(BaseModel):
+    codigo: str
+    haceMs: int = 0
+    origen: str = "escaneo"
+    eid: str | None = None
+
+class ControlItemsIn(BaseModel):
+    nroPedido: int
+    nroOperario: int | None = None
+    eventos: list[ControlItemEvento]
+
 # Alta en lote para Calidad (REDISEÑO 2026-08-20): 1 error por artículo,
 # mismo patrón que ErrorMesaItem/ErrorMesaItemsIn arriba — ver
 # insert_error_calidad_items en errores_mesa.py.
@@ -1971,6 +1986,17 @@ def deposito_errores_mesa_crear(body: ErrorMesaIn):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/control-items")
+def deposito_control_items(body: ControlItemsIn):
+    """Eventos de control por ítem (código escaneado/tipeado en Magnus) que
+    reconoce el widget de Mesa de Control → deposito.control_item_log."""
+    try:
+        return calidad_registrar_control_items(
+            body.nroPedido, body.nroOperario, [e.model_dump() for e in body.eventos],
+        )
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

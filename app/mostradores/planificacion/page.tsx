@@ -17,7 +17,9 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //   hacia atrás (el rango se mueve solo con el calendario, la cantidad de
 //   meses queda fija).
 //   Al tocar un botón: por artículo, recomendado =
-//     promedio vendido − stock dep. 1 − OC pendiente (≥ 0).
+//     promedio vendido − stock del depósito − OC pendiente (≥ 0).
+//   Selector Ruta | Lilser (depósitos 3 / 2): vendido = pedidos de ese depósito,
+//   stock = ese depósito; se recuerda en localStorage (mostradores:planificacion:deposito).
 //   Máximo / mínimo = mes más alto / mes más bajo con venta del rango (mismo
 //   criterio que /compras/consumo).
 //   Recomendado en vivo = ceil(max(0, promedio × meses a cubrir − stock − OC)).
@@ -53,6 +55,7 @@ interface Row {
 }
 interface Datos {
   reporte: Reporte;
+  deposito: 2 | 3;
   desde: string;
   hasta: string;
   ocDesde: string | null;
@@ -79,7 +82,15 @@ const fmtAr = (s: string | null) => {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : s || "—";
 };
 const LS_KEY = "mostradores:planificacion:sel";
-const lsCantKey = (id: number, hasta: string) => `mostradores:planificacion:cant:${id}:${hasta}`;
+const LS_DEP = "mostradores:planificacion:deposito";
+type Deposito = 2 | 3;
+const DEPOSITOS: { id: Deposito; nombre: string }[] = [
+  { id: 3, nombre: "Ruta" },
+  { id: 2, nombre: "Lilser" },
+];
+const nombreDep = (d: Deposito) => DEPOSITOS.find((x) => x.id === d)?.nombre ?? String(d);
+const lsCantKey = (id: number, hasta: string, dep: Deposito) =>
+  `mostradores:planificacion:cant:${id}:${hasta}:${dep}`;
 // Base de la columna Cantidad por reporte: "rec" = arranca en el recomendado,
 // "cero" = se limpió con el tacho y todo arranca en 0 (persiste hasta restaurar).
 const lsCantBaseKey = (id: number) => `mostradores:planificacion:cantbase:${id}`;
@@ -97,7 +108,7 @@ const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "promedio", label: "Prom. vendido", num: true, title: "unidades vendidas en el rango / meses" },
   { k: "maximo", label: "Máximo", num: true, title: "mes con más unidades vendidas del rango" },
   { k: "minimo", label: "Mínimo", num: true, title: "mes con menos unidades vendidas del rango (sin contar meses sin venta)" },
-  { k: "stock", label: "Stock", num: true, title: "depósito 1 (central)" },
+  { k: "stock", label: "Stock", num: true, title: "stock del depósito elegido (Ruta / Lilser)" },
   { k: "oc", label: "OC pendiente", num: true, title: "saldo sin recibir de OC sin cerrar" },
 ];
 const COL_BY = Object.fromEntries(COLS.map((c) => [c.k, c])) as Record<SortKey, (typeof COLS)[number]>;
@@ -116,6 +127,8 @@ export default function PlanificacionPage() {
   const [reportes, setReportes] = useState<Reporte[]>([]);
   const [tablaWarn, setTablaWarn] = useState<string | null>(null);
   const [selId, setSelId] = useState<number | null>(null);
+  const [deposito, setDeposito] = useState<Deposito>(3);
+  const [depListo, setDepListo] = useState(false);
   const [datos, setDatos] = useState<Datos | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,7 +166,7 @@ export default function PlanificacionPage() {
   // (recomendado, o 0 si se limpió la columna con el tacho).
   const [cantEdit, setCantEdit] = useState<Record<string, number>>({});
   const [cantBase, setCantBase] = useState<CantBase>("rec");
-  const cantKey = datos ? lsCantKey(datos.reporte.id, datos.hasta) : null;
+  const cantKey = datos ? lsCantKey(datos.reporte.id, datos.hasta, datos.deposito ?? deposito) : null;
   const cantBaseKey = datos ? lsCantBaseKey(datos.reporte.id) : null;
 
   useEffect(() => {
@@ -291,11 +304,28 @@ export default function PlanificacionPage() {
       .catch(() => {});
   }, [cargarReportes]);
 
+  // Depósito recordado por equipo; hasta leerlo no se pide nada (evita un
+  // cálculo de Ruta que se descarta si lo guardado era Lilser).
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(LS_DEP) === "2") setDeposito(2);
+    } catch {}
+    setDepListo(true);
+  }, []);
+
+  const elegirDeposito = (d: Deposito) => {
+    if (d === deposito) return;
+    setDeposito(d);
+    try {
+      localStorage.setItem(LS_DEP, String(d));
+    } catch {}
+  };
+
   const cargarDatos = useCallback(async (id: number, fresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/mostradores/planificacion/datos?id=${id}${fresh ? "&fresh=1" : ""}`, {
+      const res = await fetch(`/api/mostradores/planificacion/datos?id=${id}&deposito=${deposito}${fresh ? "&fresh=1" : ""}`, {
         cache: "no-store",
       });
       const j = await res.json().catch(() => ({}));
@@ -307,9 +337,10 @@ export default function PlanificacionPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [deposito]);
 
   useEffect(() => {
+    if (!depListo) return;
     if (selId == null) {
       setDatos(null);
       return;
@@ -318,7 +349,7 @@ export default function PlanificacionPage() {
       localStorage.setItem(LS_KEY, String(selId));
     } catch {}
     cargarDatos(selId);
-  }, [selId, cargarDatos]);
+  }, [selId, cargarDatos, depListo]);
 
   const visibles = useMemo(() => {
     if (!datos) return [];
@@ -386,7 +417,7 @@ export default function PlanificacionPage() {
     ws["!cols"] = Object.keys(filas[0]).map((c) => ({ wch: c === "Detalle" ? 45 : Math.max(12, c.length + 2) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Planificación");
-    XLSX.writeFile(wb, `planificacion_mostrador_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
+    XLSX.writeFile(wb, `planificacion_${nombreDep(datos.deposito ?? deposito).toLowerCase()}_${datos.reporte.nombre.replace(/[^\w-]+/g, "_")}_${datos.hasta}.xlsx`);
   }, [datos, visibles, cantidadDe, coberturaDe, recDe, orden]);
 
   const tot = useMemo(
@@ -484,6 +515,20 @@ export default function PlanificacionPage() {
           <ClipboardList size={18} className="text-yellow-400" />
           Planificación de abastecimiento
         </h1>
+        <div className="flex items-center rounded-lg border border-zinc-700 overflow-hidden text-sm" role="group" aria-label="Depósito">
+          {DEPOSITOS.map((d) => (
+            <button
+              key={d.id}
+              onClick={() => elegirDeposito(d.id)}
+              aria-pressed={deposito === d.id}
+              className={`px-3 py-1.5 font-medium ${
+                deposito === d.id ? "bg-yellow-400 text-zinc-900" : "text-zinc-300 hover:bg-zinc-800"
+              }`}
+            >
+              {d.nombre}
+            </button>
+          ))}
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <UsuarioActual />
         </div>

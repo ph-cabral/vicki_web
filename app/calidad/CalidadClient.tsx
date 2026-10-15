@@ -35,6 +35,7 @@ type ItemTL = {
   cantControlada: number;
   hora: string | null;
   cambios: number;
+  origen?: "escaneo" | "manual" | null;
   segundos: number | null;
 };
 type Detalle = {
@@ -47,6 +48,7 @@ type Detalle = {
   segundosTotal?: number | null;
   items?: ItemTL[];
   horaPorItem?: boolean;
+  resumen?: { escaneados: number; manuales: number; sinCaptura: number };
   aviso?: string | null;
 };
 
@@ -255,6 +257,11 @@ export default function CalidadClient() {
                     <div className="font-semibold">Pedido {detalle.nroPedido}</div>
                     <div className="text-xs text-zinc-500">
                       {detalle.operario ?? "—"} · total {dur(detalle.segundosTotal)} · {items.length} ítems
+                      {detalle.resumen && detalle.horaPorItem
+                        ? ` · ${detalle.resumen.escaneados} escaneados, ${detalle.resumen.manuales} manuales${
+                            detalle.resumen.sinCaptura ? `, ${detalle.resumen.sinCaptura} sin captura` : ""
+                          }`
+                        : ""}
                     </div>
                   </div>
                   {detalle.aviso && (
@@ -273,7 +280,7 @@ export default function CalidadClient() {
                         hora={hhmmss(i.hora)}
                         detalle={`Cant. ${num(i.cantControlada)} de ${num(i.cantPedida)}${
                           i.cambios > 1 ? ` · ${i.cambios} cambios` : ""
-                        }`}
+                        }${i.origen ? ` · ${i.origen === "escaneo" ? "escaneado" : "manual"}` : ""}`}
                         duracion={i.segundos != null ? dur(i.segundos) : null}
                         tono={tono(i.segundos)}
                       />
