@@ -4,6 +4,7 @@ import { resolverAccesoVickiVentas } from "@/lib/ventas/vickiVentasAcceso";
 import { resolverAccesoVickiCompras } from "@/lib/compras/vickiComprasAcceso";
 import { resolverAccesoVickiDeposito } from "@/lib/deposito/vickiDepositoAcceso";
 import { sessionIdVicki } from "@/lib/vicki/sesionChat";
+import { resolverIdentidadVicki } from "@/lib/vicki/identidad";
 
 export const dynamic = "force-dynamic";
 
@@ -52,11 +53,25 @@ export async function POST(req: NextRequest) {
     // leído de la cookie de sesión — ver lib/deposito/vickiDepositoAcceso.ts.
     body.vicki_deposito_habilitado = accesoDeposito.ok && accesoDeposito.habilitado;
 
+    // Identidad para el agente de vicki_chat (app/agente.py): admin = SQL libre,
+    // el resto solo lo propio (su vendedor y su legajo). Se pisa lo que mande el
+    // browser, igual que los permisos de arriba.
+    const ident = await resolverIdentidadVicki();
+    body.vicki_es_admin = ident.esAdmin;
+    body.vicki_usuario_nombre = ident.nombre;
+    body.vicki_legajo_id = ident.legajoId;
+    body.vicki_vendedor_codigo = ident.esAdmin ? null : ident.vendedorCodigo;
+
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    // Secreto compartido con chat-agent (CHAT_API_TOKEN allá, VICKI_API_TOKEN acá).
+    if (process.env.VICKI_API_TOKEN) headers["X-Vicki-Token"] = process.env.VICKI_API_TOKEN;
+
     const r = await fetch(`${VICKI_URL}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
+      // El agente puede encadenar varias consultas (vicki_chat corta a los 100s).
+      signal: AbortSignal.timeout(110000),
     });
     const txt = await r.text();
     return new NextResponse(txt, {
