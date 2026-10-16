@@ -13,6 +13,11 @@ export type HorarioTipo = {
   tope_vie: number;
   tope_sab: number;
   tope_dom: number;
+  // Hora asignada de entrada/salida "HH:MM" (null = sin cargar). Las usan las
+  // novedades que corren con las marcas del reloj (asistencia.novedad_tramo).
+  hora_entrada?: string | null;
+  hora_salida?: string | null;
+  hora_salida_vie?: string | null; // null = usa hora_salida
 };
 
 export type HorarioAsignacion = {
@@ -32,9 +37,18 @@ type Body = {
   tope_vie?: number;
   tope_sab?: number;
   tope_dom?: number;
+  hora_entrada?: string | null;
+  hora_salida?: string | null;
+  hora_salida_vie?: string | null;
   // kind === "asignacion"
   departamento?: string;
   horario_tipo_id?: number | null; // null/0 => borra la asignación (vuelve al default)
+};
+
+// "HH:MM" válido o null.
+const toHora = (v: unknown): string | null => {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v ?? "").trim());
+  return m ? `${m[1].padStart(2, "0")}:${m[2]}` : null;
 };
 
 const toInt = (v: unknown, fallback = 0): number => {
@@ -47,11 +61,24 @@ const toInt = (v: unknown, fallback = 0): number => {
 // (resuelto del lado del cliente, ver buildTopeResolver en asistenciaIndicadores.ts).
 export async function GET() {
   try {
-    const tipos = await prisma.$queryRawUnsafe<HorarioTipo[]>(
-      `SELECT id, nombre, tope_lun, tope_mar, tope_mie, tope_jue, tope_vie, tope_sab, tope_dom
-       FROM asistencia.horario_tipo
-       ORDER BY id`,
-    );
+    let tipos: HorarioTipo[];
+    try {
+      tipos = await prisma.$queryRawUnsafe<HorarioTipo[]>(
+        `SELECT id, nombre, tope_lun, tope_mar, tope_mie, tope_jue, tope_vie, tope_sab, tope_dom,
+                to_char(hora_entrada, 'HH24:MI')    AS hora_entrada,
+                to_char(hora_salida, 'HH24:MI')     AS hora_salida,
+                to_char(hora_salida_vie, 'HH24:MI') AS hora_salida_vie
+         FROM asistencia.horario_tipo
+         ORDER BY id`,
+      );
+    } catch {
+      // Todavía no se corrió sql/asistencia_novedad_tramo.sql (columnas de hora).
+      tipos = await prisma.$queryRawUnsafe<HorarioTipo[]>(
+        `SELECT id, nombre, tope_lun, tope_mar, tope_mie, tope_jue, tope_vie, tope_sab, tope_dom
+         FROM asistencia.horario_tipo
+         ORDER BY id`,
+      );
+    }
     const asignaciones = await prisma.$queryRawUnsafe<HorarioAsignacion[]>(
       `SELECT departamento, horario_tipo_id
        FROM asistencia.horario_area
@@ -105,6 +132,30 @@ export async function PATCH(req: NextRequest) {
             tope_vie = EXCLUDED.tope_vie, tope_sab = EXCLUDED.tope_sab,
             tope_dom = EXCLUDED.tope_dom, updated_at = now()
         `;
+      }
+      // Hora de entrada/salida (columnas agregadas por asistencia_novedad_tramo.sql).
+      // Aparte para no romper el guardado de topes si todavía no se corrió el SQL.
+      if (
+        body.hora_entrada !== undefined ||
+        body.hora_salida !== undefined ||
+        body.hora_salida_vie !== undefined
+      ) {
+        const he = toHora(body.hora_entrada);
+        const hs = toHora(body.hora_salida);
+        const hv = toHora(body.hora_salida_vie);
+        try {
+          await prisma.$executeRaw`
+            UPDATE asistencia.horario_tipo
+            SET hora_entrada = ${he}::time, hora_salida = ${hs}::time,
+                hora_salida_vie = ${hv}::time
+            WHERE nombre = ${nombre}
+          `;
+        } catch (e: any) {
+          return NextResponse.json(
+            { error: "Topes guardados, pero faltan las columnas de hora: correr sql/asistencia_novedad_tramo.sql" },
+            { status: 500 },
+          );
+        }
       }
       return NextResponse.json({ ok: true });
     }

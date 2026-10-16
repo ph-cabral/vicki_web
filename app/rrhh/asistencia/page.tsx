@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useRef,
   useState,
   useCallback,
   useMemo,
@@ -38,6 +39,7 @@ import {
 } from "@/lib/rrhh/asistenciaIndicadores";
 import { RegistroButton, type Opcion } from "./components/RegistroModal";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
+import type { TramoResuelto } from "@/lib/rrhh/novedadTramo";
 
 type Row = {
   employee_no: string;
@@ -675,6 +677,100 @@ function EmailsButton() {
   );
 }
 
+const SIN_TRAMOS: TramoResuelto[] = [];
+
+// Minutos → "45m" / "1h 05m".
+const fmtDur = (min: number | null) => {
+  if (min == null) return "—";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+};
+
+// Novedades que corren con las marcas del reloj (asistencia.novedad_tramo).
+// Ámbar = cargada y todavía sin marca (avisa); rojo = el día pasó y nunca
+// marcó, o falta el horario para calcularla.
+function TramoChips({
+  tramos,
+  onChanged,
+}: {
+  tramos: TramoResuelto[];
+  onChanged: () => void;
+}) {
+  const quitar = async (id: number) => {
+    await fetch(`/api/rrhh/asistencia/tramos?id=${id}`, { method: "DELETE" });
+    onChanged();
+  };
+  return (
+    <>
+      {tramos.map((t) => {
+        const llega = t.modo === "llega_tarde";
+        let texto: string;
+        let tono = "bg-violet-500/15 text-violet-300 border-violet-500/30";
+        switch (t.estado) {
+          case "esperando":
+            texto = llega
+              ? t.minutos != null
+                ? `Esperando llegada · ${fmtDur(t.minutos)}`
+                : "Esperando llegada"
+              : "Esperando marca";
+            tono = "bg-amber-500/15 text-amber-300 border-amber-500/40 animate-pulse";
+            break;
+          case "sin_marca":
+            texto = "No marcó";
+            tono = "bg-red-500/15 text-red-300 border-red-500/40";
+            break;
+          case "en_curso":
+            texto = `Afuera · ${fmtDur(t.minutos)}`;
+            break;
+          case "cerrada":
+            texto = fmtDur(t.minutos);
+            break;
+          case "asumida":
+            texto = `${fmtDur(t.minutos)} (hasta salida)`;
+            break;
+          case "a_horario":
+            texto = "Llegó a horario";
+            tono = "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
+            break;
+          default:
+            texto = "Falta horario";
+            tono = "bg-red-500/15 text-red-300 border-red-500/40";
+        }
+        const rango =
+          t.inicio || t.fin
+            ? `${t.inicio ? fmtTime24(t.inicio) : "?"} → ${t.fin ? fmtTime24(t.fin) : "?"}`
+            : "";
+        return (
+          <span
+            key={t.id}
+            title={`${t.novedad} · ${llega ? "llega tarde" : "sale"}${rango ? ` · ${rango}` : ""}${
+              t.estado === "sin_horario"
+                ? " · cargar hora de entrada/salida en Horarios"
+                : ""
+            }`}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] leading-tight",
+              tono,
+            )}
+          >
+            <span className="font-medium">{t.novedad}</span>
+            <span className="opacity-80">· {texto}</span>
+            <button
+              type="button"
+              onClick={() => quitar(t.id)}
+              title="Quitar novedad"
+              className="ml-0.5 opacity-60 hover:opacity-100"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 // Fila memoizada: editar/tipear una fila no re-renderiza el resto de la tabla.
 const AsistenciaRow = memo(function AsistenciaRow({
   row,
@@ -687,7 +783,11 @@ const AsistenciaRow = memo(function AsistenciaRow({
   onOpcionesChanged,
   onHorarioSaved,
   isAdmin,
+  tramos,
+  onTramosChanged,
 }: {
+  tramos: TramoResuelto[];
+  onTramosChanged: () => void;
   row: Row;
   desde: string;
   hasta: string;
@@ -773,7 +873,8 @@ const AsistenciaRow = memo(function AsistenciaRow({
         />
       </TableCell>
       <TableCell>
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <TramoChips tramos={tramos} onChanged={onTramosChanged} />
           <RegistroButton
             tipo="novedad"
             opciones={novedadesOp}
@@ -864,6 +965,42 @@ export default function AsistenciaPage() {
   const [desde, setDesde] = useState(todayLocal());
   const [hasta, setHasta] = useState(todayLocal());
 
+  // Novedades que corren con las marcas del reloj. Se refrescan cada minuto
+  // si el rango incluye hoy (el estado "Esperando marca" depende del reloj).
+  const [tramos, setTramos] = useState<TramoResuelto[]>([]);
+  const tramosSig = useRef("");
+  const loadTramos = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams({ desde, hasta });
+      const r = await fetch(`/api/rrhh/asistencia/tramos?${qs}`);
+      if (!r.ok) return; // tabla todavía no creada: sin novedades con marca
+      const data: TramoResuelto[] = await r.json();
+      const sig = JSON.stringify(data);
+      if (sig !== tramosSig.current) {
+        tramosSig.current = sig;
+        setTramos(data);
+      }
+    } catch (err) {
+      console.error("[tramos]", err);
+    }
+  }, [desde, hasta]);
+  useEffect(() => {
+    loadTramos();
+    if (hasta < todayLocal()) return;
+    const id = setInterval(loadTramos, 60_000);
+    return () => clearInterval(id);
+  }, [loadTramos, hasta]);
+  const tramosPor = useMemo(() => {
+    const m = new Map<string, TramoResuelto[]>();
+    for (const t of tramos) {
+      const k = `${t.employee_no}|${t.fecha}`;
+      const a = m.get(k);
+      if (a) a.push(t);
+      else m.set(k, [t]);
+    }
+    return m;
+  }, [tramos]);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
@@ -884,6 +1021,12 @@ export default function AsistenciaPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Guardar/quitar una novedad con marca refresca grilla y tramos.
+  const refrescar = useCallback(() => {
+    fetchData();
+    loadTramos();
+  }, [fetchData, loadTramos]);
 
   // Estado/novedad ahora vienen siempre del server (RegistroButton refresca
   // con fetchData después de cada guardado) — ya no hace falta una capa de
@@ -936,12 +1079,17 @@ export default function AsistenciaPage() {
     return rows.filter((r) => {
       if (q && !(r.employee_name ?? "").toLowerCase().includes(q)) return false;
       if (estado !== "all" && effEstado(r) !== estado) return false;
-      if (novedad !== "all" && (r.novedad ?? "") !== novedad) return false;
+      if (
+        novedad !== "all" &&
+        (r.novedad ?? "") !== novedad &&
+        !tramosPor.get(`${r.employee_no}|${r.fecha}`)?.some((t) => t.novedad === novedad)
+      )
+        return false;
       if (area !== "all" && (r.departamento ?? "") !== area) return false;
       if (sector !== "all" && (r.sector ?? "") !== sector) return false;
       return true;
     });
-  }, [rows, empleadoDef, estado, novedad, area, sector]);
+  }, [rows, empleadoDef, estado, novedad, area, sector, tramosPor]);
 
   return (
     // `dark` + el mismo fondo #111111 que /deposito, /compras y /ventas: los
@@ -1092,7 +1240,7 @@ export default function AsistenciaPage() {
                     placeholder="Estado"
                     toneOf={estadoTone}
                     isAdmin={isAdmin}
-                    onSaved={fetchData}
+                    onSaved={refrescar}
                     onOpcionesChanged={loadOpciones}
                   />
                 </div>
@@ -1120,7 +1268,7 @@ export default function AsistenciaPage() {
                     placeholder="Novedad"
                     toneOf={() => "bg-violet-500/15 text-violet-300 border-violet-500/30"}
                     isAdmin={isAdmin}
-                    onSaved={fetchData}
+                    onSaved={refrescar}
                     onOpcionesChanged={loadOpciones}
                   />
                 </div>
@@ -1157,10 +1305,12 @@ export default function AsistenciaPage() {
                 resolveTope={resolveTope}
                 estadosOp={estadosOp}
                 novedadesOp={novedadesOp}
-                onSaved={fetchData}
+                onSaved={refrescar}
                 onOpcionesChanged={loadOpciones}
                 onHorarioSaved={fetchData}
                 isAdmin={isAdmin}
+                tramos={tramosPor.get(`${r.employee_no}|${r.fecha}`) ?? SIN_TRAMOS}
+                onTramosChanged={loadTramos}
               />
             ))}
           </TableBody>
@@ -1218,6 +1368,16 @@ function HorariosPanel({
       [t.id]: { ...(prev[t.id] ?? t), [key]: n },
     }));
   };
+
+  // Hora asignada de entrada/salida ("HH:MM", "" = sin cargar).
+  type HoraKey = "hora_entrada" | "hora_salida" | "hora_salida_vie";
+  const horaOf = (t: HorarioTipo, key: HoraKey) =>
+    (draft[t.id]?.[key] ?? t[key] ?? "") as string;
+  const setHora = (t: HorarioTipo, key: HoraKey, v: string) =>
+    setDraft((prev) => ({
+      ...prev,
+      [t.id]: { ...(prev[t.id] ?? t), [key]: v || null },
+    }));
 
   const guardarTipo = async (t: HorarioTipo) => {
     setSaving(`tipo-${t.id}`);
@@ -1294,7 +1454,8 @@ function HorariosPanel({
     <div className="mb-6 rounded-lg bg-[#171717] border border-zinc-800 p-4 space-y-6">
       <div>
         <h2 className="text-sm font-medium mb-2">
-          Tipos de horario (minutos esperados por día)
+          Tipos de horario (minutos esperados por día + hora de entrada/salida
+          para novedades con marca)
         </h2>
         <div className="space-y-2">
           {tipos.map((t) => (
@@ -1311,9 +1472,28 @@ function HorariosPanel({
                   <Input
                     type="number"
                     min={0}
-                    value={valOf(t, d.key)}
+                    value={valOf(t, d.key) as number}
                     onChange={(e) => setVal(t, d.key, e.target.value)}
                     className="h-8 w-16"
+                  />
+                </div>
+              ))}
+              {(
+                [
+                  ["hora_entrada", "Entrada"],
+                  ["hora_salida", "Salida"],
+                  ["hora_salida_vie", "Salida vie"],
+                ] as [HoraKey, string][]
+              ).map(([k, label]) => (
+                <div key={k} className="flex flex-col items-center">
+                  <label className="text-[10px] text-muted-foreground">
+                    {label}
+                  </label>
+                  <input
+                    type="time"
+                    value={horaOf(t, k)}
+                    onChange={(e) => setHora(t, k, e.target.value)}
+                    className="h-8 w-24 rounded-md border bg-background px-1 text-sm"
                   />
                 </div>
               ))}

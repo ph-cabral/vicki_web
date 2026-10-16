@@ -45,6 +45,9 @@ export type HorarioTipo = {
   tope_vie: number;
   tope_sab: number;
   tope_dom: number;
+  hora_entrada?: string | null; // "HH:MM"
+  hora_salida?: string | null;
+  hora_salida_vie?: string | null;
 };
 
 export type HorarioAsignacion = { departamento: string; horario_tipo_id: number };

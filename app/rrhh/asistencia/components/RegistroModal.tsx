@@ -50,7 +50,7 @@ const todayLocal = () => {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-type Step = "empleado" | "bricks" | "numero" | "rango" | "calendario";
+type Step = "empleado" | "bricks" | "numero" | "tramo" | "rango" | "calendario";
 
 type EmailRegistrado = { id: number; email: string; nombre: string | null };
 type EmpleadoOpcion = { employee_no: string; nombre: string; sector: string | null };
@@ -197,6 +197,10 @@ export function RegistroButton({
     setError(null);
     if (op.genera_calendario) {
       setStep("rango");
+    } else if (tipo === "novedad") {
+      // Novedad sin horas propias: corre con las marcas del reloj (ver
+      // asistencia.novedad_tramo / lib/rrhh/novedadTramo.ts).
+      setStep("tramo");
     } else {
       setNumVal(op.nombre === value && numValue != null ? String(numValue) : "");
       setStep("numero");
@@ -222,6 +226,38 @@ export function RegistroButton({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d?.error ?? "error al guardar");
+      }
+      onSaved();
+      close();
+    } catch (e: any) {
+      setError(e?.message ?? "error al guardar");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Novedad que corre con las marcas del reloj ──────────────────────────
+  // "sale": desde la marca de salida hasta la de vuelta. "llega_tarde": desde
+  // la hora de entrada asignada hasta la primera marca. No lleva horas: se
+  // calcula sola cuando el empleado marca.
+  const guardarTramo = async (modo: "sale" | "llega_tarde") => {
+    if (!empNo || !fechaSel || !selected) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/rrhh/asistencia/tramos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employee_no: empNo,
+          fecha: fechaSel,
+          novedad: selected.nombre,
+          modo,
+        }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -690,6 +726,58 @@ export function RegistroButton({
                       className="rounded-md bg-yellow-400 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-300 disabled:opacity-50 transition-colors"
                     >
                       {saving ? "Guardando…" : "Guardar"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {step === "tramo" && selected && (
+                <div>
+                  <p className="mb-3 text-sm">
+                    <span className="font-medium">{selected.nombre}</span> — ¿cómo corre?
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => guardarTramo("sale")}
+                      className="rounded-md border bg-muted/60 px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    >
+                      <span className="block text-sm font-medium">Sale durante la jornada</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Empieza cuando marca la salida y termina cuando marca la vuelta. Si no
+                        vuelve, cuenta hasta su hora de salida.
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => guardarTramo("llega_tarde")}
+                      className="rounded-md border bg-muted/60 px-3 py-2 text-left hover:bg-accent disabled:opacity-50"
+                    >
+                      <span className="block text-sm font-medium">Llega tarde</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Cuenta desde su hora de entrada hasta que marca en el reloj.
+                      </span>
+                    </button>
+                  </div>
+                  <div className="mt-4 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNumVal(selected.nombre === value && numValue != null ? String(numValue) : "");
+                        setStep("numero");
+                      }}
+                      className="text-xs text-muted-foreground hover:text-yellow-400 hover:underline"
+                    >
+                      Cargar horas a mano
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStep("bricks")}
+                      className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-accent"
+                    >
+                      Atrás
                     </button>
                   </div>
                 </div>
