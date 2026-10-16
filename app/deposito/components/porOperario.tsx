@@ -25,6 +25,7 @@ interface Fila {
   asignadoA: string | null;
   controladoPor: string | null;
   cliente: string | null;
+  codCliente?: number | null;
   hora: string | null;
 }
 interface Operario {
@@ -96,14 +97,75 @@ const cols: Col<Fila>[] = [
   { key: "hora", label: "Hora", render: (r) => fmtHora(r.hora) },
 ];
 
+// Clientes con pedidos bloqueados de la tarjeta "Bloqueados" (el bloqueo es por cliente).
+function clientesBloqueados(filas: Fila[]) {
+  const m = new Map<number, { codCliente: number; cliente: string | null; n: number }>();
+  for (const f of filas) {
+    if (f.codCliente == null || f.estado !== "esperando") continue;
+    const e = m.get(f.codCliente) ?? { codCliente: f.codCliente, cliente: f.cliente, n: 0 };
+    e.n += 1;
+    m.set(f.codCliente, e);
+  }
+  return [...m.values()].sort((a, b) => b.n - a.n || (a.cliente ?? "").localeCompare(b.cliente ?? ""));
+}
+
+function ChipClienteBloqueado({
+  c,
+  onDesbloquear,
+}: {
+  c: { codCliente: number; cliente: string | null; n: number };
+  onDesbloquear: (codCliente: number) => Promise<void>;
+}) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [liberando, setLiberando] = useState(false);
+  useEffect(() => {
+    if (!confirmando) return;
+    const id = setTimeout(() => setConfirmando(false), 4000);
+    return () => clearTimeout(id);
+  }, [confirmando]);
+  const click = async () => {
+    if (!confirmando) return setConfirmando(true);
+    setLiberando(true);
+    try {
+      await onDesbloquear(c.codCliente);
+    } finally {
+      setLiberando(false);
+      setConfirmando(false);
+    }
+  };
+  return (
+    <div className="flex items-center justify-between gap-2 text-[12px] bg-orange-500/10 border border-orange-500/20 rounded-md px-2.5 py-1.5">
+      <span className="min-w-0 truncate text-zinc-200" title={c.cliente ?? undefined}>
+        {c.cliente ?? `Cliente ${c.codCliente}`}
+        <span className="text-zinc-500"> · {c.n} pedido{c.n === 1 ? "" : "s"}</span>
+      </span>
+      <button
+        onClick={click}
+        disabled={liberando}
+        title="Quita el bloqueo de todos los pedidos de este cliente (y deja de bloquear los que entren)"
+        className={`shrink-0 flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md border transition-colors disabled:opacity-50 ${
+          confirmando
+            ? "border-red-500/60 bg-red-500/15 text-red-300 hover:bg-red-500/25"
+            : "border-zinc-700 text-zinc-400 hover:text-yellow-400 hover:border-yellow-400/50"
+        }`}
+      >
+        {liberando ? <Loader2 size={11} className="animate-spin" /> : <Unlock size={11} />}
+        {confirmando ? `Confirmar: ${c.n}` : "Desbloquear cliente"}
+      </button>
+    </div>
+  );
+}
+
 function TarjetaOperario({
   o,
   onAbrir,
   onLiberarTodos,
+  onDesbloquearCliente,
 }: {
   o: Operario;
   onAbrir: (f: Fila) => void;
   onLiberarTodos: (o: Operario) => Promise<void>;
+  onDesbloquearCliente: (codCliente: number) => Promise<void>;
 }) {
   const t = o.totales;
   const bloq = o.nroOperario === BLOQUEADOS;
@@ -143,7 +205,7 @@ function TarjetaOperario({
           </div>
           <div className="text-[11px] text-zinc-500 mt-1">
             {bloq
-              ? "No se asignan hasta que se desbloqueen"
+              ? "Por cliente: no se asignan (ni los que entren) hasta desbloquear"
               : `${fmtNum(t.controlados)} controlados · ${fmtNum(t.itemsControlados)} items`}
           </div>
         </div>
@@ -178,6 +240,13 @@ function TarjetaOperario({
           )}
         </div>
       </div>
+      {bloq && (
+        <div className="flex flex-col gap-1.5">
+          {clientesBloqueados(o.filas).map((c) => (
+            <ChipClienteBloqueado key={c.codCliente} c={c} onDesbloquear={onDesbloquearCliente} />
+          ))}
+        </div>
+      )}
       <Table
         cols={cols}
         rows={o.filas}
@@ -255,6 +324,25 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
     [dia, load],
   );
 
+  const desbloquearCliente = useCallback(
+    async (codCliente: number) => {
+      try {
+        const res = await fetch("/api/deposito/control-asignacion/liberar-cliente", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ codCliente }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof j.error === "string" ? j.error : `HTTP ${res.status}`);
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "No se pudo desbloquear");
+      }
+      if (dia) load(dia);
+    },
+    [dia, load],
+  );
+
   return (
     <div>
       <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap`}>
@@ -305,6 +393,7 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
                 o={o}
                 onAbrir={(f) => setAbierto({ nroPedido: f.nroPedido, nroRemito: f.nroRemito })}
                 onLiberarTodos={liberarTodos}
+                onDesbloquearCliente={desbloquearCliente}
               />
             ))}
           </div>
@@ -315,7 +404,9 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
             Punto verde = widget abierto. Click en una fila para ver el pedido y liberarlo
             (si el cliente tiene más pedidos con el mismo operario, se liberan todos juntos).
             &quot;Liberar todos&quot; devuelve a la cola todo lo abierto del operario. La tarjeta Bloqueados
-            junta los pedidos que no se asignan a nadie hasta desbloquearlos.
+            junta los pedidos que no se asignan a nadie hasta desbloquearlos: al bloquear un pedido se
+            bloquea el cliente entero (los pedidos que ya estaban en cola y los que entren después);
+            se desbloquea de a un pedido (click en la fila) o por cliente.
           </p>
         </>
       )}

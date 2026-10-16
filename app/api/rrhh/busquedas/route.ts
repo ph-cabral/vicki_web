@@ -11,7 +11,7 @@ export async function GET() {
     const [busquedas, conteo] = await Promise.all([
       prisma.rrhh_busqueda.findMany({
         orderBy: [{ estado: "asc" }, { abiertaEn: "desc" }, { id: "desc" }],
-        include: { puesto: { select: { id: true, nombre: true } }, area: { select: { id: true, nombre: true } } },
+        include: { puesto: { select: { id: true, nombre: true } }, area: { select: { id: true, nombre: true } }, motivo: { select: { id: true, nombre: true } } },
       }),
       prisma.rrhh_busqueda_postulante.groupBy({
         by: ["busquedaId", "estado"],
@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
         descripcion: body?.descripcion ? String(body.descripcion) : null,
         puestoId: body?.puestoId ? Number(body.puestoId) : null,
         areaId: body?.areaId ? Number(body.areaId) : null,
+        motivoId: body?.motivoId ? Number(body.motivoId) : null,
         creadoPor: s?.nombre ?? null,
       },
     });

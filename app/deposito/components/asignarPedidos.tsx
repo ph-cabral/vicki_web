@@ -17,7 +17,9 @@ import { fmtNum } from "./ui";
 // indicadores-api/control_asignacion.py.
 //
 // "Bloqueado" (opción del selector) = el pedido queda en la cola pero no se
-// asigna a nadie hasta que alguien lo desbloquee ("Quitar asignación").
+// asigna a nadie hasta que alguien lo desbloquee ("Quitar asignación"). Es por
+// CLIENTE: bloquear un pedido bloquea los demás del cliente en cola y los que
+// entren después, hasta desbloquear (ver BLOQUEO en control_asignacion.py).
 // API: GET  /api/deposito/control-asignacion/tablero
 //      GET  /api/deposito/control-asignacion/controladores
 //      POST /api/deposito/control-asignacion/preasignar
@@ -335,7 +337,7 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
   const opciones: Opcion[] = useMemo(
     () => [
       { value: URGENTE, label: "Urgente · primero libre", sub: "sin operario fijo", tono: "urgente" },
-      { value: BLOQUEAR, label: "Bloqueado", sub: "no se asigna hasta desbloquear", tono: "bloqueo" },
+      { value: BLOQUEAR, label: "Bloqueado", sub: "bloquea todos los pedidos del cliente", tono: "bloqueo" },
       ...controladores.map((c) => ({
         value: String(c.nroOperario),
         label: `${c.nombre} · ${c.nroOperario}`,
@@ -373,6 +375,8 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
       setUnidades((prev) =>
         prev.map((x) => (claveDe(x) === k ? { ...x, preasignado: j.preasignado ?? null } : x)),
       );
+      // El bloqueo es por cliente: si arrastró a otros pedidos, se recarga el tablero.
+      if (j.bloqueadosExtra > 0) cargar(true);
       // Contadores de preasignados por controlador.
       fetch("/api/deposito/control-asignacion/controladores", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
@@ -600,8 +604,8 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
           <p className="text-[11px] text-zinc-600 mt-4 leading-relaxed">
             El pedido elegido le sale a ese controlador apenas cierre en Magnus el que está controlando, antes que
             cualquier otro de la cola; si está en preparación, le sale cuando termine de armarse. &quot;Urgente&quot;
-            lo toma el primero que se libere. &quot;Bloqueado&quot; lo deja en la cola sin asignarlo a nadie hasta que se lo
-            desbloquee (&quot;Quitar asignación&quot;, o desde su tarjeta en Control por operario). &quot;Reservado&quot; = el cliente ya lo está controlando esa persona
+            lo toma el primero que se libere. &quot;Bloqueado&quot; lo deja en la cola sin asignarlo a nadie y bloquea al cliente entero (sus demás
+            pedidos en cola y los que entren después). Se desbloquea de a un pedido (&quot;Quitar asignación&quot;) o por cliente / pedido desde la tarjeta Bloqueados en Control por operario. &quot;Reservado&quot; = el cliente ya lo está controlando esa persona
             (el resto de sus pedidos va a ella, salvo que elijas otro controlador acá). Vta = vuelta de acopio.
             Se actualiza cada 30 segundos.
           </p>

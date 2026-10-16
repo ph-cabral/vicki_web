@@ -1199,6 +1199,17 @@ def purgar_cola_obsoleta() -> int:
 # Ya no hay liberación automática de preasignaciones a las 00 hs.
 BLOQUEO_OPERARIO = 0
 BLOQUEO_NOMBRE = "Bloqueado"
+# 2026-10-16 — el bloqueo es POR CLIENTE: un cliente "está bloqueado" mientras
+# tenga al menos una preasignación al operario 0 (sin tabla nueva).
+#   · Al bloquear un pedido (preasignar bloquear=True) se bloquean también los
+#     demás del cliente que ya están en la cola sin asignar y sin preasignación
+#     (no se pisa una preasignación a un operario ni lo que ya se está controlando).
+#   · refrescar_cola bloquea al entrar cada fila NUEVA de un cliente bloqueado
+#     (una sola vez por fila: liberar un pedido suelto no lo vuelve a bloquear).
+#   · Liberar un pedido = quitar su preasignación; liberar un cliente =
+#     liberar_cliente_bloqueado. Cuando al cliente no le queda ninguna
+#     preasignación 0 (se liberaron, se cerraron o se anularon) deja de estar bloqueado.
+AUTO_BLOQUEO_CLIENTE = "bloqueo cliente"
 
 
 def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
@@ -1237,6 +1248,7 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     candidatos = fetch_pedidos_listos_para_control(limit) + fetch_acopio_vueltas_espera_control(limit)
     if not candidatos:
         return 0
+    _asegurar_tabla_reserva()
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
@@ -1257,7 +1269,24 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
                     c["nroArmador"], c["nombreArmador"],
                 ),
             )
-            nuevos += cur.rowcount
+            entro = cur.rowcount
+            nuevos += entro
+            if entro and c.get("codCliente") is not None:
+                # Fila nueva de un cliente bloqueado -> entra bloqueada (misma transacción:
+                # nadie la ve en la cola antes de tener el bloqueo). Sólo corre por fila nueva.
+                cur.execute(
+                    """
+                    INSERT INTO deposito.control_preasignacion
+                        ("nroPedido", "nroRemito", "nroOperario", "asignadoA", "codCliente", cliente, "creadoPor")
+                    SELECT %(ped)s, %(rem)s, %(op)s, %(nom)s, %(cod)s, %(cli)s, %(por)s
+                    WHERE EXISTS (SELECT 1 FROM deposito.control_preasignacion b
+                                  WHERE b."codCliente" = %(cod)s AND b."nroOperario" = %(op)s)
+                    ON CONFLICT ("nroPedido", "nroRemito") DO NOTHING
+                    """,
+                    {"ped": c["nroPedido"], "rem": c.get("nroRemito", 0), "op": BLOQUEO_OPERARIO,
+                     "nom": BLOQUEO_NOMBRE, "cod": c["codCliente"], "cli": c["cliente"],
+                     "por": AUTO_BLOQUEO_CLIENTE},
+                )
         conn.commit()
     finally:
         conn.close()
@@ -2638,10 +2667,28 @@ def preasignar(nro_pedido: int, nro_remito: int, nro_operario: int | None,
         )
         cols = [c[0] for c in cur.description]
         r = dict(zip(cols, cur.fetchone()))
+        extra = 0
+        if bloquear and cod_cliente is not None:
+            # El bloqueo es por cliente: se bloquean también los demás pedidos/vueltas del
+            # cliente que están en la cola sin asignar. DO NOTHING -> no pisa preasignaciones
+            # a operarios ni urgentes. Los que entren después los bloquea refrescar_cola.
+            cur.execute(
+                """
+                INSERT INTO deposito.control_preasignacion
+                    ("nroPedido", "nroRemito", "nroOperario", "asignadoA", "codCliente", cliente, "creadoPor")
+                SELECT ca."nroPedido", ca."nroRemito", %s, %s, ca."codCliente", ca.cliente, %s
+                FROM deposito.control_asignacion ca
+                WHERE ca."codCliente" = %s AND ca."asignadoEn" IS NULL AND ca."cerradoEn" IS NULL
+                ON CONFLICT ("nroPedido", "nroRemito") DO NOTHING
+                """,
+                (BLOQUEO_OPERARIO, BLOQUEO_NOMBRE, AUTO_BLOQUEO_CLIENTE, cod_cliente),
+            )
+            extra = cur.rowcount
         conn.commit()
     finally:
         conn.close()
-    return {"nroPedido": nro_pedido, "nroRemito": nro_remito, "preasignado": _preasig_json(r)}
+    return {"nroPedido": nro_pedido, "nroRemito": nro_remito, "preasignado": _preasig_json(r),
+            "bloqueadosExtra": extra}
 
 
 def preasignado_listo(nro_operario: int) -> dict:
@@ -3062,7 +3109,7 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
         pre: list[dict] = []
         if es_hoy:
             cur.execute(
-                'SELECT "nroPedido", "nroRemito", "nroOperario", "asignadoA", cliente, '
+                'SELECT "nroPedido", "nroRemito", "nroOperario", "asignadoA", cliente, "codCliente", '
                 '       ("creadoEn" AT TIME ZONE \'UTC\' AT TIME ZONE %s) AS creado_local '
                 'FROM deposito.control_preasignacion WHERE "nroOperario" IS NOT NULL',
                 (_TZ_LOCAL,),
@@ -3192,6 +3239,7 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
             "items": v["lineas"] if v else None,
             "estado": "esperando", "noAsignado": False, "asignadoA": None,
             "controladoPor": None, "cliente": p["cliente"], "hora": _iso(p["creado_local"]),
+            "codCliente": int(p["codCliente"]) if p.get("codCliente") is not None else None,
         })
         ya.add((op, ped, rem))
 
@@ -3420,6 +3468,21 @@ def fetch_detalle_unidad(nro_pedido: int, nro_remito: int = 0) -> dict:
         estado = "libre"
 
     grupo: list[dict] = []
+    bloq_cliente: list[dict] = []
+    cod_bloq = (u or {}).get("codCliente") or cod_cliente
+    if op == BLOQUEO_OPERARIO and estado == "esperando" and cod_bloq is not None:
+        conn = get_pg_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT "nroPedido", "nroRemito", cliente FROM deposito.control_preasignacion '
+                'WHERE "codCliente" = %s AND "nroOperario" = %s ORDER BY "nroPedido", "nroRemito"',
+                (cod_bloq, BLOQUEO_OPERARIO),
+            )
+            bloq_cliente = [{"nroPedido": int(a), "nroRemito": int(b or 0), "cliente": c}
+                            for a, b, c in cur.fetchall()]
+        finally:
+            conn.close()
     if estado in ("en_proceso", "esperando") and op is not None:
         conn = get_pg_connection()
         try:
@@ -3462,6 +3525,7 @@ def fetch_detalle_unidad(nro_pedido: int, nro_remito: int = 0) -> dict:
         "cerradoEn": cerrado.isoformat() if cerrado else None,
         "puedeLiberar": estado in ("en_proceso", "esperando"),
         "grupo": grupo,
+        "bloqueadosCliente": bloq_cliente,
         "renglones": renglones,
     }
 
@@ -3621,3 +3685,31 @@ def liberar_operario(nro_operario: int, usuario: str | None = None) -> dict:
     print(f"[liberar_operario] {usuario or '?'} liberó {len(liberados)} unidad(es) de op {op}: "
           f"{[(x['nroPedido'], x['nroRemito']) for x in liberados]}", flush=True)
     return {"nroOperario": op, "liberados": sorted(liberados, key=lambda x: (x["nroPedido"], x["nroRemito"]))}
+
+
+def liberar_cliente_bloqueado(cod_cliente: int, usuario: str | None = None) -> dict:
+    """Desbloquea TODOS los pedidos/vueltas bloqueados de un cliente (borra sus
+    preasignaciones al operario BLOQUEO_OPERARIO). Al no quedarle ninguna, el
+    cliente deja de estar bloqueado y los que entren después no se bloquean.
+    Un solo DELETE por índice de codCliente, bajo el lock de la cola."""
+    _asegurar_tabla_reserva()
+    cod = int(cod_cliente)
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        cur.execute(
+            'DELETE FROM deposito.control_preasignacion '
+            'WHERE "codCliente" = %s AND "nroOperario" = %s '
+            'RETURNING "nroPedido", "nroRemito", cliente',
+            (cod, BLOQUEO_OPERARIO),
+        )
+        liberados = [{"nroPedido": int(a), "nroRemito": int(b or 0), "cliente": c, "origen": "preasignado"}
+                     for a, b, c in cur.fetchall()]
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[liberar_cliente_bloqueado] {usuario or '?'} desbloqueó {len(liberados)} unidad(es) "
+          f"del cliente {cod}: {[(x['nroPedido'], x['nroRemito']) for x in liberados]}", flush=True)
+    return {"codCliente": cod,
+            "liberados": sorted(liberados, key=lambda x: (x["nroPedido"], x["nroRemito"]))}

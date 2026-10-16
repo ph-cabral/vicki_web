@@ -117,6 +117,7 @@ from control_asignacion import (
     estado_grupos, decidir_grupo,
     fetch_tablero_asignacion, fetch_controladores, preasignar,
     fetch_mesa_por_operario, fetch_detalle_unidad, liberar_unidad, liberar_operario,
+    liberar_cliente_bloqueado,
 )
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
@@ -1913,6 +1914,10 @@ class LiberarOperarioIn(BaseModel):
     nroOperario: int
     usuario: str | None = None
 
+class LiberarClienteIn(BaseModel):
+    codCliente: int
+    usuario: str | None = None
+
 class PreasignarIn(BaseModel):
     nroPedido: int
     nroRemito: int = 0
@@ -2216,6 +2221,15 @@ def deposito_control_asignacion_liberar_operario(body: LiberarOperarioIn):
     todos los pedidos bloqueados). Ver liberar_operario en control_asignacion.py."""
     try:
         return liberar_operario(body.nroOperario, body.usuario)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/control-asignacion/liberar-cliente")
+def deposito_control_asignacion_liberar_cliente(body: LiberarClienteIn):
+    """Desbloquea todos los pedidos bloqueados de un cliente (el cliente deja de
+    estar bloqueado). Ver liberar_cliente_bloqueado en control_asignacion.py."""
+    try:
+        return liberar_cliente_bloqueado(body.codCliente, body.usuario)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

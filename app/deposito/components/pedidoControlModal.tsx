@@ -26,7 +26,7 @@ interface GrupoItem {
   nroPedido: number;
   nroRemito: number;
   cliente: string | null;
-  origen: "asignado" | "preasignado";
+  origen?: "asignado" | "preasignado";
 }
 interface Detalle {
   nroPedido: number;
@@ -48,6 +48,8 @@ interface Detalle {
   cerradoEn: string | null;
   puedeLiberar: boolean;
   grupo: GrupoItem[];
+  // Sólo si el pedido está Bloqueado: todos los pedidos/vueltas bloqueados del mismo cliente.
+  bloqueadosCliente: GrupoItem[];
   renglones: Renglon[];
 }
 
@@ -93,6 +95,7 @@ export function PedidoControlModal({
   const [d, setD] = useState<Detalle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmando, setConfirmando] = useState(false);
+  const [confirmandoCli, setConfirmandoCli] = useState(false);
   const [liberando, setLiberando] = useState(false);
   const [resultado, setResultado] = useState<string | null>(null);
 
@@ -144,8 +147,36 @@ export function PedidoControlModal({
     }
   }, [nroPedido, nroRemito, onLiberado, onClose]);
 
+  // Cliente bloqueado: se puede desbloquear sólo este pedido o todos los del cliente.
+  const codCliente = d?.codCliente ?? null;
+  const liberarCliente = useCallback(async () => {
+    if (codCliente == null) return;
+    setLiberando(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/deposito/control-asignacion/liberar-cliente", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codCliente }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      const n = Array.isArray(j.liberados) ? j.liberados.length : 0;
+      setResultado(`Cliente desbloqueado: ${n} pedido${n === 1 ? "" : "s"} vuelven a la cola.`);
+      onLiberado();
+      setTimeout(onClose, 1200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo desbloquear");
+      setConfirmandoCli(false);
+    } finally {
+      setLiberando(false);
+    }
+  }, [codCliente, onLiberado, onClose]);
+
   const grupo = d?.grupo ?? [];
   const varios = grupo.length > 1;
+  const bloqCli = d?.bloqueadosCliente ?? [];
+  const variosBloq = d?.nroOperario === 0 && bloqCli.length > 1;
 
   return (
     <div
@@ -234,6 +265,13 @@ export function PedidoControlModal({
                     </span>{" "}
                     de {d.operario}: {grupo.map(unidadTxt).join(", ")}
                   </>
+                ) : variosBloq ? (
+                  <>
+                    <span className="text-orange-300 font-medium">
+                      El cliente tiene {bloqCli.length} pedidos bloqueados:
+                    </span>{" "}
+                    {bloqCli.map(unidadTxt).join(", ")}. Los que entren mientras tanto también quedan bloqueados.
+                  </>
                 ) : (
                   <>Vuelve a la cola y lo puede tomar cualquier controlador.</>
                 )
@@ -245,6 +283,37 @@ export function PedidoControlModal({
             </div>
             {d.puedeLiberar && !resultado && (
               <div className="flex items-center gap-2">
+                {variosBloq && (
+                  <>
+                    {confirmandoCli && (
+                      <button
+                        onClick={() => setConfirmandoCli(false)}
+                        disabled={liberando}
+                        className="text-sm text-zinc-400 hover:text-zinc-200 px-3 py-1.5 rounded-md border border-zinc-700 disabled:opacity-40"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setConfirmando(false);
+                        if (confirmandoCli) liberarCliente();
+                        else setConfirmandoCli(true);
+                      }}
+                      disabled={liberando}
+                      className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-md border disabled:opacity-60 transition-colors ${
+                        confirmandoCli
+                          ? "bg-red-500/20 border-red-400/60 text-red-200 hover:bg-red-500/30"
+                          : "border-orange-400/60 text-orange-300 hover:bg-orange-400/10"
+                      }`}
+                    >
+                      {liberando && confirmandoCli ? <Loader2 size={14} className="animate-spin" /> : <Unlock size={14} />}
+                      {confirmandoCli
+                        ? `Confirmar: desbloquear ${bloqCli.length} pedidos`
+                        : `Desbloquear cliente (${bloqCli.length})`}
+                    </button>
+                  </>
+                )}
                 {confirmando && (
                   <button
                     onClick={() => setConfirmando(false)}
@@ -255,7 +324,11 @@ export function PedidoControlModal({
                   </button>
                 )}
                 <button
-                  onClick={() => (confirmando ? liberar() : setConfirmando(true))}
+                  onClick={() => {
+                    setConfirmandoCli(false);
+                    if (confirmando) liberar();
+                    else setConfirmando(true);
+                  }}
                   disabled={liberando}
                   className={`flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-md border disabled:opacity-60 transition-colors ${
                     confirmando
@@ -270,7 +343,9 @@ export function PedidoControlModal({
                       : "Confirmar liberación"
                     : varios
                       ? `Liberar ${grupo.length} pedidos`
-                      : "Liberar pedido"}
+                      : d.nroOperario === 0
+                        ? "Desbloquear pedido"
+                        : "Liberar pedido"}
                 </button>
               </div>
             )}

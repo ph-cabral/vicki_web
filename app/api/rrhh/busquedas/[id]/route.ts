@@ -19,6 +19,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     include: {
       puesto: { select: { id: true, nombre: true } },
       area: { select: { id: true, nombre: true } },
+      motivo: { select: { id: true, nombre: true } },
       postulantes: {
         orderBy: { createdAt: "asc" },
         include: { eventos: { orderBy: { fecha: "asc" } } },
@@ -71,6 +72,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   if (body.descripcion !== undefined) data.descripcion = body.descripcion ? String(body.descripcion) : null;
   if (body.puestoId !== undefined) data.puestoId = body.puestoId ? Number(body.puestoId) : null;
   if (body.areaId !== undefined) data.areaId = body.areaId ? Number(body.areaId) : null;
+  if (body.motivoId !== undefined) data.motivoId = body.motivoId ? Number(body.motivoId) : null;
   if (body.estado !== undefined) {
     if (body.estado !== "ABIERTA" && body.estado !== "CERRADA")
       return NextResponse.json({ error: "estado inválido" }, { status: 400 });

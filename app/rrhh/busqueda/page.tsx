@@ -31,11 +31,13 @@ type BusquedaRes = {
   abiertaEn: string; cerradaEn: string | null; puestoId: number | null;
   puesto: { id: number; nombre: string } | null;
   areaId: number | null; area: { id: number; nombre: string } | null;
+  motivoId: number | null; motivo: { id: number; nombre: string } | null;
   conteo: Record<string, number>;
 };
 type BusquedaDet = BusquedaRes & { postulantes: Postulante[] };
 type Puesto = { id: number; nombre: string; sector?: { area?: { id: number } | null } | null };
 type Area = { id: number; nombre: string };
+type Motivo = { id: number; nombre: string };
 type CandRes = {
   id: number; nombre: string; email: string | null; telefono: string | null; dni: string | null;
   estadosExcluyentes: EstadoPostulante[];
@@ -69,11 +71,12 @@ export default function BusquedaPage() {
   const [lista, setLista] = useState<BusquedaRes[]>([]);
   const [puestos, setPuestos] = useState<Puesto[]>([]);
   const [areas, setAreas] = useState<Area[]>([]);
+  const [motivos, setMotivos] = useState<Motivo[]>([]);
   const [selId, setSelId] = useState<number | null>(null);
   const [det, setDet] = useState<BusquedaDet | null>(null);
   const [loading, setLoading] = useState(true);
   const [aviso, setAviso] = useState<string | null>(null);
-  const [nueva, setNueva] = useState<{ titulo: string; areaId: string; descripcion: string } | null>(null);
+  const [nueva, setNueva] = useState<{ titulo: string; areaId: string; motivoId: string; descripcion: string } | null>(null);
   const [verCerradas, setVerCerradas] = useState(false);
 
   const avisar = useCallback((m: string) => { setAviso(m); setTimeout(() => setAviso(null), 7000); }, []);
@@ -97,6 +100,7 @@ export default function BusquedaPage() {
   useEffect(() => {
     api<Puesto[]>("/api/rrhh/puestos", "GET").then((p) => setPuestos(Array.isArray(p) ? p : [])).catch(() => {});
     api<Area[]>("/api/rrhh/areas", "GET").then((a) => setAreas(Array.isArray(a) ? a : [])).catch(() => {});
+    api<Motivo[]>("/api/rrhh/busquedas/motivos", "GET").then((m) => setMotivos(Array.isArray(m) ? m : [])).catch(() => {});
   }, []);
   useEffect(() => { if (selId != null) cargarDet(selId); else setDet(null); }, [selId, cargarDet]);
 
@@ -110,6 +114,7 @@ export default function BusquedaPage() {
         // si el puesto escrito es uno del catálogo, se vincula solo
         puestoId: puestos.find((p) => p.nombre.toLowerCase() === nueva.titulo.trim().toLowerCase())?.id ?? null,
         areaId: nueva.areaId ? Number(nueva.areaId) : null,
+        motivoId: nueva.motivoId ? Number(nueva.motivoId) : null,
       });
       setNueva(null);
       await cargarLista();
@@ -141,7 +146,7 @@ export default function BusquedaPage() {
           <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
             <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Búsquedas</span>
             <button
-              onClick={() => setNueva({ titulo: "", areaId: "", descripcion: "" })}
+              onClick={() => setNueva({ titulo: "", areaId: "", motivoId: "", descripcion: "" })}
               className="ml-auto inline-flex items-center gap-1 rounded-lg bg-yellow-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-yellow-300"
             ><Plus size={13} /> Nueva</button>
           </div>
@@ -163,7 +168,7 @@ export default function BusquedaPage() {
                     {b.estado === "CERRADA" && <span className="text-[10px] uppercase text-zinc-500 border border-zinc-700 rounded px-1">Cerrada</span>}
                   </div>
                   <div className="mt-0.5 text-[11px] text-zinc-500">
-                    {b.area?.nombre ? `${b.area.nombre} · ` : ""}desde {fmtDia(b.abiertaEn)} · {total} postulante{total === 1 ? "" : "s"}
+                    {b.area?.nombre ? `${b.area.nombre} · ` : ""}{b.motivo?.nombre ? `${b.motivo.nombre} · ` : ""}desde {fmtDia(b.abiertaEn)} · {total} postulante{total === 1 ? "" : "s"}
                     {b.conteo.EN_PROCESO ? ` · ${b.conteo.EN_PROCESO} en proceso` : ""}
                   </div>
                 </button>
@@ -184,6 +189,8 @@ export default function BusquedaPage() {
               key={det.id}
               det={det}
               areas={areas}
+              motivos={motivos}
+              onMotivoCreado={(m) => setMotivos((l) => [...l, m].sort((a, b) => a.nombre.localeCompare(b.nombre, "es")))}
               avisar={avisar}
               onCambio={refrescar}
               onBorrada={() => { setSelId(null); cargarLista(); }}
@@ -210,6 +217,15 @@ export default function BusquedaPage() {
             <option value="">Sin área</option>
             {areas.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
           </select>
+          <label className="block text-xs text-zinc-500 mb-1 mt-3">Motivo (opcional)</label>
+          <MotivoSelect
+            value={nueva.motivoId ? Number(nueva.motivoId) : null}
+            motivos={motivos}
+            onChange={(id) => setNueva({ ...nueva, motivoId: id ? String(id) : "" })}
+            onCreado={(m) => setMotivos((l) => [...l, m].sort((a, b) => a.nombre.localeCompare(b.nombre, "es")))}
+            avisar={avisar}
+            className={inputCls}
+          />
           <label className="block text-xs text-zinc-500 mb-1 mt-3">Notas</label>
           <textarea className={`${inputCls} min-h-[70px]`} value={nueva.descripcion} onChange={(e) => setNueva({ ...nueva, descripcion: e.target.value })} />
           <div className="mt-5 flex justify-end gap-2">
@@ -222,9 +238,64 @@ export default function BusquedaPage() {
   );
 }
 
+// Select de motivo con "+" para agregar uno nuevo al catálogo (queda disponible para todos).
+function MotivoSelect({ value, motivos, onChange, onCreado, avisar, className }: {
+  value: number | null; motivos: Motivo[]; onChange: (id: number | null) => void;
+  onCreado: (m: Motivo) => void; avisar: (m: string) => void; className: string;
+}) {
+  const [agregando, setAgregando] = useState(false);
+  const [texto, setTexto] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  async function agregar() {
+    const nombre = texto.trim();
+    if (!nombre || guardando) return;
+    setGuardando(true);
+    try {
+      const m = await api<Motivo>("/api/rrhh/busquedas/motivos", "POST", { nombre });
+      if (!motivos.some((x) => x.id === m.id)) onCreado(m);
+      onChange(m.id);
+      setTexto(""); setAgregando(false);
+    } catch (e) { avisar(`❌ ${e instanceof Error ? e.message : e}`); }
+    finally { setGuardando(false); }
+  }
+
+  if (agregando) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          className={className} autoFocus value={texto} maxLength={80} placeholder="Nuevo motivo"
+          onChange={(e) => setTexto(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); agregar(); }
+            if (e.key === "Escape") { setAgregando(false); setTexto(""); }
+          }}
+        />
+        <button type="button" onClick={agregar} disabled={!texto.trim() || guardando}
+          className="rounded-lg bg-yellow-400 px-2.5 py-2 text-xs font-semibold text-zinc-950 hover:bg-yellow-300 disabled:opacity-50">
+          {guardando ? <Loader2 size={14} className="animate-spin" /> : "OK"}
+        </button>
+        <button type="button" onClick={() => { setAgregando(false); setTexto(""); }}
+          className="p-2 text-zinc-500 hover:text-zinc-200" title="Cancelar"><X size={14} /></button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <select className={className} value={value ?? ""} title="Motivo de la búsqueda"
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+        <option value="">Sin motivo</option>
+        {motivos.map((m) => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+      </select>
+      <button type="button" onClick={() => setAgregando(true)} title="Agregar motivo"
+        className="rounded-lg border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400"><Plus size={14} /></button>
+    </div>
+  );
+}
+
 // ───────────────────────────── detalle de una búsqueda ─────────────────────────────
-function Detalle({ det, areas, avisar, onCambio, onBorrada }: {
-  det: BusquedaDet; areas: Area[]; avisar: (m: string) => void;
+function Detalle({ det, areas, motivos, onMotivoCreado, avisar, onCambio, onBorrada }: {
+  det: BusquedaDet; areas: Area[]; motivos: Motivo[]; onMotivoCreado: (m: Motivo) => void; avisar: (m: string) => void;
   onCambio: () => Promise<void>; onBorrada: () => void;
 }) {
   const [q, setQ] = useState("");
@@ -281,6 +352,14 @@ function Detalle({ det, areas, avisar, onCambio, onBorrada }: {
               <option value="">Sin área</option>
               {areas.map((a) => <option key={a.id} value={a.id}>{a.nombre}</option>)}
             </select>
+            <MotivoSelect
+              value={det.motivoId}
+              motivos={motivos}
+              onChange={(id) => cambiarBusqueda({ motivoId: id })}
+              onCreado={onMotivoCreado}
+              avisar={avisar}
+              className="bg-zinc-950 border border-zinc-700 text-zinc-300 text-xs rounded-lg px-2 py-1.5"
+            />
             <button
               onClick={() => cambiarBusqueda({ estado: det.estado === "ABIERTA" ? "CERRADA" : "ABIERTA" })}
               className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"

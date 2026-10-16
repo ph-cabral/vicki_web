@@ -1135,6 +1135,7 @@ model rrhh_busqueda {
   titulo      String                      @db.VarChar(160)
   puestoId    Int?
   areaId      Int?
+  motivoId    Int?
   descripcion String?
   estado      String                      @default("ABIERTA") @db.VarChar(10)
   abiertaEn   DateTime                    @default(now()) @db.Date
@@ -1144,9 +1145,20 @@ model rrhh_busqueda {
   updatedAt   DateTime                    @default(now()) @updatedAt
   puesto      puesto?                     @relation(fields: [puestoId], references: [id], onDelete: SetNull)
   area        area?                       @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  motivo      rrhh_busqueda_motivo?       @relation(fields: [motivoId], references: [id], onDelete: SetNull)
   postulantes rrhh_busqueda_postulante[]
 
   @@index([estado, abiertaEn(sort: Desc)])
+  @@schema("everwear")
+}
+
+// Catálogo de motivos de una búsqueda (Reemplazo, Puesto nuevo, ...); se agregan desde la UI.
+model rrhh_busqueda_motivo {
+  id        Int             @id @default(autoincrement())
+  nombre    String          @unique @db.VarChar(80)
+  createdAt DateTime        @default(now())
+  busquedas rrhh_busqueda[]
+
   @@schema("everwear")
 }
 
