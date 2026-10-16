@@ -12,6 +12,13 @@ import {
 } from "@/components/vicki/CvBarra";
 
 type Msg = { role: "user" | "assistant"; content: string };
+type Conv = { session_id: string; titulo: string | null; ultimo: string | null; mensajes: number; historica: boolean };
+
+// Cada «Nueva conversación» es una sesión propia (user_<uid>_<token>): no
+// arrastra nada de las anteriores. El servidor valida que sea del propio usuario.
+function nuevoSessionId(uid: string) {
+  return `user_${uid}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
 
 const GENEROS = [
   { label: "Masculino", value: "male" },
@@ -183,7 +190,22 @@ export default function VickiPage() {
   // USER_ID vacío hasta que responde /api/auth/me: SESSION_ID queda "" y los
   // efectos que dependen de él esperan a que haya uno real.
   const [userId, setUserId] = useState<string>("");
-  const sessionId = userId ? `user_${userId}` : "";
+  const [sessionId, setSessionId] = useState<string>("");
+  // Conversación anterior abierta en SOLO LECTURA (null = la actual).
+  const [viendoSid, setViendoSid] = useState<string | null>(null);
+  const [lista, setLista] = useState<Conv[]>([]);
+  const [listaAbierta, setListaAbierta] = useState(false);
+  const lectura = viendoSid !== null;
+  // La conversación actual se recuerda en este navegador/celular; sin ninguna
+  // guardada arranca una nueva (las viejas quedan en «Anteriores»).
+  useEffect(() => {
+    if (!userId) return;
+    let sid = "";
+    try { sid = localStorage.getItem(`vicki_sid_${userId}`) || ""; } catch {}
+    if (!new RegExp(`^user_${userId}_[a-z0-9]{6,24}$`).test(sid)) sid = nuevoSessionId(userId);
+    try { localStorage.setItem(`vicki_sid_${userId}`, sid); } catch {}
+    setSessionId(sid);
+  }, [userId]);
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
@@ -210,9 +232,6 @@ export default function VickiPage() {
   // Sólo para pantallas angostas (abajo de lg la barra no entra al costado).
   const [barraAbierta, setBarraAbierta] = useState(false);
   const [descartados, setDescartados] = useState<Candidato[]>([]);
-  // Mensajes que quedaron atrás del corte de «Nueva conversación»: están en
-  // la base, sólo que no se muestran hasta que los pidas.
-  const [anteriores, setAnteriores] = useState(0);
   const endRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -220,12 +239,10 @@ export default function VickiPage() {
   // Por defecto trae la conversación EN CURSO; con `todo` trae también lo
   // anterior al corte de «Nueva conversación» (nada se borra nunca).
   const cargarHistorial = useCallback(
-    async (todo = false) => {
-      if (!sessionId) return;
+    async (sid: string) => {
+      if (!sid) return;
       try {
-        const r = await fetch(
-          `/api/vicki/history/${sessionId}${todo ? "?todo=1" : ""}`,
-        );
+        const r = await fetch(`/api/vicki/history/${sid}?todo=1`);
         if (!r.ok) return;
         const data = await r.json();
         const map: Record<string, "user" | "assistant"> = {
@@ -237,7 +254,6 @@ export default function VickiPage() {
           content: m.content,
         }));
         setMessages(hist);
-        setAnteriores(todo ? 0 : Number(data.anteriores ?? 0));
 
         // Reconstruir la barra de CVs: cada mensaje "ai" de búsqueda guardó
         // sus candidatos en metadata. Se recorre al revés para que los de la
@@ -269,23 +285,45 @@ export default function VickiPage() {
         );
       } catch {}
     },
-    [sessionId],
+    [],
   );
 
   useEffect(() => {
-    cargarHistorial();
-  }, [cargarHistorial]);
+    cargarHistorial(viendoSid ?? sessionId);
+  }, [cargarHistorial, viendoSid, sessionId]);
 
-  // «Nueva conversación»: Vicki arranca de cero (deja de arrastrar el puesto y
-  // el tema de la charla anterior). Los mensajes NO se borran — quedan atrás
-  // del corte y se vuelven a ver con «Ver anteriores».
-  async function nuevaConversacion() {
-    if (!sessionId || loading) return;
+  // «Nueva conversación»: sesión nueva de verdad, sin nada de las anteriores
+  // (Vicki solo recibe la pregunta actual y las anotaciones de ESTA charla).
+  // Las anteriores no se borran: quedan en «Anteriores», solo lectura.
+  function nuevaConversacion() {
+    if (!userId || loading) return;
+    const sid = nuevoSessionId(userId);
+    try { localStorage.setItem(`vicki_sid_${userId}`, sid); } catch {}
+    setViendoSid(null);
+    setListaAbierta(false);
+    setMessages([]);
+    setCandidatos([]);
+    setDescartados([]);
+    setRecomendados(new Set());
+    setInput("");
+    setSessionId(sid);
+  }
+
+  async function abrirLista() {
+    const abrir = !listaAbierta;
+    setListaAbierta(abrir);
+    if (!abrir) return;
     try {
-      const r = await fetch(`/api/vicki/conversacion/${sessionId}`, { method: "POST" });
+      const r = await fetch("/api/vicki/conversaciones", { cache: "no-store" });
       if (!r.ok) return;
-      await cargarHistorial();
+      const d = await r.json();
+      setLista(d.conversaciones ?? []);
     } catch {}
+  }
+
+  function verConversacion(c: Conv) {
+    setListaAbierta(false);
+    setViendoSid(c.session_id === sessionId ? null : c.session_id);
   }
 
   useEffect(() => {
@@ -453,7 +491,7 @@ export default function VickiPage() {
     app.hablar(resumenHablado(texto));
   }
 
-  const inputLocked = awaitingEmp && (!gender || !location);
+  const inputLocked = lectura || (awaitingEmp && (!gender || !location));
   const placeholder = awaitingEmp
     ? !gender || !location
       ? "Seleccioná sexo y ubicación primero"
@@ -486,6 +524,7 @@ export default function VickiPage() {
   }
 
   async function descartar(c: Candidato) {
+    if (lectura) return;
     quitarDeBarra(c);
     setDescartados((prev) => [c, ...prev.filter((x) => claveCandidato(x) !== claveCandidato(c))]);
     // sin candidato_id (puntos viejos de Qdrant sin esa metadata) no se puede
@@ -501,6 +540,7 @@ export default function VickiPage() {
   }
 
   async function recuperar(c: Candidato) {
+    if (lectura) return;
     setDescartados((prev) => prev.filter((x) => claveCandidato(x) !== claveCandidato(c)));
     setCandidatos((prev) => [c, ...prev.filter((x) => claveCandidato(x) !== claveCandidato(c))]);
     if (c.candidato_id == null) return;
@@ -512,7 +552,7 @@ export default function VickiPage() {
   }
 
   async function send(message: string, voz = false) {
-    if (!message.trim() || loading || !sessionId) return;
+    if (!message.trim() || loading || !sessionId || lectura) return;
     const userMsg: Msg = { role: "user", content: message };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
@@ -673,12 +713,47 @@ export default function VickiPage() {
       <header className="border-b border-zinc-800 px-6 py-4 flex items-center gap-3">
         <InicioButton className="text-zinc-400 hover:text-white transition-colors p-1.5" />
         <h1 className="text-lg font-semibold">Vicki — Selección de Personal</h1>
+        <div className="ml-auto relative">
+          <button
+            type="button"
+            onClick={abrirLista}
+            disabled={!userId}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white disabled:opacity-40"
+          >
+            Anteriores
+          </button>
+          {listaAbierta && (
+            <div className="absolute right-0 top-full z-30 mt-2 w-80 max-w-[85vw] max-h-96 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
+              {lista.length === 0 && (
+                <div className="px-3 py-4 text-xs text-zinc-500">No hay conversaciones.</div>
+              )}
+              {lista.map((c) => (
+                <button
+                  key={c.session_id}
+                  type="button"
+                  onClick={() => verConversacion(c)}
+                  className={`block w-full border-b border-zinc-800 px-3 py-2 text-left hover:bg-zinc-800 ${
+                    c.session_id === (viendoSid ?? sessionId) ? "bg-zinc-800/70" : ""
+                  }`}
+                >
+                  <div className="truncate text-xs text-zinc-200">
+                    {c.historica ? "Historial anterior (todo junto)" : c.titulo || "(sin título)"}
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    {c.ultimo ? new Date(c.ultimo).toLocaleString("es-AR") : ""} · {c.mensajes} mensajes
+                    {c.session_id === sessionId ? " · actual" : ""}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           onClick={nuevaConversacion}
           disabled={loading || !sessionId}
-          title="Vicki arranca de cero y deja de arrastrar el puesto y el tema de la charla anterior. No se borra nada: los mensajes quedan y se vuelven a ver con «Ver anteriores»."
-          className="ml-auto rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white disabled:opacity-40"
+          title="Abre una conversación nueva, sin nada de las anteriores. Las anteriores quedan en «Anteriores» (solo lectura)."
+          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white disabled:opacity-40"
         >
           Nueva conversación
         </button>
@@ -705,16 +780,15 @@ export default function VickiPage() {
       <div className="flex flex-1 min-w-0 flex-col">
       <main className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl flex flex-col gap-4">
-          {/* Lo anterior al corte de «Nueva conversación» sigue guardado: acá
-              se vuelve a traer. Vicki no lo lee, es para que lo veas vos. */}
-          {anteriores > 0 && (
-            <div className="text-center">
+          {lectura && (
+            <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-center text-xs text-amber-200">
+              Conversación anterior, solo lectura.{" "}
               <button
                 type="button"
-                onClick={() => cargarHistorial(true)}
-                className="text-xs text-zinc-500 underline underline-offset-4 transition-colors hover:text-zinc-300"
+                onClick={() => setViendoSid(null)}
+                className="underline underline-offset-4 hover:text-white"
               >
-                Ver los {anteriores} mensajes anteriores
+                Volver a la conversación actual
               </button>
             </div>
           )}

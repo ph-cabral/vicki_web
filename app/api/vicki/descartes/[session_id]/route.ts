@@ -13,7 +13,7 @@ export async function GET(
 ) {
   const { session_id } = await params;
   // Cada uno opera sobre su propia conversación (ver lib/vicki/sesionChat.ts).
-  const sid = await sessionIdVicki();
+  const sid = await sessionIdVicki(session_id);
   if (!sid) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   if (sid !== session_id) {
     return NextResponse.json({ error: "No corresponde" }, { status: 403 });
@@ -28,7 +28,7 @@ export async function POST(
 ) {
   const { session_id } = await params;
   // Cada uno opera sobre su propia conversación (ver lib/vicki/sesionChat.ts).
-  const sid = await sessionIdVicki();
+  const sid = await sessionIdVicki(session_id);
   if (!sid) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   if (sid !== session_id) {
     return NextResponse.json({ error: "No corresponde" }, { status: 403 });

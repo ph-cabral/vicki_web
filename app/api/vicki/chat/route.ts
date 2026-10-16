@@ -14,10 +14,9 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // El session_id se impone acá, igual que los permisos: venía del browser,
-    // así que cambiándolo se podía escribir y leer la conversación de otro
-    // usuario. Ver lib/vicki/sesionChat.ts.
-    const sid = await sessionIdVicki();
+    // El session_id se valida acá (solo sesiones del propio usuario). Ver
+    // lib/vicki/sesionChat.ts.
+    const sid = await sessionIdVicki(body?.session_id);
     if (!sid) {
       return NextResponse.json({ error: "No autenticado" }, { status: 401 });
     }
