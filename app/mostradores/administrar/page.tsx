@@ -236,6 +236,7 @@ export default function AdministrarPage() {
   const [abiertas, setAbiertas] = useState<Set<number>>(new Set());
   const [estado, setEstado] = useState<Record<number, EstadoLinea>>({});
   const [enviando, setEnviando] = useState<string | null>(null);
+  const [verOtro, setVerOtro] = useState(false); // mobile: el panel del otro depósito va plegado
 
   const [enControl, setEnControl] = useState<EnControl[] | null>(null);
   const [panelCargando, setPanelCargando] = useState(false);
@@ -470,21 +471,21 @@ export default function AdministrarPage() {
 
   return (
     <div className="dark min-h-screen bg-[#111111] text-white">
-      <div className="w-full mx-auto px-4 sm:px-6 py-8">
+      <div className="w-full mx-auto px-4 sm:px-6 py-4 sm:py-8">
         <InicioButton label="Inicio" iconSize={16} className="text-sm text-zinc-500 hover:text-yellow-400 transition-colors mb-4" />
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <header className="mb-4 sm:mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide">Mostradores · Administrar</h1>
             <p className="text-sm text-zinc-500 mt-1">Líneas y códigos patrón con el estado de su control.</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
             <div className="inline-flex gap-1 rounded-lg bg-[#171717] border border-zinc-800 p-1" title="Depósito">
               {DEPOSITOS.map((d) => (
                 <button
                   key={d.id}
                   type="button"
                   onClick={() => cambiarDeposito(d.id)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                  className={`rounded-md px-3 py-1.5 max-md:py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                     deposito === d.id ? "bg-yellow-400 text-black" : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -559,11 +560,15 @@ export default function AdministrarPage() {
                     return (
                       <Fragment key={l.id}>
                         <TableRow className="cursor-pointer border-b border-zinc-800/60 hover:bg-[#1f1f1f]" onClick={() => alternar(l.id)}>
-                          <TableCell className="px-2.5 text-zinc-100">
+                          <TableCell className="px-2.5 text-zinc-100 max-sm:whitespace-normal max-sm:py-3">
                             <span className="inline-flex items-center gap-1.5">
-                              {abierta ? <ChevronDown className="h-4 w-4 text-yellow-400" /> : <ChevronRight className="h-4 w-4 text-zinc-500" />}
+                              {abierta ? <ChevronDown className="h-4 w-4 shrink-0 text-yellow-400" /> : <ChevronRight className="h-4 w-4 shrink-0 text-zinc-500" />}
                               {l.nombre}
                             </span>
+                            <div className="sm:hidden mt-1.5 pl-[22px] flex items-center gap-2">
+                              <Barra valor={av} clase="bg-[#3fb950]" />
+                              <span className="w-9 shrink-0 text-right text-[10px] tabular-nums text-zinc-500">{fmtPct(Math.round(av))}</span>
+                            </div>
                           </TableCell>
                           <TableCell
                             className={`px-2.5 text-right tabular-nums font-medium ${vista === "pendientes" ? "text-amber-300" : "text-[#3fb950]"}`}
@@ -599,7 +604,7 @@ export default function AdministrarPage() {
                                 </div>
                               )}
                               {patronesVista && patronesVista.length > 0 && (
-                                <Table>
+                                <Table className="max-md:block max-md:[&>thead]:hidden max-md:[&>tbody]:block">
                                   <TableHeader>
                                     <TableRow className="hover:bg-transparent">
                                       <TableHead className={`${thBase} pl-8`}>Código patrón</TableHead>
@@ -612,11 +617,11 @@ export default function AdministrarPage() {
                                     {patronesVista.map((p) => (
                                       <TableRow
                                         key={p.codigo}
-                                        className={`border-b border-zinc-800/60 align-top ${p.controlado ? "bg-emerald-900/30 hover:bg-emerald-900/40" : "hover:bg-[#1a1a1a]"}`}
+                                        className={`border-b border-zinc-800/60 align-top max-md:grid max-md:grid-cols-1 max-md:gap-y-1.5 max-md:px-3 max-md:py-3 ${p.controlado ? "bg-emerald-900/30 hover:bg-emerald-900/40" : "hover:bg-[#1a1a1a]"}`}
                                       >
-                                        <TableCell className="pl-8 px-2.5 tabular-nums text-zinc-100">{p.codigo}</TableCell>
-                                        <TableCell className="px-2.5 text-zinc-300">{p.detalle || <span className="text-zinc-600">—</span>}</TableCell>
-                                        <TableCell className="px-2.5">
+                                        <TableCell className="pl-8 px-2.5 tabular-nums text-zinc-100 max-md:p-0 max-md:text-xs max-md:text-zinc-500">{p.codigo}</TableCell>
+                                        <TableCell className="px-2.5 text-zinc-300 max-md:p-0 max-md:whitespace-normal max-md:font-medium max-md:text-zinc-100">{p.detalle || <span className="text-zinc-600">—</span>}</TableCell>
+                                        <TableCell className="px-2.5 max-md:p-0 max-md:pt-1">
                                           {p.pendiente ? (
                                             <span className="text-xs text-amber-400">En control</span>
                                           ) : (
@@ -624,25 +629,25 @@ export default function AdministrarPage() {
                                               type="button"
                                               disabled={enviando === p.codigo}
                                               onClick={() => mandar(l.id, p.codigo)}
-                                              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors disabled:opacity-50"
+                                              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 max-md:flex max-md:w-full max-md:justify-center max-md:py-2.5 hover:border-yellow-400 hover:text-yellow-400 transition-colors disabled:opacity-50"
                                             >
                                               {enviando === p.codigo ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
                                               {p.controlado ? "Volver a controlar" : "Mandar a control"}
                                             </button>
                                           )}
                                         </TableCell>
-                                        <TableCell className="px-2.5">
+                                        <TableCell data-label="Fechas de control" className="px-2.5 max-md:p-0 max-md:whitespace-normal max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">
                                           {p.controles.length === 0 ? (
                                             <span className="text-zinc-600">—</span>
                                           ) : (
-                                            <div className="flex flex-col items-start gap-0.5">
+                                            <div className="flex flex-col items-start gap-0.5 max-md:flex-row max-md:flex-wrap max-md:gap-x-4 max-md:gap-y-1.5 max-md:pt-0.5">
                                               {ultimosControles(p.controles).map((c) =>
                                                 c.tieneArchivo ? (
                                                   <a
                                                     key={c.id}
                                                     href={`/api/mostradores/controles/${c.id}/excel`}
                                                     title={`Descargar el Excel del control (${fmtFechaHora(c.fecha)})`}
-                                                    className="inline-flex items-center gap-1 text-xs tabular-nums text-emerald-300 hover:text-yellow-400 hover:underline transition-colors"
+                                                    className="inline-flex items-center gap-1 text-xs max-md:text-sm max-md:py-1 tabular-nums text-emerald-300 hover:text-yellow-400 hover:underline transition-colors"
                                                   >
                                                     <Download className="h-3 w-3" />
                                                     {fmtFecha(c.fecha)}
@@ -681,14 +686,24 @@ export default function AdministrarPage() {
               error={panelError}
               cargando={panelCargando}
             />
-            <div className="border-t border-zinc-800" />
-            <PanelDeposito
-              nombre={nombreDep(otroDep(deposito))}
-              tot={totOtro}
-              enControl={enControlOtro}
-              error={panelErrorOtro}
-              cargando={panelCargando}
-            />
+            <button
+              type="button"
+              onClick={() => setVerOtro((v) => !v)}
+              className="lg:hidden rounded-md border border-zinc-800 bg-[#171717] px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-zinc-400 hover:text-yellow-400"
+            >
+              {verOtro ? "Ocultar" : "Ver"} {nombreDep(otroDep(deposito))}
+              {enControlOtro ? ` · ${enControlOtro.length} en control` : ""}
+            </button>
+            <div className={`flex flex-col gap-4 ${verOtro ? "" : "max-lg:hidden"}`}>
+              <div className="border-t border-zinc-800 max-lg:hidden" />
+              <PanelDeposito
+                nombre={nombreDep(otroDep(deposito))}
+                tot={totOtro}
+                enControl={enControlOtro}
+                error={panelErrorOtro}
+                cargando={panelCargando}
+              />
+            </div>
           </aside>
         </div>
       </div>

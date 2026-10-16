@@ -314,6 +314,9 @@ export function SidebarGlobal() {
         <ChevronLeft size={14} />
       </button>
 
+      {/* Contenedor que recorta el panel mientras está cerrado: un fixed trasladado
+          fuera de pantalla hace paneable la página en horizontal en celular. */}
+      <div className="fixed inset-0 z-[130] overflow-hidden pointer-events-none">
       <aside
         onMouseLeave={() => {
           if (!tactil && drag === null) cerrar();
@@ -322,7 +325,7 @@ export function SidebarGlobal() {
           transform: `translateX(${ANCHO - visible}px)`,
           transition: arrastrando ? "none" : undefined,
         }}
-        className="fixed right-0 top-0 h-full w-60 z-[130] bg-[#161616] border-l border-zinc-800
+        className="absolute right-0 top-0 h-full w-60 pointer-events-auto bg-[#161616] border-l border-zinc-800
           flex flex-col transition-transform duration-200 ease-out shadow-2xl shadow-black/60"
       >
         <div className="h-16 flex items-center border-b border-zinc-800">
@@ -411,6 +414,7 @@ export function SidebarGlobal() {
           EVER WEAR S.A.
         </div>
       </aside>
+      </div>
     </>
   );
 }

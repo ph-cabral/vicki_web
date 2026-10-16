@@ -39,8 +39,8 @@ export default async function Home() {
 
   return (
     <div className="min-h-screen bg-gray-950 flex flex-col">
-      <header className="flex items-center gap-3 px-5 py-3">
-        <span className="text-white/90 text-sm font-medium">{s.nombre}</span>
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-3">
+        <span className="text-white/90 text-sm font-medium min-w-0 truncate">{s.nombre}</span>
         <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/70">
           {s.rol === "ADMIN" ? "Administrador" : "Usuario"}
         </span>

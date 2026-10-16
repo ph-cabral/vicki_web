@@ -333,6 +333,12 @@ function valorCampo(o: object, campo: CampoPeriodo, unidades: boolean): number {
 // horizontal, 1ª columna fija); sin desglose cada fila es una tarjeta.
 const MOB_PIV_TR =
   "max-md:grid max-md:grid-cols-3 max-md:gap-x-3 max-md:gap-y-1 max-md:px-3 max-md:py-2.5";
+// Línea amarilla entre filas, inset (no toca los marcos): pseudo-elemento
+// absoluto en el <tr> en vez de border-t (que va de borde a borde).
+const SEP_FILA =
+  "relative before:content-[''] before:pointer-events-none before:absolute before:inset-x-3 before:top-0 before:h-px before:bg-yellow-400/50";
+const SEP_FILA_SUB =
+  "relative before:content-[''] before:pointer-events-none before:absolute before:inset-x-3 before:top-0 before:h-px before:bg-yellow-400/25";
 const MOB_STICKY =
   "max-md:sticky max-md:left-0 max-md:z-10 max-md:bg-[#161616] max-md:max-w-[9rem] max-md:truncate";
 const MOB_PIV_LBL =
@@ -1946,7 +1952,7 @@ export default function VentasVendedorPage() {
                                     return (
                                       <tr
                                         key={r.key}
-                                        className={`border-t border-zinc-800/60 transition-colors ${desglosado ? "" : MOB_PIV_TR}`}
+                                        className={`${SEP_FILA} transition-colors ${desglosado ? "" : MOB_PIV_TR}`}
                                       >
                                         {/* Drill-down simétrico (2026-08-25): la fila es un
                                         CLIENTE en modo "linea" y una LÍNEA en
@@ -2401,7 +2407,7 @@ export default function VentasVendedorPage() {
                               ? (grupo as TopCliente[]).map((c, i) => (
                                   <tr
                                     key={c.numero}
-                                    className={`border-t border-zinc-800/60 hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
+                                    className={`${SEP_FILA} hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
                                   >
                                     <td className="px-3 py-2 text-zinc-500 tabular-nums max-md:hidden">
                                       {gIdx * GROUP_SIZE + i + 1}
@@ -2473,10 +2479,10 @@ export default function VentasVendedorPage() {
                                           ? () => toggleLinea(l.linea)
                                           : () => abrirModalLinea(l.linea)
                                       }
-                                      className={`border-t border-l-2 transition-colors cursor-pointer ${mobTopTr} ${
+                                      className={`${SEP_FILA} border-l-2 transition-colors cursor-pointer ${mobTopTr} ${
                                         lineaAbierta
-                                          ? "border-t-zinc-800/60 border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
-                                          : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
+                                          ? "border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
+                                          : "border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
                                       }`}
                                       title={
                                         l.aperturaComercial
@@ -2544,7 +2550,7 @@ export default function VentasVendedorPage() {
                                     {lineaAbierta && subsDe(l).map((sl) => (
                                       <tr
                                         key={`${l.linea}::${sl.subLinea}`}
-                                        className={`border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
+                                        className={`${SEP_FILA_SUB} hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
                                       >
                                         <td className="px-3 py-2 max-md:hidden" />
                                         <td

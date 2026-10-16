@@ -118,6 +118,14 @@
 }
 
 @layer base {
+  /* Celular: nada de paneo/rebote horizontal de la página (el contenido ancho
+     scrollea dentro de su propio contenedor, no la página entera). */
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+    overscroll-behavior-x: none;
+  }
   * {
     @apply border-border outline-ring/50;
   }

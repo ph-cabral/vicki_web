@@ -916,11 +916,11 @@ function GrupoCard({
   return (
     <div
       className={`rounded-xl border overflow-hidden ${
-        extra ? "border-red-900/50 bg-red-500/[0.05]" : "border-zinc-800 bg-[#161616]"
-      } ${pinned ? "ring-1 ring-yellow-400/60" : ""}`}
+        extra ? "border-yellow-400/60 bg-red-500/[0.05]" : "border-yellow-400/60 bg-[#161616]"
+      } ${pinned ? "ring-2 ring-yellow-400" : ""}`}
     >
       <div className={`flex items-center gap-4 px-4 py-3 border-b ${
-        extra ? "bg-red-500/[0.08] border-red-900/40" : "bg-[#1A1A1A] border-zinc-800"
+        extra ? "bg-red-500/[0.08] border-yellow-400/30" : "bg-[#1A1A1A] border-yellow-400/30"
       }`}>
         {onTogglePin && (
           <button
@@ -1060,8 +1060,8 @@ function GrupoCardListo({
   leaving?: Record<string, "left" | "right">;
 }) {
   return (
-    <div className="rounded-xl border border-green-900/50 bg-green-500/[0.05] overflow-hidden">
-      <div className="flex items-center gap-4 px-4 py-3 border-b bg-green-500/[0.08] border-green-900/40">
+    <div className="rounded-xl border border-yellow-400/60 bg-green-500/[0.05] overflow-hidden">
+      <div className="flex items-center gap-4 px-4 py-3 border-b bg-green-500/[0.08] border-yellow-400/30">
         {/* Ver GrupoCard: cliente y, solo para admin, el vendedor. */}
         <div
           className={`flex-1 grid gap-x-6 gap-y-1 min-w-0 ${
