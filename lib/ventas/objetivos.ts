@@ -59,6 +59,10 @@ export function useObjetivosVentas(linea: string) {
   const [objetivos, setObjetivos] = useState<ObjetivosLinea>({});
   const [puedeEditar, setPuedeEditar] = useState(false);
   const [cargando, setCargando] = useState(false);
+  /** Nombre de cada vendedor con objetivo (para listar a los que no vendieron). */
+  const [nombres, setNombres] = useState<Record<string, string>>({});
+  /** Vendedores activos (sólo si el usuario puede editar): para cargar objetivo a quien aún no vendió. */
+  const [vendedoresEditables, setVendedoresEditables] = useState<{ codigo: number; nombre: string }[]>([]);
 
   const recargar = useCallback(async () => {
     if (!linea) return;
@@ -71,6 +75,8 @@ export function useObjetivosVentas(linea: string) {
       if (r.ok) {
         setObjetivos((j.objetivos ?? {}) as ObjetivosLinea);
         setPuedeEditar(j.puedeEditar === true);
+        setNombres((j.nombres ?? {}) as Record<string, string>);
+        setVendedoresEditables(Array.isArray(j.vendedores) ? j.vendedores : []);
       }
     } catch {
       // Sin objetivos el ranking se muestra igual, sólo sin la columna.
@@ -164,7 +170,7 @@ export function useObjetivosVentas(linea: string) {
     [linea],
   );
 
-  return { objetivos, puedeEditar, cargando, recargar, guardar, borrarRango };
+  return { objetivos, nombres, vendedoresEditables, puedeEditar, cargando, recargar, guardar, borrarRango };
 }
 
 /**

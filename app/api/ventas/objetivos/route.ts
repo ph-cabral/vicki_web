@@ -47,6 +47,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth/session";
 import { resolverAccesoObjetivoVentas } from "@/lib/ventas/objetivoAcceso";
+import { fetchCatalogoVendedores, listarVendedoresActivos } from "@/lib/ventas/vendedoresActivos";
 
 export const dynamic = "force-dynamic";
 
@@ -165,7 +166,29 @@ export async function GET(req: NextRequest) {
       if (f.objetivoUnidades != null) fila.unidades = Number(f.objetivoUnidades);
       if (Object.keys(fila).length > 0) (objetivos[v] ??= {})[mes] = fila;
     }
-    return NextResponse.json({ linea, objetivos, puedeEditar: acceso.puedeEditar });
+
+    // Nombres de los vendedores con objetivo (2026-10-16): el Pulso lista
+    // también a los que tienen objetivo y NO vendieron nada en el período
+    // (no están en el ranking de ventas, así que el nombre sale del maestro
+    // Vendedores). Y, sólo para quien edita, los vendedores activos: el modal
+    // de carga puede así fijarle objetivo a alguien que todavía no vendió.
+    // Es opcional: si el catálogo no responde, el resto de la respuesta sale igual.
+    const nombres: Record<string, string> = {};
+    let vendedores: { codigo: number; nombre: string }[] = [];
+    try {
+      const catalogo = await fetchCatalogoVendedores();
+      for (const v of catalogo) {
+        if (objetivos[String(v.codigo)] && v.nombre) nombres[String(v.codigo)] = v.nombre;
+      }
+      if (acceso.puedeEditar) {
+        vendedores = (await listarVendedoresActivos())
+          .filter((v) => v.nombre)
+          .map((v) => ({ codigo: v.codigo, nombre: v.nombre as string }));
+      }
+    } catch (e) {
+      console.error("GET /api/ventas/objetivos (nombres)", e);
+    }
+    return NextResponse.json({ linea, objetivos, nombres, vendedores, puedeEditar: acceso.puedeEditar });
   } catch (error) {
     console.error("GET /api/ventas/objetivos", error);
     return NextResponse.json({ error: "No se pudieron leer los objetivos" }, { status: 500 });

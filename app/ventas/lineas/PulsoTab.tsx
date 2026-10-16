@@ -203,7 +203,39 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
   // Sólo se listan los que vendieron algo (neto > 0) en la métrica elegida:
   // un vendedor en cero o negativo (sólo notas de crédito) no es parte del
   // ranking. `itemsTodos` queda para el modal de objetivos.
-  const items = itemsTodos.filter((i) => valorDe(i) > 0);
+  const mesActualYm = mesActual();
+  const items = useMemo(() => {
+    const conVenta = itemsTodos.filter((i) => valorDe(i) > 0);
+    // Vendedores con objetivo cargado para el mes en curso que NO figuran con
+    // venta en el período (2026-10-16): se listan igual, en cero, al final.
+    // Incluye tanto al que no facturó nada (no está en el ranking: el nombre
+    // sale del maestro, ver `obj.nombres`) como al que quedó en cero o
+    // negativo por notas de crédito. Sólo en el eje Vendedor: patrón y
+    // cliente no tienen objetivo.
+    if (vista !== "vendedores") return conVenta;
+    const yaEstan = new Set(conVenta.map((i) => i.codigo));
+    const porCodigo = new Map(itemsTodos.filter((i) => i.codigo != null).map((i) => [i.codigo as number, i]));
+    const extras: TopItem[] = [];
+    for (const k of Object.keys(obj.objetivos)) {
+      const cod = Number(k);
+      if (!Number.isInteger(cod) || yaEstan.has(cod)) continue;
+      if (!tieneObjetivo(obj.objetivos, cod, [mesActualYm])) continue;
+      extras.push(
+        porCodigo.get(cod) ?? {
+          clave: String(cod),
+          codigo: cod,
+          etiqueta: obj.nombres[k] ?? `Vendedor ${cod}`,
+          unidades: 0,
+          monto: 0,
+          unidadesMes: 0,
+          montoMes: 0,
+        },
+      );
+    }
+    extras.sort((a, b) => valorDe(b) - valorDe(a) || a.etiqueta.localeCompare(b.etiqueta, "es"));
+    return [...conVenta, ...extras];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsTodos, vista, modo, obj.objetivos, obj.nombres, mesActualYm]);
   // Sólo los valores POSITIVOS entran en el líder y en el total: el ranking de
   // vendedores puede traer a alguien en cero o en negativo por una nota de
   // crédito (ver fetch_top_vendedores en bulones.py), y sumarlo achicaría el
@@ -217,7 +249,6 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
   // arriba. La columna sólo tiene sentido por vendedor y sólo se muestra si
   // ALGUIEN tiene algo cargado (en $ o en unidades) para el mes en curso: si
   // no, es una columna de guiones.
-  const mesActualYm = mesActual();
   const conObjetivo =
     vista === "vendedores" &&
     items.some((i) => i.codigo != null && tieneObjetivo(obj.objetivos, i.codigo, [mesActualYm]));
@@ -233,6 +264,19 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
     }
   }
   const tipoUnico = tiposEnRanking.size === 1 ? [...tiposEnRanking][0] : null;
+
+  // Lista del modal de carga: los del ranking del período + los vendedores
+  // activos (así se le puede fijar objetivo a alguien que todavía no vendió)
+  // + los que ya tienen objetivo. Sin repetidos, ordenada por nombre.
+  const listaModal = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const i of itemsTodos) if (i.codigo != null) m.set(i.codigo, i.etiqueta);
+    for (const v of obj.vendedoresEditables) if (!m.has(v.codigo)) m.set(v.codigo, v.nombre);
+    for (const [k, n] of Object.entries(obj.nombres)) if (!m.has(Number(k))) m.set(Number(k), n);
+    return [...m.entries()]
+      .map(([codigo, nombre]) => ({ codigo, nombre }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [itemsTodos, obj.vendedoresEditables, obj.nombres]);
 
   const periodoLabel = desde === hasta ? nombreMes(desde) : `${nombreMes(desde)} → ${nombreMes(hasta)}`;
 
@@ -425,7 +469,7 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
                     )}
                     <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
                       <span className="block">{modo === "pesos" ? "VENDIDO" : "UNIDADES"}</span>
-                      <span className="block text-[10px] font-normal normal-case text-zinc-500">
+                      <span className="block text-lg font-extrabold normal-case tracking-tight text-yellow-400 tabular-nums">
                         Total: {modo === "pesos" ? fmtMoney(total) : fmtNum(total)}
                       </span>
                     </th>
@@ -558,7 +602,7 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
                           ? "—"
                           : fmtSegunTipo(totalObjetivoMes(obj.objetivos, items, mesActualYm, tipoUnico), tipoUnico)}
                       </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-zinc-100 font-semibold">
+                      <td className="px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 text-yellow-400 font-extrabold text-base tabular-nums">
                         {modo === "pesos" ? fmtMoney(total) : fmtNum(total)}
                       </td>
                       <td
@@ -598,9 +642,7 @@ export default function PulsoTab({ linea }: { linea: { id: number; nombre: strin
       {modal && (
         <ObjetivoModal
           lineaNombre={linea.nombre}
-          vendedores={itemsTodos
-            .filter((i) => i.codigo != null)
-            .map((i) => ({ codigo: i.codigo as number, nombre: i.etiqueta }))}
+          vendedores={listaModal}
           objetivos={obj.objetivos}
           desdeInicial={desde}
           hastaInicial={hasta}
@@ -704,6 +746,14 @@ function ObjetivoModal({
   const [valores, setValores] = useState<Record<string, string>>({});
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Aumento de objetivos (2026-10-16): "pct" = +N % sobre lo cargado, "monto"
+  // = + N fijo (en miles si es $, en unidades si es ud.). Admite negativos
+  // (para bajar). Al vendedor elegido sólo mueve el formulario (se confirma
+  // con Guardar); "a todos" guarda directo, con confirmación en dos pasos.
+  const [ajModo, setAjModo] = useState<"pct" | "monto">("pct");
+  const [ajValor, setAjValor] = useState("");
+  const [confirmTodos, setConfirmTodos] = useState(false);
+  const [info, setInfo] = useState<string | null>(null);
 
   const meses = useMemo(() => mesesEntre(desde, hasta), [desde, hasta]);
 
@@ -750,6 +800,66 @@ function ObjetivoModal({
     const next = { ...valores, [mes]: v };
     setValores(next);
     sincronizarCabecera(next, meses, tipo, setPorMes, setTotalRango);
+  };
+
+  const ajNumero = () => {
+    const n = Number(ajValor.replace(",", "."));
+    return ajValor.trim() !== "" && Number.isFinite(n) && n !== 0 ? n : null;
+  };
+
+  /** Aplica el aumento a los meses del rango que YA tienen valor en el formulario. */
+  const aumentarVendedor = () => {
+    const n = ajNumero();
+    setInfo(null);
+    if (n == null) {
+      setError("Poné un número distinto de 0 para aumentar (ej.: 10 = +10 %).");
+      return;
+    }
+    const next = { ...valores };
+    let tocados = 0;
+    for (const m of meses) {
+      const nuevo = aumentarValor(valores[m] ?? "", ajModo, n, tipo);
+      if (nuevo !== (valores[m] ?? "")) tocados += 1;
+      next[m] = nuevo;
+    }
+    if (tocados === 0) {
+      setError("No hay meses con objetivo cargado en este rango para aumentar (o el resultado sería 0 o negativo).");
+      return;
+    }
+    setError(null);
+    setValores(next);
+    sincronizarCabecera(next, meses, tipo, setPorMes, setTotalRango);
+    setInfo(`Aumento aplicado a ${tocados} ${tocados === 1 ? "mes" : "meses"}. Falta tocar Guardar.`);
+  };
+
+  /** Aumenta y GUARDA el objetivo de todos los vendedores que lo tengan cargado en el rango (del tipo elegido). */
+  const aumentarTodos = async () => {
+    const n = ajNumero();
+    setInfo(null);
+    if (n == null) {
+      setError("Poné un número distinto de 0 para aumentar (ej.: 10 = +10 %).");
+      setConfirmTodos(false);
+      return;
+    }
+    setGuardando(true);
+    setError(null);
+    let ok = 0;
+    const fallos: string[] = [];
+    for (const k of Object.keys(objetivos)) {
+      const cod = Number(k);
+      const delV = objetivos[k] ?? {};
+      const lista = meses
+        .filter((m) => delV[m]?.[tipo] != null)
+        .map((m) => ({ mes: m, valor: aumentarValor(aTexto(delV[m]?.[tipo], tipo), ajModo, n, tipo).replace(",", ".") }));
+      if (lista.length === 0) continue;
+      const r = await onGuardar(cod, tipo, lista);
+      if (r.ok) ok += 1;
+      else fallos.push(`${vendedores.find((v) => v.codigo === cod)?.nombre ?? cod}: ${r.error}`);
+    }
+    setGuardando(false);
+    setConfirmTodos(false);
+    if (fallos.length) setError(`No se pudo guardar a: ${fallos.join(" · ")}`);
+    setInfo(`Objetivo aumentado y guardado a ${ok} ${ok === 1 ? "vendedor" : "vendedores"}.`);
   };
 
   const guardar = async () => {
@@ -835,7 +945,7 @@ function ObjetivoModal({
               onChange={(e) => setVendedor(Number(e.target.value))}
               className="mt-1.5 w-full rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 cursor-pointer"
             >
-              {vendedores.length === 0 && <option value="">(sin vendedores en el período)</option>}
+              {vendedores.length === 0 && <option value="">(sin vendedores)</option>}
               {vendedores.map((v) => {
                 const tienePesos = objetivoDelRango(objetivos, v.codigo, meses, "pesos") != null;
                 const tieneUnidades = objetivoDelRango(objetivos, v.codigo, meses, "unidades") != null;
@@ -850,7 +960,7 @@ function ObjetivoModal({
               })}
             </select>
             <span className="mt-1 block text-[11px] text-zinc-600">
-              La lista sale del ranking del período elegido.
+              Ranking del período + vendedores activos.
             </span>
           </label>
 
@@ -928,6 +1038,111 @@ function ObjetivoModal({
             </p>
           </div>
 
+          <div className="rounded-lg border border-zinc-800 bg-[#1b1b1b] p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-zinc-300">Aumentar objetivo</span>
+              <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-xs divide-x divide-zinc-700">
+                {(["pct", "monto"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => {
+                      setAjModo(m);
+                      setConfirmTodos(false);
+                    }}
+                    className={`px-2.5 py-1 font-semibold transition-colors ${
+                      ajModo === m ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
+                    }`}
+                  >
+                    {m === "pct" ? "%" : tipo === "pesos" ? "+ Monto (miles)" : "+ Unidades"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                inputMode="decimal"
+                value={ajValor}
+                placeholder={ajModo === "pct" ? "ej.: 10" : tipo === "pesos" ? "ej.: 500 (= $ 500.000)" : "ej.: 100"}
+                onChange={(e) => {
+                  setAjValor(e.target.value);
+                  setConfirmTodos(false);
+                }}
+                className="w-40 rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-1.5 text-right text-sm tabular-nums text-zinc-100 outline-none focus:border-yellow-400"
+              />
+              {ajModo === "pct" &&
+                [10, 20, 30].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => {
+                      setAjValor(String(p));
+                      setConfirmTodos(false);
+                    }}
+                    className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+                  >
+                    +{p}%
+                  </button>
+                ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={aumentarVendedor}
+                disabled={guardando || vendedor == null}
+                className="rounded-md border border-yellow-400/60 px-3 py-1.5 text-xs font-semibold text-yellow-400 hover:bg-yellow-400/10 transition-colors disabled:opacity-40"
+              >
+                Aplicar a este vendedor
+              </button>
+              {confirmTodos ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void aumentarTodos()}
+                    disabled={guardando}
+                    className="rounded-md bg-yellow-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-yellow-300 transition-colors disabled:opacity-40"
+                  >
+                    Confirmar: aumentar y guardar a todos
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmTodos(false)}
+                    className="text-xs text-zinc-500 hover:text-zinc-200"
+                  >
+                    Cancelar
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (ajNumero() == null) {
+                      setError("Poné un número distinto de 0 para aumentar (ej.: 10 = +10 %).");
+                      return;
+                    }
+                    setError(null);
+                    setConfirmTodos(true);
+                  }}
+                  disabled={guardando}
+                  className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors disabled:opacity-40"
+                >
+                  Aplicar a todos…
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-zinc-600">
+              Sólo toca los meses del rango que ya tienen objetivo en {tipo === "pesos" ? "$" : "unidades"}.
+              “Este vendedor” modifica el formulario (hay que Guardar); “todos” guarda directo a cada
+              vendedor con objetivo cargado en el rango. Número negativo = bajar.
+            </p>
+          </div>
+
+          {info && !error && (
+            <div className="rounded-lg border border-emerald-400/40 bg-emerald-400/5 px-3 py-2 text-xs text-emerald-300">
+              {info}
+            </div>
+          )}
+
           {error && (
             <div className="rounded-lg border border-red-400/40 bg-red-400/5 px-3 py-2 text-xs text-red-300">
               {error}
@@ -1000,6 +1215,19 @@ function CampoValor({
 
 /** $ se carga en miles (dos decimales alcanzan para llegar al peso); unidades se carga como entero. */
 const redondear = (n: number, tipo: TipoObjetivo) => (tipo === "pesos" ? Math.round(n * 100) / 100 : Math.round(n));
+
+/**
+ * Aumenta un valor del formulario: "pct" = +N %, "monto" = +N (en la misma
+ * unidad del formulario: miles si es $, unidades si es ud.). Un mes vacío
+ * queda vacío, y si el resultado no es > 0 se deja como estaba (un valor
+ * vacío o 0 BORRARÍA el objetivo al guardar).
+ */
+function aumentarValor(texto: string, modo: "pct" | "monto", n: number, tipo: TipoObjetivo): string {
+  const base = Number(texto.replace(",", "."));
+  if (texto.trim() === "" || !Number.isFinite(base)) return texto;
+  const nuevo = modo === "pct" ? base * (1 + n / 100) : base + n;
+  return nuevo > 0 ? String(redondear(nuevo, tipo)) : texto;
+}
 
 /**
  * Vuelve a armar el mensual y el total a partir del detalle: el mensual sólo
