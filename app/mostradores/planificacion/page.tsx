@@ -109,7 +109,7 @@ const COLS: { k: SortKey; label: string; num: boolean; title?: string }[] = [
   { k: "maximo", label: "Máximo", num: true, title: "mes con más unidades vendidas del rango" },
   { k: "minimo", label: "Mínimo", num: true, title: "mes con menos unidades vendidas del rango (sin contar meses sin venta)" },
   { k: "stock", label: "Stock", num: true, title: "stock del depósito elegido (Ruta / Lilser)" },
-  { k: "oc", label: "OC pendiente", num: true, title: "saldo sin recibir de OC sin cerrar" },
+  { k: "oc", label: "OC pendiente", num: true, title: "saldo sin recibir de OC sin cerrar — solo situación EW CENTRO (Lilser) / EW RUTA (Ruta)" },
 ];
 const COL_BY = Object.fromEntries(COLS.map((c) => [c.k, c])) as Record<SortKey, (typeof COLS)[number]>;
 const ORDEN_DEFAULT: SortKey[] = COLS.map((c) => c.k);

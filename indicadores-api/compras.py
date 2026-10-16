@@ -1784,7 +1784,8 @@ def fetch_lineas_por_articulos(codigos: list[str]):
 #                blacklist de comprobantes + Cerrados/Facturados) en el rango.
 #   · Stock    — StkReal del depósito 1 (central).
 #   · OC       — saldo pendiente de recibir (renglón Estado=1, cabecera no
-#                cancelada, FecMovim >= OC_DESDE_DEFAULT). Mismo criterio que
+#                cancelada, CodSituacion según vista: compras=1 Casa Central,
+#                Lilser=3 EW Centro, Ruta=2 EW Ruta; FecMovim >= OC_DESDE_DEFAULT). Mismo criterio que
 #                SQL_OC_PENDIENTES pero SIN recorte por tipo de artículo: el
 #                universo ya lo define el filtro de niveles.
 # El faltante vivo y el recomendado se suman en el route de Next (vienen del
@@ -1909,6 +1910,7 @@ oc AS (
     WHERE r.Estado = 1
       AND ISNULL(r.Cantidad, 0) - ISNULL(r.CantidadCumplida, 0) > 0
       {excl}
+      AND cab.CodSituacion = {oc_sit}
       AND cab.FecMovim >= {oc_desde}
     GROUP BY r.CodArticulo
 )
@@ -1964,6 +1966,9 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
     if deposito is not None and deposito not in (2, 3):
         raise ValueError("deposito inválido (2 Lilser / 3 Ruta)")
     dep_stk = int(deposito) if deposito is not None else 1
+    # Situación de la OC (Com_SituacionOC): compras = 1 CASA CENTRAL;
+    # mostradores: Lilser (dep. 2) = 3 EW CENTRO, Ruta (dep. 3) = 2 EW RUTA.
+    oc_sit = {2: 3, 3: 2}[int(deposito)] if deposito is not None else 1
     ven_dep = f"\n      AND cab.Deposito = {int(deposito)}" if deposito is not None else ""
     frag_niv = "".join(
         f"\n      AND ap.{col} IN ({','.join(str(i) for i in ids)})"
@@ -1991,7 +1996,7 @@ def fetch_planificacion(n1, n2, n3, n4, desde: str, hasta: str, extra: list[str]
             niveles=frag_niv, d1=_dias(d1), d2=_dias(d2),
             valido=_cond_pedido_valido(cur), excl=_EXCL,
             oc_desde=_dias(oc_desde), extra=frag_extra,
-            dep_stk=dep_stk, ven_dep=ven_dep,
+            dep_stk=dep_stk, ven_dep=ven_dep, oc_sit=int(oc_sit),
         )
         if extras:
             cur.execute(sql, extras)
