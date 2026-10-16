@@ -281,6 +281,51 @@ export default function VickiPage() {
       .then((d) => setAwaitingEmp(!!d.has_draft));
   }, [messages, sessionId]);
 
+  // Dictado por voz: solo existe dentro de la app Android (puente VickiApp.voz*, SpeechRecognizer nativo).
+  const [vozOk, setVozOk] = useState(false);
+  const [escuchando, setEscuchando] = useState(false);
+  const [vozMsg, setVozMsg] = useState("");
+  useEffect(() => {
+    const app = (window as any).VickiApp;
+    try {
+      setVozOk(!!app?.vozIniciar && !!app.vozDisponible?.());
+    } catch {}
+    (window as any).vickiVoz = (ev: string, txt: string) => {
+      if (ev === "escuchando") {
+        setVozMsg("");
+        setEscuchando(true);
+      } else if (ev === "parcial" || ev === "final") {
+        if (txt) setInput(txt);
+        if (ev === "final") setEscuchando(false);
+      } else if (ev === "fin") {
+        setEscuchando(false);
+      } else if (ev === "error") {
+        setEscuchando(false);
+        setVozMsg(
+          txt === "permiso"
+            ? "Falta el permiso de micrófono"
+            : txt === "no_disponible"
+              ? "Este celular no tiene reconocimiento de voz"
+              : txt === "6" || txt === "7"
+                ? "No te escuché, probá de nuevo"
+                : txt === "2" || txt === "1"
+                  ? "El reconocimiento de voz necesita internet"
+                  : "No se pudo dictar (código " + txt + ")",
+        );
+      }
+    };
+    return () => {
+      delete (window as any).vickiVoz;
+    };
+  }, []);
+  function toggleVoz() {
+    const app = (window as any).VickiApp;
+    if (!app) return;
+    setVozMsg("");
+    if (escuchando) app.vozDetener();
+    else app.vozIniciar();
+  }
+
   const inputLocked = awaitingEmp && (!gender || !location);
   const placeholder = awaitingEmp
     ? !gender || !location
@@ -704,7 +749,19 @@ export default function VickiPage() {
             </div>
           )}
 
+          {vozMsg && <p className="text-xs text-red-400">{vozMsg}</p>}
           <div className="flex gap-2">
+            {vozOk && (
+              <Button
+                type="button"
+                onClick={toggleVoz}
+                disabled={inputLocked || loading}
+                aria-label={escuchando ? "Detener dictado" : "Dictar por voz"}
+                className={escuchando ? "bg-red-600 hover:bg-red-700 animate-pulse" : "bg-zinc-700 hover:bg-zinc-600"}
+              >
+                {escuchando ? "⏹" : "🎤"}
+              </Button>
+            )}
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}

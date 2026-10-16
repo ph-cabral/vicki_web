@@ -3442,7 +3442,8 @@ def _info_pedidos_resumen(pedidos):
 
 
 # ── Ubicaciones de un artículo (modal de /deposito/faltantes) ─────────────────
-# Todas las ubicaciones (SIN el filtro numérico) con > 1 unidad. Sirve para ver
+# Todas las ubicaciones (SIN el filtro numérico) con stock > 0 (incluye las de
+# 1 sola unidad: antes se descartaban y el modal mostraba de menos). Sirve para ver
 # si el faltante está físicamente en otro rack antes de marcar "sin existencia".
 def fetch_articulo_ubicaciones(articulo: str):
     # Suma por ubicación (puede haber varias filas por lote/contenedor). El match
@@ -3460,7 +3461,7 @@ def fetch_articulo_ubicaciones(articulo: str):
             FROM dbo.{UBIC_TABLA} u
             WHERE u.{UBIC_COL_ART} = ?
             GROUP BY u.{UBIC_COL_UBI}
-            HAVING SUM(u.{UBIC_COL_CANT}) > 1
+            HAVING SUM(u.{UBIC_COL_CANT}) > 0
             ORDER BY SUM(u.{UBIC_COL_CANT}) DESC
         """
         cur.execute(sql, ((articulo or "").strip(),))

@@ -927,7 +927,7 @@ export default function FaltantesPage() {
   );
 }
 
-// Modal: todas las ubicaciones del artículo (sin filtrar) con >1 unidad.
+// Modal: todas las ubicaciones del artículo (sin filtrar) con stock > 0.
 // Tabla sin encabezado: ubicación + cantidad. Para chequear si hay stock en
 // otro rack antes de marcar "sin existencia".
 function UbicacionesModal({

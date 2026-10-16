@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.ConnectivityManager;
@@ -17,6 +18,9 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.Gravity;
@@ -40,7 +44,10 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.io.File;
+import java.util.ArrayList;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -64,7 +71,7 @@ public class MainActivity extends Activity {
 
     private Actualizador actualizador;
 
-    private static final int REQ_VPN = 10, REQ_ARCHIVO = 11;
+    private static final int REQ_VPN = 10, REQ_ARCHIVO = 11, REQ_MIC = 12;
     private static final long PARAR_EN_FONDO_MS = 5 * 60_000;
     private static final String BG = "#030712";
 
@@ -86,6 +93,8 @@ public class MainActivity extends Activity {
     private volatile boolean mostrarPegar;
     private ValueCallback<Uri[]> archivoCb;
     private ConnectivityManager.NetworkCallback redCb;
+    /** Dictado por voz (SpeechRecognizer nativo, es-AR); el chat web lo usa vía VickiApp.vozIniciar(). */
+    private SpeechRecognizer reconocedor;
 
     // ------------------------------------------------------------------ ciclo de vida
 
@@ -151,6 +160,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         visible = false;
+        liberarVoz();
         enFondoDesde = System.currentTimeMillis();
         CookieManager.getInstance().flush();
         h.postDelayed(pararEnFondo, PARAR_EN_FONDO_MS);
@@ -187,6 +197,7 @@ public class MainActivity extends Activity {
             }
         });
         exec.shutdown();
+        liberarVoz();
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -502,6 +513,101 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------------------------ voz
+
+    /** Avisa al chat web: window.vickiVoz(evento, texto). evento: escuchando | parcial | final | fin | error. */
+    private void vozEvento(String ev, String texto) {
+        if (web == null) return;
+        web.evaluateJavascript("window.vickiVoz&&window.vickiVoz(" + JSONObject.quote(ev) + ","
+                + JSONObject.quote(texto == null ? "" : texto) + ")", null);
+    }
+
+    private void iniciarVoz() {
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            vozEvento("error", "no_disponible");
+            return;
+        }
+        liberarVoz();
+        reconocedor = SpeechRecognizer.createSpeechRecognizer(this);
+        reconocedor.setRecognitionListener(new RecognitionListener() {
+            @Override
+            public void onReadyForSpeech(Bundle params) {
+                vozEvento("escuchando", "");
+            }
+
+            @Override
+            public void onBeginningOfSpeech() {
+            }
+
+            @Override
+            public void onRmsChanged(float rmsdB) {
+            }
+
+            @Override
+            public void onBufferReceived(byte[] buffer) {
+            }
+
+            @Override
+            public void onEndOfSpeech() {
+                vozEvento("fin", "");
+            }
+
+            @Override
+            public void onError(int error) {
+                vozEvento("error", String.valueOf(error));
+            }
+
+            @Override
+            public void onResults(Bundle results) {
+                vozEvento("final", primero(results));
+            }
+
+            @Override
+            public void onPartialResults(Bundle partialResults) {
+                String t = primero(partialResults);
+                if (t.length() > 0) vozEvento("parcial", t);
+            }
+
+            @Override
+            public void onEvent(int eventType, Bundle params) {
+            }
+        });
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-AR");
+        i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        reconocedor.startListening(i);
+    }
+
+    private static String primero(Bundle b) {
+        ArrayList<String> l = b == null ? null : b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        return l == null || l.isEmpty() ? "" : l.get(0);
+    }
+
+    private void liberarVoz() {
+        if (reconocedor != null) {
+            try {
+                reconocedor.destroy();
+            } catch (Exception ignored) {
+            }
+            reconocedor = null;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int req, String[] permisos, int[] res) {
+        super.onRequestPermissionsResult(req, permisos, res);
+        if (req != REQ_MIC) return;
+        if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) iniciarVoz();
+        else vozEvento("error", "permiso");
+    }
+
     // ------------------------------------------------------------------ WebView
 
     /** window.VickiApp.* */
@@ -529,6 +635,32 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 aviso("No se pudo guardar: " + e.getMessage());
             }
+        }
+
+        /** true si el celular tiene un servicio de reconocimiento de voz (Google). */
+        @JavascriptInterface
+        public boolean vozDisponible() {
+            return SpeechRecognizer.isRecognitionAvailable(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void vozIniciar() {
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    iniciarVoz();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void vozDetener() {
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (reconocedor != null) reconocedor.stopListening();
+                }
+            });
         }
 
         @JavascriptInterface

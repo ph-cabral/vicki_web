@@ -6,7 +6,7 @@ const API_URL =
 export const dynamic = "force-dynamic";
 
 // Proxy → FastAPI indicadores-api: todas las ubicaciones de un artículo (sin
-// filtrar) con >1 unidad. Lo consume el modal de /deposito/faltantes.
+// filtrar) con stock > 0. Lo consume el modal de /deposito/faltantes.
 export async function GET(req: NextRequest) {
   const articulo = req.nextUrl.searchParams.get("articulo");
   if (!articulo)
