@@ -949,13 +949,13 @@ function GrupoCard({
           <Campo label="Cliente" value={g.clienteNombre || g.cliente || "—"} />
           {mostrarVendedor && <Campo label="Vendedor" value={g.vendedor || "—"} />}
         </div>
-        <div className="shrink-0 text-right hidden sm:block">
+        <div className="shrink-0 text-right">
           <div className="text-sm tabular-nums text-zinc-200">${fmtNum(g.importe)}</div>
         </div>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm max-md:block max-md:[&>thead]:hidden max-md:[&>tbody]:block">
           <thead className="bg-[#141414] text-zinc-400">
             <tr className="text-left">
               <th className="px-3 py-2 font-medium">Cód.</th>
@@ -974,14 +974,14 @@ function GrupoCard({
               return (
               <tr
                 key={keyOf(it)}
-                className={`border-t border-zinc-800/70 animate-in fade-in duration-300 ${
+                className={`border-t border-zinc-800/70 animate-in fade-in duration-300 max-md:grid max-md:grid-cols-3 max-md:gap-x-3 max-md:gap-y-1.5 max-md:px-3 max-md:py-3 ${
                   dir === "right" ? "row-out-right" : dir === "left" ? "row-out-left" : ""
                 }`}
               >
-                <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
-                <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                <td className={`px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums${vendidoMode ? " text-right" : ""}`}>
+                <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap max-md:col-span-3 max-md:p-0 max-md:text-xs max-md:text-zinc-500">{it.CodArticulo}</td>
+                <td className="px-3 py-2 text-zinc-100 max-md:col-span-3 max-md:p-0 max-md:font-medium">{it.Nombre}</td>
+                <td data-label="Faltante" className="px-3 py-2 text-right tabular-nums max-md:p-0 max-md:text-left max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">{fmtNum(it.CantPend)}</td>
+                <td data-label={vendidoMode ? "Stock central" : "Arribo"} className={`px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums max-md:p-0 max-md:text-left max-md:whitespace-normal max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500${vendidoMode ? " text-right" : ""}`}>
                   {/* Vista "Ingresados" (vendidoMode): stock del depósito central (1). */}
                   {vendidoMode ? fmtStock(it.stockCentral, it.CantPend) : fmtAr(it.fechaArribo)}
                   {!vendidoMode && it.arriboOC && it.fechaArribo && (
@@ -999,14 +999,14 @@ function GrupoCard({
                     </span>
                   )}
                 </td>
-                <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
-                <td className="px-3 py-2">
-                  <div className="flex items-center justify-center gap-1.5">
+                <td data-label="Importe" className="px-3 py-2 text-right tabular-nums text-zinc-300 max-md:p-0 max-md:text-left max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">${fmtNum(it.Importe)}</td>
+                <td className="px-3 py-2 max-md:col-span-3 max-md:p-0 max-md:pt-1">
+                  <div className="flex items-center justify-center gap-1.5 max-md:gap-2">
                     <button
                       onClick={() => onDecidir(it, true)}
                       disabled={!!dir}
                       title={vendidoMode ? "Vendido" : "Lo quiere"}
-                      className="btn-anim p-1.5 rounded-md border border-zinc-700 text-green-500 hover:bg-green-600/20 disabled:opacity-40"
+                      className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-green-500 hover:bg-green-600/20 disabled:opacity-40"
                     >
                       <Check size={15} />
                     </button>
@@ -1014,7 +1014,7 @@ function GrupoCard({
                       onClick={() => onDecidir(it, false)}
                       disabled={!!dir}
                       title={vendidoMode ? "No vendido" : "No lo quiere"}
-                      className="btn-anim p-1.5 rounded-md border border-zinc-700 text-red-500 hover:bg-red-600/20 disabled:opacity-40"
+                      className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-red-500 hover:bg-red-600/20 disabled:opacity-40"
                     >
                       <X size={15} />
                     </button>
@@ -1023,7 +1023,7 @@ function GrupoCard({
                         onClick={() => onIrrelevante(it)}
                         disabled={!!dir}
                         title="Irrelevante — descartar"
-                        className="btn-anim p-1.5 rounded-md border border-zinc-700 text-violet-600 hover:bg-violet-800/25 hover:text-violet-500 disabled:opacity-40"
+                        className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-violet-600 hover:bg-violet-800/25 hover:text-violet-500 disabled:opacity-40"
                       >
                         <Trash2 size={15} />
                       </button>
@@ -1033,7 +1033,7 @@ function GrupoCard({
                         onClick={() => onDuplicado(it)}
                         disabled={!!dir}
                         title="Duplicado — factura duplicada, ignorar"
-                        className="btn-anim p-1.5 rounded-md border border-zinc-700 text-amber-600 hover:bg-amber-800/25 hover:text-amber-500 disabled:opacity-40"
+                        className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-amber-600 hover:bg-amber-800/25 hover:text-amber-500 disabled:opacity-40"
                       >
                         <Copy size={15} />
                       </button>
@@ -1071,13 +1071,13 @@ function GrupoCardListo({
           <Campo label="Cliente" value={g.clienteNombre || g.cliente || "—"} />
           {mostrarVendedor && <Campo label="Vendedor" value={g.vendedor || "—"} />}
         </div>
-        <div className="shrink-0 text-right hidden sm:block">
+        <div className="shrink-0 text-right">
           <div className="text-sm tabular-nums text-zinc-200">${fmtNum(g.importe)}</div>
         </div>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm max-md:block max-md:[&>thead]:hidden max-md:[&>tbody]:block">
           <thead className="bg-[#141414] text-zinc-400">
             <tr className="text-left">
               <th className="px-3 py-2 font-medium">Cód.</th>
@@ -1094,24 +1094,24 @@ function GrupoCardListo({
               return (
                 <tr
                   key={keyOf(it)}
-                  className={`border-t border-zinc-800/70 animate-in fade-in duration-300 ${
+                  className={`border-t border-zinc-800/70 animate-in fade-in duration-300 max-md:grid max-md:grid-cols-3 max-md:gap-x-3 max-md:gap-y-1.5 max-md:px-3 max-md:py-3 ${
                     dir === "right" ? "row-out-right" : dir === "left" ? "row-out-left" : ""
                   }`}
                 >
-                  <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap">{it.CodArticulo}</td>
-                  <td className="px-3 py-2 text-zinc-100">{it.Nombre}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(it.CantPend)}</td>
-                  <td className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums text-right">
+                  <td className="px-3 py-2 font-mono text-zinc-300 whitespace-nowrap max-md:col-span-3 max-md:p-0 max-md:text-xs max-md:text-zinc-500">{it.CodArticulo}</td>
+                  <td className="px-3 py-2 text-zinc-100 max-md:col-span-3 max-md:p-0 max-md:font-medium">{it.Nombre}</td>
+                  <td data-label="Faltante" className="px-3 py-2 text-right tabular-nums max-md:p-0 max-md:text-left max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">{fmtNum(it.CantPend)}</td>
+                  <td data-label="Stock central" className="px-3 py-2 text-zinc-400 whitespace-nowrap tabular-nums text-right max-md:p-0 max-md:text-left max-md:whitespace-normal max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">
                     {fmtStock(it.stockCentral, it.CantPend)}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums text-zinc-300">${fmtNum(it.Importe)}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center justify-center gap-1.5">
+                  <td data-label="Importe" className="px-3 py-2 text-right tabular-nums text-zinc-300 max-md:p-0 max-md:text-left max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:text-zinc-500">${fmtNum(it.Importe)}</td>
+                  <td className="px-3 py-2 max-md:col-span-3 max-md:p-0 max-md:pt-1">
+                    <div className="flex items-center justify-center gap-1.5 max-md:gap-2">
                       <button
                         onClick={() => onDecidir(it, true)}
                         disabled={!!dir}
                         title="Vendido"
-                        className="btn-anim p-1.5 rounded-md border border-zinc-700 text-green-500 hover:bg-green-600/20 disabled:opacity-40"
+                        className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-green-500 hover:bg-green-600/20 disabled:opacity-40"
                       >
                         <Check size={15} />
                       </button>
@@ -1119,7 +1119,7 @@ function GrupoCardListo({
                         onClick={() => onDecidir(it, false)}
                         disabled={!!dir}
                         title="No vendido"
-                        className="btn-anim p-1.5 rounded-md border border-zinc-700 text-red-500 hover:bg-red-600/20 disabled:opacity-40"
+                        className="btn-anim p-1.5 max-md:flex max-md:flex-1 max-md:justify-center max-md:py-2.5 rounded-md border border-zinc-700 text-red-500 hover:bg-red-600/20 disabled:opacity-40"
                       >
                         <X size={15} />
                       </button>

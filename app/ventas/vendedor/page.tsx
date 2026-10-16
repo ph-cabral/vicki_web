@@ -329,6 +329,19 @@ function valorCampo(o: object, campo: CampoPeriodo, unidades: boolean): number {
   return r[k] ?? 0;
 }
 
+// Pivot del modal: con el desglose mensual se mantiene la tabla (scroll
+// horizontal, 1ª columna fija); sin desglose cada fila es una tarjeta.
+const MOB_PIV_TR =
+  "max-md:grid max-md:grid-cols-3 max-md:gap-x-3 max-md:gap-y-1 max-md:px-3 max-md:py-2.5";
+const MOB_STICKY =
+  "max-md:sticky max-md:left-0 max-md:z-10 max-md:bg-[#161616] max-md:max-w-[9rem] max-md:truncate";
+const MOB_PIV_LBL =
+  "max-md:col-span-3 max-md:p-0 max-md:text-base max-md:font-semibold max-md:whitespace-normal";
+const MOB_PIV_NUM =
+  "max-md:border-0 max-md:p-0 max-md:text-left max-md:whitespace-normal max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:font-normal max-md:before:text-zinc-500";
+const NUM_MOB =
+  "max-md:border-0 max-md:p-0 max-md:text-left max-md:whitespace-normal max-md:before:content-[attr(data-label)] max-md:before:block max-md:before:text-[10px] max-md:before:uppercase max-md:before:tracking-wide max-md:before:font-normal max-md:before:text-zinc-500";
+
 function FilaGrupo({
   idx,
   desde,
@@ -337,6 +350,7 @@ function FilaGrupo({
   abierto,
   onClick,
   colSpan,
+  cards = true,
 }: {
   idx: number;
   desde: number;
@@ -345,15 +359,17 @@ function FilaGrupo({
   abierto: boolean;
   onClick: () => void;
   colSpan: number;
+  /** En el teléfono la tabla se dibuja como tarjetas (display block). */
+  cards?: boolean;
 }) {
   return (
     <tr
       className={`cursor-pointer border-t border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800/60 transition-colors ${
         abierto ? "border-b border-yellow-400/30" : ""
-      }`}
+      } ${cards ? "max-md:block" : ""}`}
       onClick={onClick}
     >
-      <td colSpan={colSpan} className="px-3 py-2">
+      <td colSpan={colSpan} className={`px-3 py-2 ${cards ? "max-md:block" : ""}`}>
         <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-zinc-300">
           {abierto ? (
             <ChevronUp size={14} className="text-yellow-400" />
@@ -1255,23 +1271,27 @@ export default function VentasVendedorPage() {
 
   // Celdas numéricas de una fila del pie, según el modo: acumulado | (mes
   // anterior, mes pasado), y siempre el mes en curso a la derecha.
+  // Teléfono (<md): las tablas se dibujan como tarjetas (tr = grid, cada td con
+  // su etiqueta vía data-label). La grilla del ranking tiene 2 columnas
+  // (acumulado | mes en curso) o 3 con "2 meses".
+  const mobTopTr = `max-md:grid ${dosMeses ? "max-md:grid-cols-3" : "max-md:grid-cols-2"} max-md:gap-x-3 max-md:gap-y-1 max-md:px-3 max-md:py-2.5`;
   const pieCeldas = (
     v: { acum: number; mes: number; m1: number; m2: number },
     cls: string,
     py = "py-2",
   ) => {
-    const base = `px-3 ${py} text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${cls}`;
+    const base = `px-3 ${py} text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${cls} ${NUM_MOB}`;
     return (
       <>
         {dosMeses ? (
           <>
-            <td className={base}>{fmtTop(v.m2)}</td>
-            <td className={base}>{fmtTop(v.m1)}</td>
+            <td data-label={mesM2Label} className={base}>{fmtTop(v.m2)}</td>
+            <td data-label={mesM1Label} className={base}>{fmtTop(v.m1)}</td>
           </>
         ) : (
-          <td className={base}>{fmtTop(v.acum)}</td>
+          <td data-label={rangoAcumLabel} className={base}>{fmtTop(v.acum)}</td>
         )}
-        <td className={base}>{fmtTop(v.mes)}</td>
+        <td data-label={mesActualLabel} className={base}>{fmtTop(v.mes)}</td>
       </>
     );
   };
@@ -1739,12 +1759,12 @@ export default function VentasVendedorPage() {
                         onMouseLeave={limpiarHover}
                       >
                         <div className="overflow-x-auto">
-                          <table className="w-full min-w-max text-sm">
+                          <table className={`w-full min-w-max text-sm ${desglosado ? "" : "max-md:block max-md:min-w-0 max-md:[&>thead]:hidden max-md:[&>tbody]:block max-md:[&>tfoot]:block"}`}>
                             <thead className="bg-[#1A1A1A] text-zinc-400">
                               <tr>
                                 <th
                                   rowSpan={desglosado ? 2 : 1}
-                                  className={`px-3 py-2 font-medium text-left whitespace-nowrap align-bottom cursor-default ${
+                                  className={`px-3 py-2 font-medium text-left whitespace-nowrap align-bottom cursor-default ${desglosado ? MOB_STICKY : ""} ${
                                     hoverCol === COL_LINEA
                                       ? "bg-yellow-400/10"
                                       : ""
@@ -1915,6 +1935,7 @@ export default function VentasVendedorPage() {
                                       )
                                     }
                                     colSpan={totalColsLineaAnio}
+                                    cards={!desglosado}
                                   />
                                 )}
                                 {(filasGrupos.length <= 1 ||
@@ -1925,7 +1946,7 @@ export default function VentasVendedorPage() {
                                     return (
                                       <tr
                                         key={r.key}
-                                        className="border-t border-zinc-800/60 transition-colors"
+                                        className={`border-t border-zinc-800/60 transition-colors ${desglosado ? "" : MOB_PIV_TR}`}
                                       >
                                         {/* Drill-down simétrico (2026-08-25): la fila es un
                                         CLIENTE en modo "linea" y una LÍNEA en
@@ -1936,7 +1957,7 @@ export default function VentasVendedorPage() {
                                         etiqueta es texto plano y hay que
                                         volver con el ← del header. */}
                                         <td
-                                          className={`px-3 py-2 text-zinc-100 whitespace-nowrap ${puedeBajar ? "" : "cursor-default"} ${celda(rowIdx, COL_LINEA, rowCrece)}`}
+                                          className={`px-3 py-2 text-zinc-100 whitespace-nowrap ${puedeBajar ? "" : "cursor-default"} ${celda(rowIdx, COL_LINEA, rowCrece)} ${desglosado ? MOB_STICKY : MOB_PIV_LBL}`}
                                           onMouseEnter={() => {
                                             setHoverRow(rowIdx);
                                             setHoverCol(COL_LINEA);
@@ -1989,7 +2010,8 @@ export default function VentasVendedorPage() {
                                             })}
                                         {mostrarTotalAnio && (
                                         <td
-                                          className={`px-3 py-2 text-right tabular-nums text-zinc-200 font-medium ${sepTotalAnio} cursor-default ${celda(rowIdx, colAnteriorTotal, rowCrece)}`}
+                                          data-label={`Año ${fuenteTabla!.anioAnterior}`}
+                                          className={`px-3 py-2 text-right tabular-nums text-zinc-200 font-medium ${sepTotalAnio} cursor-default ${celda(rowIdx, colAnteriorTotal, rowCrece)} ${desglosado ? "" : MOB_PIV_NUM}`}
                                           onMouseEnter={() => {
                                             setHoverRow(rowIdx);
                                             setHoverCol(colAnteriorTotal);
@@ -2026,7 +2048,8 @@ export default function VentasVendedorPage() {
                                             })}
                                         {mostrarTotalAnio && (
                                         <td
-                                          className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold ${sepTotalAnio} cursor-default ${celda(rowIdx, colActualTotal, rowCrece)}`}
+                                          data-label={`Año ${fuenteTabla!.anioActual}`}
+                                          className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold ${sepTotalAnio} cursor-default ${celda(rowIdx, colActualTotal, rowCrece)} ${desglosado ? "" : MOB_PIV_NUM}`}
                                           onMouseEnter={() => {
                                             setHoverRow(rowIdx);
                                             setHoverCol(colActualTotal);
@@ -2038,7 +2061,8 @@ export default function VentasVendedorPage() {
                                         </td>
                                         )}
                                         <td
-                                          className={`px-3 py-2 text-center font-bold whitespace-nowrap ${SEP_BLOQUE} cursor-default ${celdaTendencia(rowTendencia)}`}
+                                          data-label="Tendencia"
+                                          className={`px-3 py-2 text-center font-bold whitespace-nowrap ${SEP_BLOQUE} cursor-default ${celdaTendencia(rowTendencia)} ${desglosado ? "" : MOB_PIV_NUM}`}
                                         >
                                           <span className="text-base">
                                             {iconoTendencia(rowTendencia)}
@@ -2053,13 +2077,13 @@ export default function VentasVendedorPage() {
                               </tbody>
                             ))}
                             <tfoot>
-                              <tr className="border-t-2 border-zinc-700 bg-zinc-900/60">
+                              <tr className={`border-t-2 border-zinc-700 bg-zinc-900/60 ${desglosado ? "" : MOB_PIV_TR}`}>
                                 <td
                                   className={`px-3 py-2 text-zinc-300 font-semibold uppercase text-xs tracking-wide cursor-default ${
                                     hoverCol === COL_LINEA
                                       ? "bg-yellow-400/10"
                                       : ""
-                                  }`}
+                                  } ${desglosado ? MOB_STICKY : MOB_PIV_LBL}`}
                                   onMouseEnter={() => {
                                     setHoverRow(null);
                                     setHoverCol(COL_LINEA);
@@ -2095,11 +2119,12 @@ export default function VentasVendedorPage() {
                                     })}
                                 {mostrarTotalAnio && (
                                 <td
+                                  data-label={`Año ${fuenteTabla!.anioAnterior}`}
                                   className={`px-3 py-2 text-right tabular-nums text-zinc-100 font-bold ${sepTotalAnio} cursor-default ${
                                     hoverCol === colAnteriorTotal
                                       ? "bg-yellow-400/10"
                                       : ""
-                                  }`}
+                                  } ${desglosado ? "" : MOB_PIV_NUM}`}
                                   onMouseEnter={() => {
                                     setHoverRow(null);
                                     setHoverCol(colAnteriorTotal);
@@ -2136,11 +2161,12 @@ export default function VentasVendedorPage() {
                                     })}
                                 {mostrarTotalAnio && (
                                 <td
+                                  data-label={`Año ${fuenteTabla!.anioActual}`}
                                   className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-bold ${sepTotalAnio} cursor-default ${
                                     hoverCol === colActualTotal
                                       ? "bg-yellow-400/10"
                                       : ""
-                                  }`}
+                                  } ${desglosado ? "" : MOB_PIV_NUM}`}
                                   onMouseEnter={() => {
                                     setHoverRow(null);
                                     setHoverCol(colActualTotal);
@@ -2154,7 +2180,8 @@ export default function VentasVendedorPage() {
                                 </td>
                                 )}
                                 <td
-                                  className={`px-3 py-2 text-center font-bold whitespace-nowrap ${SEP_BLOQUE} cursor-default ${celdaTendencia(tendencia(fuenteTabla!.totales))}`}
+                                  data-label="Tendencia"
+                                  className={`px-3 py-2 text-center font-bold whitespace-nowrap ${SEP_BLOQUE} cursor-default ${celdaTendencia(tendencia(fuenteTabla!.totales))} ${desglosado ? "" : MOB_PIV_NUM}`}
                                 >
                                   <span className="text-base">
                                     {iconoTendencia(tendencia(fuenteTabla!.totales))}
@@ -2249,18 +2276,18 @@ export default function VentasVendedorPage() {
                 de $/unidades, el nombre largo se corta con "…" en vez de
                 empujarla fuera de la pantalla. */}
                   <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
+                    <table className="w-full text-sm max-md:block max-md:[&>thead]:block max-md:[&>tbody]:block max-md:[&>tfoot]:block">
                       <thead className="bg-[#1A1A1A] text-zinc-400">
-                        <tr>
-                          <th className="px-3 py-2 font-medium text-left whitespace-nowrap w-10">
+                        <tr className="max-md:flex max-md:flex-wrap">
+                          <th className="px-3 py-2 font-medium text-left whitespace-nowrap w-10 max-md:hidden">
                             #
                           </th>
-                          <th className="px-3 py-2 font-medium text-left whitespace-nowrap">
+                          <th className="px-3 py-2 font-medium text-left whitespace-nowrap max-md:hidden">
                             {topVista === "clientes" ? "Cliente" : "Línea"}
                           </th>
                           {dosMeses ? (
                             <>
-                              <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                              <th className="max-md:flex-1 max-md:min-w-[28%] max-md:border-l-0 px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -2279,7 +2306,7 @@ export default function VentasVendedorPage() {
                                   {mesM2Label}
                                 </span>
                               </th>
-                              <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                              <th className="max-md:flex-1 max-md:min-w-[28%] max-md:border-l-0 px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
                                 <span className="tabular-nums text-zinc-200">
                                   {fmtTop(topNeto.m1)}
                                 </span>
@@ -2289,7 +2316,7 @@ export default function VentasVendedorPage() {
                               </th>
                             </>
                           ) : (
-                            <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
+                            <th className="max-md:flex-1 max-md:min-w-[28%] max-md:border-l-0 px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
                               <div className="inline-flex items-center justify-end gap-2">
                                 <button
                                   type="button"
@@ -2315,7 +2342,7 @@ export default function VentasVendedorPage() {
                               del acumulado justamente porque está
                               incompleto: sumarlo adentro haría que el año
                               se compare contra un mes a medio facturar. */}
-                          <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800 text-yellow-400/80">
+                          <th className="max-md:flex-1 max-md:min-w-[28%] max-md:border-l-0 px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800 text-yellow-400/80">
                             {/* El título es el TOTAL de la columna — el mismo
                                 número que la ÚLTIMA fila del pie, así que no
                                 pueden discrepar: neto cuando hay
@@ -2374,15 +2401,16 @@ export default function VentasVendedorPage() {
                               ? (grupo as TopCliente[]).map((c, i) => (
                                   <tr
                                     key={c.numero}
-                                    className="border-t border-zinc-800/60 hover:bg-zinc-800/30 transition-colors"
+                                    className={`border-t border-zinc-800/60 hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
                                   >
-                                    <td className="px-3 py-2 text-zinc-500 tabular-nums">
+                                    <td className="px-3 py-2 text-zinc-500 tabular-nums max-md:hidden">
                                       {gIdx * GROUP_SIZE + i + 1}
                                     </td>
                                     <td
-                                      className="px-3 py-2 text-zinc-100 max-w-0 w-full truncate"
+                                      className="px-3 py-2 text-zinc-100 max-w-0 w-full truncate max-md:col-span-full max-md:max-w-none max-md:overflow-visible max-md:whitespace-normal max-md:p-0"
                                       title={c.nombre ?? undefined}
                                     >
+                                      <span className="md:hidden mr-1.5 text-zinc-500 tabular-nums text-xs">{gIdx * GROUP_SIZE + i + 1}.</span>
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -2402,19 +2430,19 @@ export default function VentasVendedorPage() {
                                     </td>
                                     {dosMeses ? (
                                       <>
-                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                        <td data-label={mesM2Label} className={`px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                           {fmtTop(c.montoM2 ?? 0)}
                                         </td>
-                                        <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                        <td data-label={mesM1Label} className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                           {fmtTop(c.montoM1 ?? 0)}
                                         </td>
                                       </>
                                     ) : (
-                                      <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                      <td data-label={rangoAcumLabel} className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                         {fmtTop(c.monto)}
                                       </td>
                                     )}
-                                    <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                    <td data-label={mesActualLabel} className={`px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                       {fmtTop(c.montoMes)}
                                     </td>
                                   </tr>
@@ -2445,7 +2473,7 @@ export default function VentasVendedorPage() {
                                           ? () => toggleLinea(l.linea)
                                           : () => abrirModalLinea(l.linea)
                                       }
-                                      className={`border-t border-l-2 transition-colors cursor-pointer ${
+                                      className={`border-t border-l-2 transition-colors cursor-pointer ${mobTopTr} ${
                                         lineaAbierta
                                           ? "border-t-zinc-800/60 border-l-yellow-400 bg-zinc-800/70 hover:bg-zinc-800/90"
                                           : "border-t-zinc-800/60 border-l-transparent bg-zinc-900/60 hover:bg-zinc-800/50"
@@ -2458,14 +2486,15 @@ export default function VentasVendedorPage() {
                                           : "Ver clientes que compraron esta línea"
                                       }
                                     >
-                                      <td className="px-3 py-2 text-zinc-500 tabular-nums">
+                                      <td className="px-3 py-2 text-zinc-500 tabular-nums max-md:hidden">
                                         {gIdx * GROUP_SIZE + i + 1}
                                       </td>
                                       <td
-                                        className="px-3 py-2 text-zinc-50 font-bold text-[15px] max-w-0 w-full truncate"
+                                        className="px-3 py-2 text-zinc-50 font-bold text-[15px] max-w-0 w-full truncate max-md:col-span-full max-md:max-w-none max-md:overflow-visible max-md:whitespace-normal max-md:p-0"
                                         title={l.linea}
                                       >
                                         <span className="inline-flex items-center gap-1.5">
+                                          <span className="md:hidden mr-1.5 text-zinc-500 tabular-nums text-xs">{gIdx * GROUP_SIZE + i + 1}.</span>
                                           {l.aperturaComercial ? (
                                             lineaAbierta ? (
                                               <ChevronUp size={14} className="shrink-0 text-yellow-400" />
@@ -2488,15 +2517,15 @@ export default function VentasVendedorPage() {
                                       </td>
                                       {dosMeses ? (
                                         <>
-                                          <td className="px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                          <td data-label={mesM2Label} className={`px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                             {fmtTop(valorCampo(l, "M2", topEnUnidades))}
                                           </td>
-                                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                          <td data-label={mesM1Label} className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                             {fmtTop(valorCampo(l, "M1", topEnUnidades))}
                                           </td>
                                         </>
                                       ) : (
-                                        <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                        <td data-label={rangoAcumLabel} className={`px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                           {fmtTop(
                                             topMetricaLineas === "pesos"
                                               ? l.monto
@@ -2504,7 +2533,7 @@ export default function VentasVendedorPage() {
                                           )}
                                         </td>
                                       )}
-                                      <td className="px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap">
+                                      <td data-label={mesActualLabel} className={`px-3 py-2 text-right tabular-nums text-zinc-300 font-semibold border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                         {fmtTop(
                                           topMetricaLineas === "pesos"
                                             ? l.montoMes
@@ -2515,11 +2544,11 @@ export default function VentasVendedorPage() {
                                     {lineaAbierta && subsDe(l).map((sl) => (
                                       <tr
                                         key={`${l.linea}::${sl.subLinea}`}
-                                        className="border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors"
+                                        className={`border-t border-zinc-800/30 hover:bg-zinc-800/30 transition-colors ${mobTopTr}`}
                                       >
-                                        <td className="px-3 py-2" />
+                                        <td className="px-3 py-2 max-md:hidden" />
                                         <td
-                                          className="px-3 py-2 pl-6 text-zinc-300 max-w-0 w-full truncate"
+                                          className="px-3 py-2 pl-6 text-zinc-300 max-w-0 w-full truncate max-md:col-span-full max-md:max-w-none max-md:overflow-visible max-md:whitespace-normal max-md:p-0 max-md:pl-4"
                                           title={sl.subLinea}
                                         >
                                           <button
@@ -2533,15 +2562,15 @@ export default function VentasVendedorPage() {
                                         </td>
                                         {dosMeses ? (
                                           <>
-                                            <td className="px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap">
+                                            <td data-label={mesM2Label} className={`px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                               {fmtTop(valorCampo(sl, "M2", topEnUnidades))}
                                             </td>
-                                            <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
+                                            <td data-label={mesM1Label} className={`px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                               {fmtTop(valorCampo(sl, "M1", topEnUnidades))}
                                             </td>
                                           </>
                                         ) : (
-                                          <td className="px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap">
+                                          <td data-label={rangoAcumLabel} className={`px-3 py-2 text-right tabular-nums text-zinc-200 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                             {fmtTop(
                                               topMetricaLineas === "pesos"
                                                 ? sl.monto
@@ -2549,7 +2578,7 @@ export default function VentasVendedorPage() {
                                             )}
                                           </td>
                                         )}
-                                        <td className="px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap">
+                                        <td data-label={mesActualLabel} className={`px-3 py-2 text-right tabular-nums text-zinc-400 border-l border-zinc-800 whitespace-nowrap ${NUM_MOB}`}>
                                           {fmtTop(
                                             topMetricaLineas === "pesos"
                                               ? sl.montoMes
@@ -2572,10 +2601,10 @@ export default function VentasVendedorPage() {
                             de crédito) el pie es una sola fila y dice
                             "Total", como siempre. Con ajuste se abre en
                             bruto → ajuste → neto. */}
-                        <tr>
-                          <td className="px-3 py-2" />
+                        <tr className={mobTopTr}>
+                          <td className="px-3 py-2 max-md:hidden" />
                           <td
-                            className={`px-3 py-2 whitespace-nowrap ${
+                            className={`px-3 py-2 whitespace-nowrap max-md:col-span-full max-md:p-0 max-md:whitespace-normal ${
                               topAjuste
                                 ? "font-medium text-zinc-400"
                                 : "font-semibold text-zinc-300"
@@ -2593,10 +2622,10 @@ export default function VentasVendedorPage() {
                           )}
                         </tr>
                         {topAjusteIncluido && (
-                          <tr className="text-[11px]">
-                            <td className="px-3 py-1.5" />
+                          <tr className={`text-[11px] ${mobTopTr}`}>
+                            <td className="px-3 py-1.5 max-md:hidden" />
                             <td
-                              className="px-3 py-1.5 text-zinc-500 whitespace-nowrap"
+                              className="px-3 py-1.5 text-zinc-500 whitespace-nowrap max-md:col-span-full max-md:p-0 max-md:whitespace-normal"
                               title="Notas de crédito por concepto (bonificación, bonificación fuera de recibo, crédito interno) y ajustes de saldo. No tienen artículo: se imputan al cliente, no a una línea. Ya están restados en cada fila y en el total."
                             >
                               Incluye bonificaciones y ajustes
@@ -2606,19 +2635,19 @@ export default function VentasVendedorPage() {
                         )}
                         {topAjuste && (
                           <>
-                            <tr>
-                              <td className="px-3 py-2" />
+                            <tr className={mobTopTr}>
+                              <td className="px-3 py-2 max-md:hidden" />
                               <td
-                                className="px-3 py-2 font-medium text-zinc-400 whitespace-nowrap"
+                                className="px-3 py-2 font-medium text-zinc-400 whitespace-nowrap max-md:col-span-full max-md:p-0 max-md:whitespace-normal"
                                 title="Notas de crédito por concepto (bonificación, bonificación fuera de recibo, crédito interno) y ajustes de saldo. No tienen artículo, así que no figuran en ninguna fila del ranking."
                               >
                                 Bonificaciones y ajustes
                               </td>
                               {pieCeldas(topAjuste, "text-red-400")}
                             </tr>
-                            <tr className="border-t border-zinc-700">
-                              <td className="px-3 py-2" />
-                              <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap">
+                            <tr className={`border-t border-zinc-700 ${mobTopTr}`}>
+                              <td className="px-3 py-2 max-md:hidden" />
+                              <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap max-md:col-span-full max-md:p-0 max-md:whitespace-normal">
                                 Venta neta
                               </td>
                               {pieCeldas(topNeto, "text-yellow-400 font-bold")}
