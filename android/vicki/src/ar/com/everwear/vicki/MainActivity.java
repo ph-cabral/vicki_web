@@ -21,6 +21,9 @@ import android.os.Looper;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import java.util.Locale;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.Gravity;
@@ -95,6 +98,10 @@ public class MainActivity extends Activity {
     private ConnectivityManager.NetworkCallback redCb;
     /** Dictado por voz (SpeechRecognizer nativo, es-AR); el chat web lo usa vía VickiApp.vozIniciar(). */
     private SpeechRecognizer reconocedor;
+    /** Respuesta hablada (TextToSpeech nativo, es-AR); el chat web la usa vía VickiApp.hablar(). */
+    private TextToSpeech tts;
+    private boolean ttsListo;
+    private String ttsPendiente;
 
     // ------------------------------------------------------------------ ciclo de vida
 
@@ -161,6 +168,7 @@ public class MainActivity extends Activity {
     protected void onStop() {
         visible = false;
         liberarVoz();
+        pararHabla();
         enFondoDesde = System.currentTimeMillis();
         CookieManager.getInstance().flush();
         h.postDelayed(pararEnFondo, PARAR_EN_FONDO_MS);
@@ -198,6 +206,13 @@ public class MainActivity extends Activity {
         });
         exec.shutdown();
         liberarVoz();
+        if (tts != null) {
+            try {
+                tts.shutdown();
+            } catch (Exception ignored) {
+            }
+            tts = null;
+        }
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -590,6 +605,81 @@ public class MainActivity extends Activity {
         return l == null || l.isEmpty() ? "" : l.get(0);
     }
 
+
+    /** Avisa al chat web: window.vickiHabla(evento). evento: inicio | fin | error. */
+    private void hablaEvento(String ev) {
+        if (web == null) return;
+        web.evaluateJavascript("window.vickiHabla&&window.vickiHabla(" + JSONObject.quote(ev) + ")", null);
+    }
+
+    private void hablar(String texto) {
+        if (texto == null || texto.trim().length() == 0) {
+            hablaEvento("fin");
+            return;
+        }
+        liberarVoz(); // nunca escuchar mientras habla (si no, se oye a sí misma)
+        if (tts == null) {
+            ttsPendiente = texto;
+            tts = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+                @Override
+                public void onInit(int status) {
+                    if (status != TextToSpeech.SUCCESS || tts == null) {
+                        ttsListo = false;
+                        ttsPendiente = null;
+                        hablaEvento("error");
+                        return;
+                    }
+                    int r = tts.setLanguage(new Locale("es", "AR"));
+                    if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        r = tts.setLanguage(new Locale("es", "ES"));
+                    }
+                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                        @Override
+                        public void onStart(String id) {
+                            hablaEvento("inicio");
+                        }
+
+                        @Override
+                        public void onDone(String id) {
+                            hablaEvento("fin");
+                        }
+
+                        @Override
+                        public void onError(String id) {
+                            hablaEvento("error");
+                        }
+                    });
+                    ttsListo = true;
+                    String t = ttsPendiente;
+                    ttsPendiente = null;
+                    if (t != null) decir(t);
+                }
+            });
+            return;
+        }
+        if (!ttsListo) {
+            ttsPendiente = texto;
+            return;
+        }
+        decir(texto);
+    }
+
+    private void decir(String texto) {
+        if (texto.length() > 3500) texto = texto.substring(0, 3500);
+        int r = tts.speak(texto, TextToSpeech.QUEUE_FLUSH, null, "vicki");
+        if (r != TextToSpeech.SUCCESS) hablaEvento("error");
+    }
+
+    private void pararHabla() {
+        ttsPendiente = null;
+        if (tts != null) {
+            try {
+                tts.stop();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private void liberarVoz() {
         if (reconocedor != null) {
             try {
@@ -637,6 +727,27 @@ public class MainActivity extends Activity {
             }
         }
 
+        /** Lee en voz alta (es-AR). Avisa window.vickiHabla('inicio'|'fin'|'error'). */
+        @JavascriptInterface
+        public void hablar(final String texto) {
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    MainActivity.this.hablar(texto);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void hablarDetener() {
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    pararHabla();
+                }
+            });
+        }
+
         /** true si el celular tiene un servicio de reconocimiento de voz (Google). */
         @JavascriptInterface
         public boolean vozDisponible() {
@@ -649,6 +760,18 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     iniciarVoz();
+                }
+            });
+        }
+
+        /** Corta la escucha sin esperar resultado (no envía nada). */
+        @JavascriptInterface
+        public void vozCancelar() {
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    liberarVoz();
+                    vozEvento("fin", "");
                 }
             });
         }

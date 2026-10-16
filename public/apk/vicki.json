@@ -1,11 +1,11 @@
 {
  "paquete": "ar.com.everwear.vicki",
- "versionCode": 5,
- "versionName": "1.4",
- "apk": "/apk/vicki.apk?v=5",
- "sha256": "0f87fd92ecb14ce7f70f60cb3dc66f4d89bf982801c23e695b9509771f122499",
- "bytes": 86498,
+ "versionCode": 6,
+ "versionName": "1.5",
+ "apk": "/apk/vicki.apk?v=6",
+ "sha256": "575ecb52d64b9b449bf5115330812179e474021e605e772f75741b35b7973bae",
+ "bytes": 90594,
  "obligatoria": false,
- "notas": "Dictado por voz en el chat (botón de micrófono)",
- "fecha": "2026-10-16T15:00:51"
+ "notas": "Conversación por voz: hablás y Vicki contesta en voz alta (manos libres o pulsar)",
+ "fecha": "2026-10-16T15:23:17"
 }

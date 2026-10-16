@@ -141,6 +141,41 @@ function renderContent(
   );
 }
 
+/** Texto corto para leer en voz alta: 1-3 frases sin markdown; el detalle (tablas, listas, textos largos) queda en pantalla. */
+function resumenHablado(md: string): string {
+  const MAX = 320;
+  const sinCodigo = (md || "").replace(/\r/g, "").replace(/```[\s\S]*?```/g, " ");
+  const lineas = sinCodigo.split("\n");
+  const esTabla = (l: string) => /^\s*\|/.test(l);
+  const esItem = (l: string) => /^\s*([-*\u2022]|\d+[.)])\s+/.test(l);
+  const hayDetalle = lineas.some(esTabla) || lineas.filter(esItem).length >= 3;
+  const limpio = lineas
+    .filter((l) => !esTabla(l) && !esItem(l))
+    .join(" ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/[`*_#>~|]/g, "")
+    .replace(/\p{Extended_Pictographic}|\uFE0F/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!limpio) return "Listo, te dejé el resultado en pantalla.";
+  const frases = limpio.split(/(?<=[.!?])\s+/);
+  let out = "";
+  for (const f of frases) {
+    if (out && (out + " " + f).length > MAX) break;
+    out = out ? out + " " + f : f;
+    if (out.length >= 200) break;
+  }
+  let recortado = false;
+  if (out.length > MAX) {
+    out = out.slice(0, MAX).replace(/\s+\S*$/, "");
+    recortado = true;
+  }
+  if (hayDetalle || recortado || out.length < limpio.length) out += (/[.!?]$/.test(out) ? " " : ". ") + "El detalle está en pantalla.";
+  return out;
+}
+
 export default function VickiPage() {
   // session_id real del usuario logueado (antes era "user_1" fijo para
   // todo el mundo: no se podía separar historial ni filtrar datos por
@@ -281,49 +316,141 @@ export default function VickiPage() {
       .then((d) => setAwaitingEmp(!!d.has_draft));
   }, [messages, sessionId]);
 
-  // Dictado por voz: solo existe dentro de la app Android (puente VickiApp.voz*, SpeechRecognizer nativo).
+  // Conversación por voz (entra audio, sale audio): solo existe dentro de la app Android.
+  // Puente VickiApp.voz* (SpeechRecognizer es-AR) para escuchar y VickiApp.hablar (TextToSpeech es-AR)
+  // para contestar. Lo dicho se envía solo al terminar la frase y la respuesta se lee en voz alta
+  // (resumen corto; el detalle queda escrito). Cada usuario elige el modo y se recuerda en el celular:
+  //   "manos": bucle escuchar -> enviar -> hablar -> escuchar, hasta que se corte con el botón.
+  //   "pulsar": un toque por turno.
   const [vozOk, setVozOk] = useState(false);
   const [escuchando, setEscuchando] = useState(false);
+  const [hablando, setHablando] = useState(false);
+  const [convActiva, setConvActiva] = useState(false);
+  const [modoVoz, setModoVoz] = useState<"manos" | "pulsar">("pulsar");
   const [vozMsg, setVozMsg] = useState("");
+  const modoRef = useRef<"manos" | "pulsar">("pulsar");
+  const convRef = useRef(false);
+  const sendRef = useRef<(m: string, voz?: boolean) => void>(() => {});
+  const reintentosRef = useRef(0);
+  sendRef.current = send;
+  modoRef.current = modoVoz;
+  convRef.current = convActiva;
+
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const m = localStorage.getItem(`vicki_voz_modo_${userId}`);
+      if (m === "manos" || m === "pulsar") setModoVoz(m);
+    } catch {}
+  }, [userId]);
+  function elegirModo(m: "manos" | "pulsar") {
+    setModoVoz(m);
+    setConvActiva(false);
+    try {
+      localStorage.setItem(`vicki_voz_modo_${userId}`, m);
+    } catch {}
+  }
+
   useEffect(() => {
     const app = (window as any).VickiApp;
     try {
-      setVozOk(!!app?.vozIniciar && !!app.vozDisponible?.());
+      setVozOk(!!app?.vozIniciar && !!app.hablar && !!app.vozDisponible?.());
     } catch {}
+    const reescuchar = (ms: number) => {
+      setTimeout(() => {
+        if (convRef.current && modoRef.current === "manos") (window as any).VickiApp?.vozIniciar?.();
+      }, ms);
+    };
     (window as any).vickiVoz = (ev: string, txt: string) => {
       if (ev === "escuchando") {
         setVozMsg("");
         setEscuchando(true);
-      } else if (ev === "parcial" || ev === "final") {
+      } else if (ev === "parcial") {
         if (txt) setInput(txt);
-        if (ev === "final") setEscuchando(false);
+      } else if (ev === "final") {
+        setEscuchando(false);
+        setInput("");
+        if (txt.trim()) {
+          reintentosRef.current = 0;
+          sendRef.current(txt, true);
+        } else if (convRef.current) {
+          reescuchar(300);
+        }
       } else if (ev === "fin") {
         setEscuchando(false);
       } else if (ev === "error") {
         setEscuchando(false);
+        const sinVoz = txt === "6" || txt === "7";
+        if (sinVoz && convRef.current && reintentosRef.current < 2) {
+          reintentosRef.current += 1;
+          reescuchar(300);
+          return;
+        }
+        setConvActiva(false);
         setVozMsg(
           txt === "permiso"
             ? "Falta el permiso de micrófono"
             : txt === "no_disponible"
               ? "Este celular no tiene reconocimiento de voz"
-              : txt === "6" || txt === "7"
-                ? "No te escuché, probá de nuevo"
+              : sinVoz
+                ? "No te escuché, tocá el micrófono para seguir"
                 : txt === "2" || txt === "1"
-                  ? "El reconocimiento de voz necesita internet"
-                  : "No se pudo dictar (código " + txt + ")",
+                  ? "La voz necesita internet"
+                  : "No se pudo escuchar (código " + txt + ")",
         );
+      }
+    };
+    (window as any).vickiHabla = (ev: string) => {
+      if (ev === "inicio") {
+        setHablando(true);
+      } else {
+        setHablando(false);
+        if (convRef.current && modoRef.current === "manos") reescuchar(400);
       }
     };
     return () => {
       delete (window as any).vickiVoz;
+      delete (window as any).vickiHabla;
     };
   }, []);
+
   function toggleVoz() {
     const app = (window as any).VickiApp;
     if (!app) return;
     setVozMsg("");
-    if (escuchando) app.vozDetener();
-    else app.vozIniciar();
+    if (hablando) {
+      // cortar la respuesta (y en manos libres, la conversación)
+      setConvActiva(false);
+      convRef.current = false;
+      app.hablarDetener?.();
+      setHablando(false);
+    } else if (escuchando) {
+      if (modoVoz === "manos") {
+        // cortar la conversación sin enviar
+        setConvActiva(false);
+        convRef.current = false;
+        app.vozCancelar?.();
+        setInput("");
+      } else {
+        app.vozDetener();
+      }
+    } else if (loading) {
+      // esperando respuesta: que no la lea ni vuelva a escuchar
+      setConvActiva(false);
+      convRef.current = false;
+    } else {
+      reintentosRef.current = 0;
+      if (modoVoz === "manos") {
+        setConvActiva(true);
+        convRef.current = true;
+      }
+      app.vozIniciar();
+    }
+  }
+  function hablarRespuesta(texto: string) {
+    const app = (window as any).VickiApp;
+    if (!app?.hablar) return;
+    app.hablar(resumenHablado(texto));
   }
 
   const inputLocked = awaitingEmp && (!gender || !location);
@@ -384,7 +511,7 @@ export default function VickiPage() {
     } catch {}
   }
 
-  async function send(message: string) {
+  async function send(message: string, voz = false) {
     if (!message.trim() || loading || !sessionId) return;
     const userMsg: Msg = { role: "user", content: message };
     setMessages((prev) => [...prev, userMsg]);
@@ -411,6 +538,7 @@ export default function VickiPage() {
       const answer = data.response ?? `Error: ${data.error ?? "desconocido"}`;
       setMessages((prev) => [...prev, { role: "assistant", content: answer }]);
       mergeCandidatos(data.candidatos ?? []);
+      if (voz) hablarRespuesta(answer);
 
       if (/Empleado \*\*\d+\*\*/.test(answer) || answer.startsWith("✅")) {
         setGender("");
@@ -421,6 +549,7 @@ export default function VickiPage() {
         ...prev,
         { role: "assistant", content: `Error de conexión: ${e?.message ?? e}` },
       ]);
+      if (voz) hablarRespuesta("No me pude conectar. Probá de nuevo.");
     } finally {
       setLoading(false);
     }
@@ -750,16 +879,56 @@ export default function VickiPage() {
           )}
 
           {vozMsg && <p className="text-xs text-red-400">{vozMsg}</p>}
+          {vozOk && (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span>Voz:</span>
+              <button
+                type="button"
+                onClick={() => elegirModo("manos")}
+                className={`rounded-full px-3 py-1 border ${modoVoz === "manos" ? "bg-blue-600 border-blue-500 text-white" : "border-zinc-700"}`}
+              >
+                Manos libres
+              </button>
+              <button
+                type="button"
+                onClick={() => elegirModo("pulsar")}
+                className={`rounded-full px-3 py-1 border ${modoVoz === "pulsar" ? "bg-blue-600 border-blue-500 text-white" : "border-zinc-700"}`}
+              >
+                Pulsar para hablar
+              </button>
+              <span className="text-zinc-500">
+                {hablando
+                  ? "Hablando… tocá para cortar"
+                  : escuchando
+                    ? modoVoz === "manos"
+                      ? "Escuchando… tocá para cortar"
+                      : "Escuchando… tocá para enviar"
+                    : loading && convActiva
+                      ? "Pensando…"
+                      : ""}
+              </span>
+            </div>
+          )}
           <div className="flex gap-2">
             {vozOk && (
               <Button
                 type="button"
                 onClick={toggleVoz}
-                disabled={inputLocked || loading}
-                aria-label={escuchando ? "Detener dictado" : "Dictar por voz"}
-                className={escuchando ? "bg-red-600 hover:bg-red-700 animate-pulse" : "bg-zinc-700 hover:bg-zinc-600"}
+                disabled={inputLocked}
+                aria-label={
+                  hablando ? "Cortar respuesta" : escuchando ? "Dejar de escuchar" : "Hablar con Vicki"
+                }
+                className={
+                  hablando
+                    ? "bg-emerald-600 hover:bg-emerald-700 animate-pulse"
+                    : escuchando
+                      ? "bg-red-600 hover:bg-red-700 animate-pulse"
+                      : convActiva
+                        ? "bg-blue-600 hover:bg-blue-700"
+                        : "bg-zinc-700 hover:bg-zinc-600"
+                }
               >
-                {escuchando ? "⏹" : "🎤"}
+                {hablando ? "🔊" : escuchando ? "⏹" : "🎤"}
               </Button>
             )}
             <Input

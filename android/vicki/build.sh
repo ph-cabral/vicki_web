@@ -15,8 +15,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION_CODE=5
-VERSION_NAME="1.4"
+VERSION_CODE=6
+VERSION_NAME="1.5"
 BASE_URL="${BASE_URL:-http://10.10.0.159:3001}"
 OUT="${OUT:-../../public/apk/vicki.apk}"
 KS="everwear-vicki.jks"           # MISMA firma siempre: si se pierde, hay que desinstalar en cada celular
