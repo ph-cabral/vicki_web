@@ -116,7 +116,7 @@ from control_asignacion import (
     asignar_siguiente, fetch_cola_diag, fetch_pedidos_asignados,
     estado_grupos, decidir_grupo,
     fetch_tablero_asignacion, fetch_controladores, preasignar,
-    fetch_mesa_por_operario, fetch_detalle_unidad, liberar_unidad,
+    fetch_mesa_por_operario, fetch_detalle_unidad, liberar_unidad, liberar_operario,
 )
 from rrhh import fetch_cvs_por_mes
 # /rrhh/premios — productividad + errores por preparador y por controlador de
@@ -1909,11 +1909,16 @@ class LiberarIn(BaseModel):
     nroRemito: int = 0
     usuario: str | None = None
 
+class LiberarOperarioIn(BaseModel):
+    nroOperario: int
+    usuario: str | None = None
+
 class PreasignarIn(BaseModel):
     nroPedido: int
     nroRemito: int = 0
-    nroOperario: int | None = None   # None + urgente=False -> quitar
+    nroOperario: int | None = None   # None + urgente=False + bloquear=False -> quitar
     urgente: bool = False
+    bloquear: bool = False           # queda en la cola pero no se asigna a nadie
     usuario: str | None = None
     codCliente: int | None = None
     cliente: str | None = None
@@ -2158,7 +2163,7 @@ def deposito_control_asignacion_preasignar(body: PreasignarIn):
     está controlando alguien; 404 si el operario no existe."""
     try:
         return preasignar(body.nroPedido, body.nroRemito, body.nroOperario,
-                          body.urgente, body.usuario, body.codCliente, body.cliente)
+                          body.urgente, body.usuario, body.codCliente, body.cliente, body.bloquear)
     except ValueError as e:
         msg = str(e)
         raise HTTPException(status_code=409 if msg.startswith("Ya lo") else 404, detail=msg)
@@ -2201,6 +2206,16 @@ def deposito_control_asignacion_liberar(body: LiberarIn):
         return liberar_unidad(body.nroPedido, body.nroRemito, body.usuario)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
+
+@app.post("/deposito/control-asignacion/liberar-operario")
+def deposito_control_asignacion_liberar_operario(body: LiberarOperarioIn):
+    """Botón "Liberar todos" de la tarjeta de un operario: devuelve a la cola
+    todo lo asignado sin cerrar y lo preasignado de ese operario (0 = desbloquear
+    todos los pedidos bloqueados). Ver liberar_operario en control_asignacion.py."""
+    try:
+        return liberar_operario(body.nroOperario, body.usuario)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Error: {str(e)}")
 

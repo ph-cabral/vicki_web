@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Loader2, RefreshCw, Search, X, Zap, ListChecks } from "lucide-react";
+import { AlertTriangle, Loader2, Lock, RefreshCw, Search, X, Zap, ListChecks } from "lucide-react";
 import { fmtNum } from "./ui";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -16,6 +16,8 @@ import { fmtNum } from "./ui";
 // primera al primero que se libere. Ver PREASIGNACIÓN MANUAL en
 // indicadores-api/control_asignacion.py.
 //
+// "Bloqueado" (opción del selector) = el pedido queda en la cola pero no se
+// asigna a nadie hasta que alguien lo desbloquee ("Quitar asignación").
 // API: GET  /api/deposito/control-asignacion/tablero
 //      GET  /api/deposito/control-asignacion/controladores
 //      POST /api/deposito/control-asignacion/preasignar
@@ -25,6 +27,7 @@ interface Preasignado {
   nroOperario: number | null;
   asignadoA: string | null;
   urgente: boolean;
+  bloqueado?: boolean;
   creadoPor: string | null;
   creadoEn: string | null;
 }
@@ -55,6 +58,7 @@ interface Controlador {
 const POLL_MS = 30_000;
 const URGENTE = "__urgente__";
 const QUITAR = "__quitar__";
+const BLOQUEAR = "__bloquear__";
 
 const claveDe = (u: { nroPedido: number; nroRemito: number }) => `${u.nroPedido}-${u.nroRemito}`;
 
@@ -86,7 +90,7 @@ const diasEspera = (iso: string | null) => {
 };
 
 const labelPre = (p: Preasignado | null) =>
-  !p ? "" : p.urgente ? "Urgente · primero libre" : `${p.asignadoA ?? "Operario"} · ${p.nroOperario}`;
+  !p ? "" : p.bloqueado ? "Bloqueado" : p.urgente ? "Urgente · primero libre" : `${p.asignadoA ?? "Operario"} · ${p.nroOperario}`;
 
 // ─── Selector con filtro (mismo comportamiento que el Combobox de /sistema) ───
 interface Opcion {
@@ -94,7 +98,7 @@ interface Opcion {
   label: string;
   sub?: string;
   activo?: boolean;
-  tono?: "urgente" | "quitar";
+  tono?: "urgente" | "quitar" | "bloqueo";
 }
 
 function ControladorSelect({
@@ -180,15 +184,21 @@ function ControladorSelect({
 
   const pre = unidad.preasignado;
   const tonoInput = pre
-    ? pre.urgente
-      ? "border-red-500/50 text-red-300 bg-red-500/10"
-      : "border-emerald-500/50 text-emerald-300 bg-emerald-500/10"
+    ? pre.bloqueado
+      ? "border-orange-500/60 text-orange-300 bg-orange-500/10"
+      : pre.urgente
+        ? "border-red-500/50 text-red-300 bg-red-500/10"
+        : "border-emerald-500/50 text-emerald-300 bg-emerald-500/10"
     : "border-zinc-700 text-zinc-200 bg-[#111111]";
 
   return (
     <div className="relative w-64" ref={wrapRef}>
       <div className="relative">
-        {pre?.urgente && <Zap size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-red-400" />}
+        {pre?.bloqueado ? (
+          <Lock size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-orange-400" />
+        ) : pre?.urgente ? (
+          <Zap size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-red-400" />
+        ) : null}
         <input
           ref={inputRef}
           type="text"
@@ -226,7 +236,7 @@ function ControladorSelect({
               elegir(lista[Math.min(highlight, lista.length - 1)]);
             }
           }}
-          className={`w-full h-8 rounded-md border px-2.5 text-[12px] outline-none focus:border-yellow-400/70 placeholder:text-zinc-600 disabled:opacity-60 ${pre?.urgente ? "pl-6" : ""} ${tonoInput}`}
+          className={`w-full h-8 rounded-md border px-2.5 text-[12px] outline-none focus:border-yellow-400/70 placeholder:text-zinc-600 disabled:opacity-60 ${pre?.urgente || pre?.bloqueado ? "pl-6" : ""} ${tonoInput}`}
         />
         {guardando && (
           <Loader2 size={13} className="absolute right-2 top-1/2 -translate-y-1/2 text-yellow-400 animate-spin" />
@@ -252,6 +262,8 @@ function ControladorSelect({
               >
                 {o.tono === "urgente" ? (
                   <Zap size={12} className="text-red-400 shrink-0" />
+                ) : o.tono === "bloqueo" ? (
+                  <Lock size={12} className="text-orange-400 shrink-0" />
                 ) : o.tono === "quitar" ? (
                   <X size={12} className="text-zinc-500 shrink-0" />
                 ) : (
@@ -260,7 +272,7 @@ function ControladorSelect({
                     title={o.activo ? "Widget abierto" : "Sin widget abierto"}
                   />
                 )}
-                <span className={`truncate ${o.tono === "urgente" ? "text-red-300 font-semibold" : o.tono === "quitar" ? "text-zinc-400" : ""}`}>
+                <span className={`truncate ${o.tono === "urgente" ? "text-red-300 font-semibold" : o.tono === "bloqueo" ? "text-orange-300 font-semibold" : o.tono === "quitar" ? "text-zinc-400" : ""}`}>
                   {o.label}
                 </span>
                 {o.sub && <span className="ml-auto text-[10px] text-zinc-500 truncate">{o.sub}</span>}
@@ -323,6 +335,7 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
   const opciones: Opcion[] = useMemo(
     () => [
       { value: URGENTE, label: "Urgente · primero libre", sub: "sin operario fijo", tono: "urgente" },
+      { value: BLOQUEAR, label: "Bloqueado", sub: "no se asigna hasta desbloquear", tono: "bloqueo" },
       ...controladores.map((c) => ({
         value: String(c.nroOperario),
         label: `${c.nombre} · ${c.nroOperario}`,
@@ -342,8 +355,9 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
     const body = {
       nroPedido: u.nroPedido,
       nroRemito: u.nroRemito,
-      nroOperario: value === URGENTE || value === QUITAR ? null : Number(value),
+      nroOperario: value === URGENTE || value === QUITAR || value === BLOQUEAR ? null : Number(value),
       urgente: value === URGENTE,
+      bloquear: value === BLOQUEAR,
       codCliente: u.codCliente,
       cliente: u.cliente,
     };
@@ -586,7 +600,8 @@ export function AsignarPedidosTab({ sticky = true }: { sticky?: boolean } = {}) 
           <p className="text-[11px] text-zinc-600 mt-4 leading-relaxed">
             El pedido elegido le sale a ese controlador apenas cierre en Magnus el que está controlando, antes que
             cualquier otro de la cola; si está en preparación, le sale cuando termine de armarse. &quot;Urgente&quot;
-            lo toma el primero que se libere. &quot;Reservado&quot; = el cliente ya lo está controlando esa persona
+            lo toma el primero que se libere. &quot;Bloqueado&quot; lo deja en la cola sin asignarlo a nadie hasta que se lo
+            desbloquee (&quot;Quitar asignación&quot;, o desde su tarjeta en Control por operario). &quot;Reservado&quot; = el cliente ya lo está controlando esa persona
             (el resto de sus pedidos va a ella, salvo que elijas otro controlador acá). Vta = vuelta de acopio.
             Se actualiza cada 30 segundos.
           </p>

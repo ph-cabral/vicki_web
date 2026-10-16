@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Loader2, AlertTriangle, RefreshCw, Users } from "lucide-react";
+import { Loader2, AlertTriangle, RefreshCw, Users, Unlock, Lock } from "lucide-react";
 import { PageTitle, Table, Col, Tag, fmtNum } from "./ui";
 import { PedidoControlModal } from "./pedidoControlModal";
 
@@ -60,6 +60,9 @@ const ESTADO: Record<Estado, { label: string; tone: "green" | "amber" | "neutral
   esperando: { label: "Esperando", tone: "neutral" },
 };
 
+// Pseudo-operario de los pedidos bloqueados (BLOQUEO_OPERARIO en control_asignacion.py).
+const BLOQUEADOS = 0;
+
 const cols: Col<Fila>[] = [
   {
     key: "nroPedido",
@@ -93,28 +96,86 @@ const cols: Col<Fila>[] = [
   { key: "hora", label: "Hora", render: (r) => fmtHora(r.hora) },
 ];
 
-function TarjetaOperario({ o, onAbrir }: { o: Operario; onAbrir: (f: Fila) => void }) {
+function TarjetaOperario({
+  o,
+  onAbrir,
+  onLiberarTodos,
+}: {
+  o: Operario;
+  onAbrir: (f: Fila) => void;
+  onLiberarTodos: (o: Operario) => Promise<void>;
+}) {
   const t = o.totales;
+  const bloq = o.nroOperario === BLOQUEADOS;
+  const abiertos = t.enProceso + t.esperando;
+  const [confirmando, setConfirmando] = useState(false);
+  const [liberando, setLiberando] = useState(false);
+  // Si no se confirma en 4 s, el botón vuelve a su estado inicial.
+  useEffect(() => {
+    if (!confirmando) return;
+    const id = setTimeout(() => setConfirmando(false), 4000);
+    return () => clearTimeout(id);
+  }, [confirmando]);
+  const liberar = async () => {
+    setLiberando(true);
+    try {
+      await onLiberarTodos(o);
+    } finally {
+      setLiberando(false);
+      setConfirmando(false);
+    }
+  };
   return (
     <div className="bg-[#1A1A1A] border border-zinc-800 rounded-xl p-4 flex flex-col gap-3 min-w-0">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span
-              className={`inline-block w-2 h-2 rounded-full shrink-0 ${o.activo ? "bg-green-400" : "bg-zinc-600"}`}
-              title={o.activo ? "Widget abierto" : "Sin actividad en el widget"}
-            />
+            {bloq ? (
+              <Lock size={13} className="text-orange-400 shrink-0" />
+            ) : (
+              <span
+                className={`inline-block w-2 h-2 rounded-full shrink-0 ${o.activo ? "bg-green-400" : "bg-zinc-600"}`}
+                title={o.activo ? "Widget abierto" : "Sin actividad en el widget"}
+              />
+            )}
             <span className="font-semibold text-zinc-100 truncate">{o.nombre}</span>
-            <span className="text-[11px] text-zinc-500">#{o.nroOperario}</span>
+            {!bloq && <span className="text-[11px] text-zinc-500">#{o.nroOperario}</span>}
           </div>
           <div className="text-[11px] text-zinc-500 mt-1">
-            {fmtNum(t.controlados)} controlados · {fmtNum(t.itemsControlados)} items
+            {bloq
+              ? "No se asignan hasta que se desbloqueen"
+              : `${fmtNum(t.controlados)} controlados · ${fmtNum(t.itemsControlados)} items`}
           </div>
         </div>
-        <div className="flex flex-wrap gap-1 justify-end">
-          {t.enProceso > 0 && <Tag tone="amber">{t.enProceso} en proceso</Tag>}
-          {t.esperando > 0 && <Tag tone="neutral">{t.esperando} esperando</Tag>}
-          {t.noAsignados > 0 && <Tag tone="red">{t.noAsignados} sin asignar</Tag>}
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex flex-wrap gap-1 justify-end">
+            {t.enProceso > 0 && <Tag tone="amber">{t.enProceso} en proceso</Tag>}
+            {t.esperando > 0 && <Tag tone="neutral">{t.esperando} {bloq ? "bloqueados" : "esperando"}</Tag>}
+            {t.noAsignados > 0 && <Tag tone="red">{t.noAsignados} sin asignar</Tag>}
+          </div>
+          {abiertos > 0 && (
+            <button
+              onClick={() => (confirmando ? liberar() : setConfirmando(true))}
+              disabled={liberando}
+              title={
+                bloq
+                  ? "Quita el bloqueo de todos los pedidos"
+                  : "Devuelve a la cola todo lo asignado sin cerrar y lo preasignado a este operario"
+              }
+              className={`flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-md border transition-colors disabled:opacity-50 ${
+                confirmando
+                  ? "border-red-500/60 bg-red-500/15 text-red-300 hover:bg-red-500/25"
+                  : "border-zinc-700 text-zinc-400 hover:text-yellow-400 hover:border-yellow-400/50"
+              }`}
+            >
+              {liberando ? <Loader2 size={12} className="animate-spin" /> : <Unlock size={12} />}
+              {confirmando
+                ? `Confirmar: ${bloq ? "desbloquear" : "liberar"} ${abiertos}`
+                : bloq
+                  ? "Desbloquear todos"
+                  : "Liberar todos"}
+            </button>
+          )}
         </div>
       </div>
       <Table
@@ -122,7 +183,9 @@ function TarjetaOperario({ o, onAbrir }: { o: Operario; onAbrir: (f: Fila) => vo
         rows={o.filas}
         maxH={420}
         empty="Sin pedidos en el día"
-        rowClassName={(r) => (r.noAsignado ? "bg-red-500/15 hover:bg-red-500/25" : "")}
+        rowClassName={(r) =>
+          r.noAsignado ? "bg-red-500/15 hover:bg-red-500/25" : bloq ? "bg-orange-500/10 hover:bg-orange-500/20" : ""
+        }
         onRowClick={onAbrir}
       />
     </div>
@@ -173,6 +236,25 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
 
   const operarios = data?.operarios ?? [];
 
+  const liberarTodos = useCallback(
+    async (o: Operario) => {
+      try {
+        const res = await fetch("/api/deposito/control-asignacion/liberar-operario", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nroOperario: o.nroOperario }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(typeof j.error === "string" ? j.error : `HTTP ${res.status}`);
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "No se pudo liberar");
+      }
+      if (dia) load(dia);
+    },
+    [dia, load],
+  );
+
   return (
     <div>
       <div className={`${sticky ? "sticky top-16 z-40 -mx-8 px-8 bg-[#111111]/95 backdrop-blur" : "mt-8"} py-3 border-b border-zinc-800 flex items-start justify-between gap-4 flex-wrap`}>
@@ -222,6 +304,7 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
                 key={o.nroOperario}
                 o={o}
                 onAbrir={(f) => setAbierto({ nroPedido: f.nroPedido, nroRemito: f.nroRemito })}
+                onLiberarTodos={liberarTodos}
               />
             ))}
           </div>
@@ -231,6 +314,8 @@ export function PorOperarioTab({ sticky = true }: { sticky?: boolean } = {}) {
             Las vueltas de acopio (v) las cierra el puesto de mesa, no la persona: no se marcan en rojo.
             Punto verde = widget abierto. Click en una fila para ver el pedido y liberarlo
             (si el cliente tiene más pedidos con el mismo operario, se liberan todos juntos).
+            &quot;Liberar todos&quot; devuelve a la cola todo lo abierto del operario. La tarjeta Bloqueados
+            junta los pedidos que no se asignan a nadie hasta desbloquearlos.
           </p>
         </>
       )}

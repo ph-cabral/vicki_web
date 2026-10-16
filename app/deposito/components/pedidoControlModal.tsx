@@ -208,7 +208,7 @@ export function PedidoControlModal({
                 <Dato k="Prioridad" v={d.prioridad != null ? String(d.prioridad) : "—"} />
                 <Dato k="Items · unidades" v={`${fmtNum(d.lineas)} · ${fmtNum(d.unidades, 0)}`} />
                 <Dato k="Ubicación" v={d.ubicacion ?? "—"} />
-                <Dato k="Controla" v={d.operario ? `${d.operario} (#${d.nroOperario})` : "—"} />
+                <Dato k="Controla" v={d.nroOperario === 0 ? "Bloqueado" : d.operario ? `${d.operario} (#${d.nroOperario})` : "—"} />
                 <Dato k="Asignado" v={fmtFechaHora(d.asignadoEn)} />
                 <Dato k="Armó" v={d.nombreArmador ?? "—"} />
                 <Dato k="Cerrado" v={fmtFechaHora(d.cerradoEn)} />

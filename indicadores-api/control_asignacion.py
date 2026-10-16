@@ -1190,36 +1190,15 @@ def purgar_cola_obsoleta() -> int:
     return borradas
 
 
-# ── LIBERACIÓN DIARIA DE PREASIGNACIONES (2026-10-14) ─────────────────────
-# A las 00:00 (hora Argentina) se liberan TODAS las preasignaciones (manuales
-# y auto CP2): un controlador que no vuelve (vacaciones, licencia) no puede
-# dejar pedidos trabados esperándolo. No hay cron: cada refrescar_cola borra
-# las creadas antes de la medianoche AR de hoy, así que a partir de las 00 la
-# primera consulta de la cola (tablero o widget) las libera. Las que se
-# carguen después de las 00 valen hasta la próxima medianoche.
-# "creadoEn" es UTC (now() del server PG), por eso el doble AT TIME ZONE.
-_TZ_LIBERA = "America/Argentina/Buenos_Aires"
-
-
-def liberar_preasignaciones_vencidas() -> int:
-    """Borra las preasignaciones anteriores a las 00:00 AR de hoy. Devuelve cuántas."""
-    _asegurar_tabla_reserva()
-    conn = get_pg_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
-        cur.execute(
-            """
-            DELETE FROM deposito.control_preasignacion
-            WHERE "creadoEn" < (date_trunc('day', now() AT TIME ZONE %(tz)s) AT TIME ZONE %(tz)s) AT TIME ZONE 'UTC'
-            """,
-            {"tz": _TZ_LIBERA},
-        )
-        n = cur.rowcount
-        conn.commit()
-        return n
-    finally:
-        conn.close()
+# ── BLOQUEO DE PEDIDOS (2026-10-16) ───────────────────────────────────────
+# En "Asignar pedidos" el selector "Controla" tiene una opción "Bloqueado": es
+# una preasignación al pseudo-operario BLOQUEO_OPERARIO (0). _reclamar nunca
+# entrega una fila preasignada a otro operario, y 0 no es de nadie, así que el
+# pedido queda en la cola pero no se asigna hasta que alguien le saque el
+# bloqueo ("Quitar asignación", o "Liberar todos" en la tarjeta Bloqueados).
+# Ya no hay liberación automática de preasignaciones a las 00 hs.
+BLOQUEO_OPERARIO = 0
+BLOQUEO_NOMBRE = "Bloqueado"
 
 
 def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
@@ -1253,10 +1232,6 @@ def refrescar_cola(limit: int = MAGNUS_ABIERTOS_LIMIT) -> int:
     global _cola_refrescada
     import time as _t
     _cola_refrescada = _t.monotonic()
-    try:
-        liberar_preasignaciones_vencidas()
-    except Exception:  # noqa: BLE001 — sin la liberación la cola sigue
-        pass
     purgar_cola_obsoleta()
     completar_historial()
     candidatos = fetch_pedidos_listos_para_control(limit) + fetch_acopio_vueltas_espera_control(limit)
@@ -2429,6 +2404,7 @@ def _preasig_json(r: dict | None) -> dict | None:
         "nroOperario": r.get("nroOperario"),
         "asignadoA": r.get("asignadoA"),
         "urgente": r.get("nroOperario") is None,
+        "bloqueado": r.get("nroOperario") == BLOQUEO_OPERARIO,
         "creadoPor": r.get("creadoPor"),
         "creadoEn": r["creadoEn"].isoformat() if r.get("creadoEn") else None,
     }
@@ -2605,15 +2581,19 @@ def fetch_controladores() -> dict:
 
 def preasignar(nro_pedido: int, nro_remito: int, nro_operario: int | None,
                urgente: bool, usuario: str | None,
-               cod_cliente: int | None = None, cliente: str | None = None) -> dict:
+               cod_cliente: int | None = None, cliente: str | None = None,
+               bloquear: bool = False) -> dict:
     """Alta/cambio/baja de la preasignación de una unidad.
     nro_operario -> se la controla ese operario apenas termine lo actual.
     urgente sin operario -> sale primera al primero que se libere.
-    ninguno de los dos -> se quita la preasignación."""
+    bloquear -> queda en la cola pero no se asigna a nadie (ver BLOQUEO DE PEDIDOS).
+    ninguno de los tres -> se quita la preasignación."""
     _asegurar_tabla_reserva()
     nro_remito = int(nro_remito or 0)
     nombre = None
-    if nro_operario is not None:
+    if bloquear:
+        nro_operario, urgente, nombre = BLOQUEO_OPERARIO, False, BLOQUEO_NOMBRE
+    elif nro_operario is not None:
         nombre = fetch_operario_nombre(int(nro_operario))
         if not nombre:
             raise ValueError(f"Operario {nro_operario} no encontrado")
@@ -3159,6 +3139,8 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
             conn.close()
 
     def _nom(n: int) -> str:
+        if n == BLOQUEO_OPERARIO:
+            return "Bloqueados"
         return nombres.get(n) or f"Operario {n}"
 
     def _iso(v) -> str | None:
@@ -3246,7 +3228,8 @@ def fetch_mesa_por_operario(dia: str | None = None) -> dict:
                 "noAsignados": sum(1 for f in fs if f["noAsignado"]),
             },
         })
-    operarios.sort(key=lambda o: (not o["activo"], o["nombre"].lower()))
+    # La tarjeta "Bloqueados" (pseudo-operario 0) va primera.
+    operarios.sort(key=lambda o: (o["nroOperario"] != BLOQUEO_OPERARIO, not o["activo"], o["nombre"].lower()))
     return {"dia": d.isoformat(), "esHoy": es_hoy, "operarios": operarios,
             "actualizado": datetime.now().isoformat()}
 
@@ -3441,7 +3424,8 @@ def fetch_detalle_unidad(nro_pedido: int, nro_remito: int = 0) -> dict:
         conn = get_pg_connection()
         try:
             cur = conn.cursor()
-            cands = _candidatas_liberar(cur, op, (u or {}).get("codCliente") or cod_cliente, ped, rem)
+            cands = _candidatas_liberar(
+                cur, op, None if op == BLOQUEO_OPERARIO else ((u or {}).get("codCliente") or cod_cliente), ped, rem)
         finally:
             conn.close()
         grupo = [
@@ -3510,6 +3494,8 @@ def liberar_unidad(nro_pedido: int, nro_remito: int = 0, usuario: str | None = N
         else:
             raise ValueError("No está asignado a ningún operario")
         cod = (u or {}).get("codCliente") or (pre or {}).get("codCliente")
+        if op == BLOQUEO_OPERARIO:
+            cod = None      # desbloquear es pedido por pedido
         cands = _candidatas_liberar(cur, op, cod, ped, rem)
     finally:
         conn.close()
@@ -3559,3 +3545,79 @@ def liberar_unidad(nro_pedido: int, nro_remito: int = 0, usuario: str | None = N
     return {"nroOperario": op, "operario": nombre, "codCliente": cod,
             "liberados": sorted(liberados, key=lambda x: (x["nroPedido"], x["nroRemito"])),
             "reservaLiberada": reserva}
+
+
+def liberar_operario(nro_operario: int, usuario: str | None = None) -> dict:
+    """Botón "Liberar todos" de la tarjeta de un operario en "Control por
+    operario": devuelve a la cola libre TODO lo que ese operario tiene abierto
+    —asignado sin cerrar (ventana LIBERAR_VENTANA_DIAS) y preasignado— y borra
+    las reservas por cliente de lo liberado. Lo que Magnus ya cerró no se
+    toca. Para el pseudo-operario BLOQUEO_OPERARIO equivale a "desbloquear
+    todos". Mismo criterio de locks que liberar_unidad."""
+    _asegurar_tabla_reserva()
+    op = int(nro_operario)
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, "nroPedido", "nroRemito", cliente, "codCliente", 'asignado' AS origen
+            FROM deposito.control_asignacion
+            WHERE "nroOperarioAsignado" = %(op)s AND "asignadoEn" IS NOT NULL AND "cerradoEn" IS NULL
+              AND "asignadoEn" > now() - make_interval(days => %(dias)s)
+            UNION ALL
+            SELECT NULL, "nroPedido", "nroRemito", cliente, "codCliente", 'preasignado'
+            FROM deposito.control_preasignacion
+            WHERE "nroOperario" = %(op)s
+            """,
+            {"op": op, "dias": LIBERAR_VENTANA_DIAS},
+        )
+        cols = [c[0] for c in cur.description]
+        cands = [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    abiertas = _filtrar_abiertas(cands)
+    ids = [int(c["id"]) for c in abiertas if c["origen"] == "asignado"]
+    pres = [(int(c["nroPedido"]), int(c["nroRemito"] or 0)) for c in abiertas if c["origen"] == "preasignado"]
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_COLA,))
+        liberadas_ids: set[int] = set()
+        if ids:
+            cur.execute(
+                'UPDATE deposito.control_asignacion '
+                'SET "asignadoA" = NULL, "nroOperarioAsignado" = NULL, "asignadoEn" = NULL '
+                'WHERE id = ANY(%s) AND "nroOperarioAsignado" = %s AND "cerradoEn" IS NULL '
+                'RETURNING id',
+                (ids, op),
+            )
+            liberadas_ids = {int(r[0]) for r in cur.fetchall()}
+        if pres:
+            cur.executemany(
+                'DELETE FROM deposito.control_preasignacion '
+                'WHERE "nroPedido" = %s AND "nroRemito" = %s AND "nroOperario" = %s',
+                [(pp, rr, op) for pp, rr in pres],
+            )
+        clientes = sorted({int(c["codCliente"]) for c in abiertas
+                           if c["codCliente"] is not None
+                           and (c["origen"] == "preasignado" or int(c["id"]) in liberadas_ids)})
+        if clientes and op != BLOQUEO_OPERARIO:
+            cur.execute('DELETE FROM deposito.control_reserva_cliente '
+                        'WHERE "nroOperario" = %s AND "codCliente" = ANY(%s)', (op, clientes))
+        conn.commit()
+    finally:
+        conn.close()
+
+    liberados = [
+        {"nroPedido": int(c["nroPedido"]), "nroRemito": int(c["nroRemito"] or 0),
+         "cliente": c["cliente"], "origen": c["origen"]}
+        for c in abiertas
+        if c["origen"] == "preasignado" or int(c["id"]) in liberadas_ids
+    ]
+    print(f"[liberar_operario] {usuario or '?'} liberó {len(liberados)} unidad(es) de op {op}: "
+          f"{[(x['nroPedido'], x['nroRemito']) for x in liberados]}", flush=True)
+    return {"nroOperario": op, "liberados": sorted(liberados, key=lambda x: (x["nroPedido"], x["nroRemito"]))}
